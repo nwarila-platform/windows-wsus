@@ -10,11 +10,8 @@
 #
 # =========================================================================================== #
 ---
-wsus_defaults:
-  data_disks:
-    # WID database files need a dedicated disk whose size is also its stable selector.
-    - purpose: 'db'
-      size_gb: 20
-    # WSUS update content is larger and isolated from database I/O on its own disk.
-    - purpose: 'content'
-      size_gb: 30
+wsus_defaults: {}
+# Disk identity is supplied per target as REQUIRED top-level vars (see README):
+#   wid_disk_id  — unique_id of the WID/database disk (-> E: WSUSDB)
+#   wsus_disk_id — unique_id of the WSUS content disk (-> F: WSUSDATA)
+# Volume conventions (drive letters, labels, filesystem) land in C02 when consumed.
