@@ -60,3 +60,20 @@
   entry + C01 lint logs.
 - **Exit criteria:** framework release with the warn_list fix → bump
   `.framework-pin` → drop the `--warn-list` flag from the gate → close TD-002.
+
+## TD-003 — local v3 loader carries a `validate.yml` hook not yet upstream
+
+- **What:** `ansible/applications/wsus/tasks/main.yml` was bumped **v3.0.0 → v3.1.0** under a
+  one-time Director-approved exception (dual-panel Fable + Sol: unanimous APPROVE, per
+  `_handoff/loop/loader-change-protocol.md`) to add a GENERIC `INIT | Validating Merged
+  Configuration` hook: after merging the running config, the loader includes the role's optional
+  `tasks/validate.yml` (`first_found`, skipped if absent), passing the merged `config`. This gives
+  every role a place to assert its MERGED-config contract, which `meta/argument_specs.yml` cannot see.
+- **Debt:** the loader is no longer **byte-identical / hash-matched** to the framework's v3.0.0
+  (the ratified invariant, style §3). Until the framework adopts v3.1.0, the local loader diverges.
+- **Rollout (panel conditions):** upstream v3.1.0 to `ansible-framework` **atomically** — every v3
+  loader copy (applications/wsus, applications/python3_pip, all v3 consumers) to identical v3.1.0
+  bytes in one commit; grep every consumer repo (incl. the 4 wazuh roles) for a pre-existing
+  `tasks/validate.yml` before release; then bump `.framework-pin`, re-copy, and re-verify sha256
+  equality → close TD-003 (restores the byte-identical invariant).
+- **Evidence:** RTRACK-V + the Fable/Sol verdicts (loader-change gate).

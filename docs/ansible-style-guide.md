@@ -78,18 +78,40 @@
   enumeration number, so the role is robust to enumeration order AND size changes.
   (`unique_id` is populated on RAW/blank disks and stable through GPT initialization.)
 
-## 4b. BEGIN stage contract — RATIFIED (C01 seeded, C01r ratified 2026-07-15)
+## 4b. Guards earn their keep — RATIFIED (C01/C01r seeded; policy ratified V, 2026-07-15)
 
-- The BEGIN stage is strictly **read-only**: facts gathering and asserts only. The
-  first mutating task belongs to the piece that owns it, never to a guard.
-- Declarative disk (or resource) selection must assert **exactly one** match per
-  declared spec — zero and multiple matches are both hand-off failures, failed
-  loudly with a fail_msg that enumerates what was actually found; never silently
-  resolved. Declared specs must be mutually distinguishable (e.g. distinct identifiers).
-- Guard pieces carry a negative proof (a deliberately-wrong input must fail on the
-  intended assert, and sibling specs must still pass — per-spec discrimination) in
-  addition to the clean-baseline presence proof. (Exercised: C01 presence/absence/
-  ambiguity proofs.)
+**Prefer the Ansible action; assert only when load-bearing.** An assert is admitted only if
+BOTH prongs clear:
+- **(a) Don't assert what fails anyway.** Never pre-assert a precondition an Ansible action
+  already fails loudly on — lean on that failure (the loader's `first_found` + "OS task file not
+  found" enforces os_family; `win_initialize_disk` fails on an absent/bad `uniqueid`; the
+  exactly-one resolution rejects a missing/empty id as "found 0"). A friendlier or earlier message
+  for a state a module would reject anyway is NOT sufficient justification.
+- **(b) Configure, don't assert.** Never assert a state you can idempotently CONFIGURE — configure
+  it (`win_initialize_disk online:true` MAKES the disk online/writable; do not assert it is).
+An assert is **RETAINED only** when a wrong state is **SILENT-WRONG or DESTRUCTIVE and no Ansible
+action catches it before the damage** — e.g. two logical volumes declared onto one physical disk
+(equal ids → both resolve to one disk → half-provisioned), or a foreign/occupied initialized disk
+(`win_initialize_disk force:false` no-ops, then `win_partition -1` carves its free extent → silent
+clobber, verified at the module source). These stay `quiet: true` with an actionable fail_msg.
+(§4c is the destructive analog; §4a the identifier rule.)
+
+**Guard / validate-stage shape:**
+- The guard stage is **read-only on the target**: facts gathering, asserts, and **target-read-only
+  resolution facts** (a `set_fact` deriving a declared-spec → resolved-object map from gathered
+  facts — no mutation). The first *mutating* task belongs to the piece that owns it, never a guard.
+- Facts are gathered **once**, at the superset the load-bearing path needs; a mutating piece owns
+  its own post-mutation refresh.
+- Declarative resource selection resolves to **exactly one** match per declared spec (assert
+  `length == 1`, enumerating fail_msg; then reuse the resolved object — never re-select with a bare
+  `| first`). Zero and multiple are both hand-off failures. Declared specs must be mutually
+  distinguishable (e.g. distinct identifiers).
+- The declared CONFIG contract (post-merge `config.*`) is validated in ONE place where `config` is
+  in scope — the role's `tasks/validate.yml`, run by the v3.1.0 loader's
+  `INIT | Validating Merged Configuration` hook — **never** `meta/argument_specs.yml` (structurally
+  blind to the merged `config`; see §8).
+- Guard pieces carry a negative proof (deliberately-wrong input fails on the intended assert;
+  sibling specs still pass). (Exercised: C01 / C01r / C02a / C02b / V.)
 
 ## 4c. Mutation safety — SEEDED (C02b, 2026-07-15)
 
@@ -159,6 +181,11 @@
 - Handler usage & service-restart conventions on Windows.
 - Molecule (or equivalent) test story for Windows roles — framework roles ship
   `molecule/`; no Windows driver decision yet.
-- Argument specs (`meta/argument_specs.yml`) — wazuh roles use them; python3_pip's
+- Argument specs (`meta/argument_specs.yml`) — **DECIDED (V, 2026-07-15): NOT adopted for
+  enforcement.** The auto-inserted arg-spec validator runs BEFORE the v3 loader builds the merged
+  `config` (verified empirically), so it is structurally blind to `config.*` and only duplicates the
+  loader's ENV/state assert. Merged-config validation lives in the role's `tasks/validate.yml` (run
+  by the loader's v3.1.0 `INIT | Validating Merged Configuration` hook, §4b). argument_specs is
+  permissible only as description-only documentation of the `<role>:` dict shape. _(superseded note)_ wazuh roles use them; python3_pip's
   meta shape TBD against it.
 - Secrets handling for Windows (no vault usage yet in this repo).
