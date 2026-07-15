@@ -29,6 +29,12 @@
       # TD-001: disable the loader's POSIX temp-dir; the role owns its staging via
       # ansible.windows.win_tempfile (queue piece C02).
       temp_dir: false
+      # Data-disk identity (Windows Get-Disk UniqueId). Declared in this wsus override dict so the
+      # loader folds them into config (config.wid_disk_id / config.wsus_disk_id). Dev-VM-specific —
+      # parameterize (templated vars) on backport to *-template. NOTE: a `-e '{"wsus":{...}}'` override
+      # REPLACES this whole mapping, so a proof override must re-state temp_dir: false.
+      wid_disk_id: 'eui.6C7076230CC23C55000C2968C7AE5760'  # 20 GiB -> E: WSUSDB (WID database)
+      wsus_disk_id: 'eui.CF4AE05CEB88F43B000C29656D55634B'  # 30 GiB -> F: WSUSDATA (update content)
 
   pre_tasks:
     # TD-001: the loader's 'INIT | Loading Installed Package Facts' task runs
