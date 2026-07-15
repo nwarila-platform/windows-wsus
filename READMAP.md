@@ -27,13 +27,13 @@ Two standing rules from the Director shape everything:
 
 Sequence:
 
-1. **Guard refactor → C02c–e — data volumes** (⛏️ next: R4). Assert policy (§4b "guards
-   earn their keep") ratified; **V** + **R1** (Windows-family assert dropped) + **R2** (gathers
-   collapsed) + **R3** (block-var resolution, no set_fact) merged. Guard trim remaining: R4 drop
-   the Provided assert. Then the mutations: C02c `win_initialize_disk` (online+GPT) → C02d
-   `win_partition` (100%+letter, disk_number from `item.matches | first`) → C02e `win_format`
-   (NTFS+label; MS-rec allocation-unit — 64 KiB SQL/WID DB, MS-rec content). The C02b safety
-   guard gates the first mutation (C02c).
+1. **C02c–e — data volumes** (⛏️ next: C02c). The **guard refactor is COMPLETE** (§4b "guards
+   earn their keep"): **V + R1-R4 merged** — `present_windows.yml` is at its load-bearing floor
+   (block-var resolution → one `win_disk_facts` gather → fail-closed Attached → the C02b safety
+   guard; distinctness in `validate.yml`). Now the mutations: C02c `win_initialize_disk`
+   (online+GPT) → C02d `win_partition` (100%+letter, disk_number from `item.matches | first`) →
+   C02e `win_format` (NTFS+label; MS-rec allocation-unit — 64 KiB SQL/WID DB, MS-rec content).
+   The C02b safety guard gates the first mutation (C02c).
 2. **C03–C07 — the WSUS install spine** (staging dir → features → postinstall →
    SUSDB relocation → END verify), strictly in queue order.
 3. **§3 Director decisions** — can land any time; none block C02, but style §4b/§5
@@ -119,8 +119,8 @@ Sequence:
 | R1 | Guard trim: drop the Windows-family assert (loader `first_found` already enforces family) | ✅ merged `2ef0ad6 [audited cc987e2]` 2026-07-15 | Pure deletion; VM safe-pass ok=16; P4.5 approved. §4b(a). RTRACK-R1. |
 | R2 | Guard trim: collapse the two `win_disk_facts` gathers into ONE canonical superset | ✅ merged `46f9d3d [audited deea6cf]` 2026-07-15 | −1 SSH round-trip; VM safe-pass ok=15; P4.5 approved. §4b gather-once. RTRACK-R2. |
 | R3 | Resolve each disk once via a block-var `matches` (NO set_fact — no cross-role bleed); Attached + safety reuse it; feeds C02d | ✅ merged `09a73b4 [audited afeef0c]` 2026-07-15 | VM safe-pass ok=15 + negative (fail-closed); P4.5 approved. RATIFIED §4 avoid-set_fact + §4b block-var resolution. RTRACK-R3. |
-| R4 | Guard trim: drop the Provided assert (delegated to the resolution + `win_initialize_disk`); harden survivors | ⛏️ NEXT | Last guard trim; read-only. |
-| C02c | `win_initialize_disk` — online + GPT-init the two data disks | ⛏️ | `uniqueid=`, `online: true` (clears offline/read-only), `force: false` (idempotent). FIRST mutation; gated by the C02b safety guard; runs after the R-refactor. |
+| R4 | Guard trim: drop the Provided assert (§4b(a)) + refresh stale file-header | ✅ merged `fd206b4 [audited ed83585]` 2026-07-15 | VM safe-pass ok=14 + negative (id omitted → Attached 'found 0'); P4.5 approved. Guard refactor COMPLETE. RTRACK-R4. |
+| C02c | `win_initialize_disk` — online + GPT-init the two data disks | ⛏️ NEXT | `uniqueid=`, `online: true` (clears offline/read-only), `force: false` (idempotent). FIRST mutation; gated by the C02b safety guard. |
 | C02d | `win_partition` — 100% partition (`partition_size: -1`) + drive letter | ⛏️ | disk_number resolved from `unique_id` via `win_disk_facts`; drive_letter mandatory for idempotency. |
 | C02e | `win_format` — NTFS + label (WSUSDB/WSUSDATA); **MS-recommended allocation-unit** (Director): 64 KiB SQL/WID `SUSDB` (E:), MS-rec content (F:, research at P0) | ⛏️ | `force: false` + preserved labels = idempotent; adds label/fs/alloc to defaults. |
 | C03 | Role-owned staging dir via `ansible.windows.win_tempfile` (TD-001 stand-in) | ⛏️ | |
@@ -152,12 +152,12 @@ _empty_
 
 ## ⏱️ SESSION HANDOFF — 2026-07-15 — for the next fresh session
 
-**STATE: R3 merged; repo is read-only guards + config-validation home.** `main` @ the R3
-codification commit. Loader is **v3.1.0** (generic `tasks/validate.yml` hook, Director
-exception, TD-003). Guard trims underway (V + R1 + R2 + R3 merged; **R4 last**). A composed
-run SUCCEEDS doing nothing but read-only guards — green recap ≠ "WSUS deployed" or "disks
-prepared" (see RTRACK-R3). Worktrees/branches removed; tree clean. **R4 next, then C02c
-(first mutation).**
+**STATE: R4 merged — the guard refactor is COMPLETE.** `main` @ the R4 codification commit.
+`present_windows.yml` is at its load-bearing floor (block-var resolution → one `win_disk_facts`
+gather → fail-closed Attached → the C02b state-aware safety guard); config-contract invariants
+(distinctness) live in `validate.yml` (loader **v3.1.0**, TD-003). A composed run SUCCEEDS doing
+nothing but read-only guards — green recap ≠ "WSUS deployed" or "disks prepared" (see RTRACK-R4).
+Worktrees/branches removed; tree clean. **C02c next — the FIRST mutation.**
 
 **Contract now:** disk ids are declared in the `wsus:` override dict and read as
 `config.wid_disk_id` (DB→E:WSUSDB) / `config.wsus_disk_id` (content→F:WSUSDATA), each the
@@ -185,11 +185,9 @@ composed-tree lint + fixtures + VM proofs in P4 · plain-gate ansible-lint exits
 so a `-e '{"wsus":{…}}'` proof override REPLACES the dict and MUST re-state
 `temp_dir: false`** (presence proof needs no `-e`; footgun confined to `-e` overrides).
 
-**Next action:** confirm **R4** with the Director → P0. The LAST guard trim per §4b "guards
-earn their keep" (R1-R3 done): **R4** drop the Provided (defined/string/non-empty) assert —
-type/required/non-empty is delegated to the `item.matches | length == 1` resolution ("found 0")
-and `win_initialize_disk`'s own failure on a bad `uniqueid` (§4b prong a). All read-only. THEN
-the mutations: C02c
-`win_initialize_disk` (online+GPT) → C02d `win_partition` (100%+letter) → C02e
+**Next action:** confirm **C02c** with the Director → P0. Guard refactor COMPLETE (V + R1-R4);
+`present_windows.yml` at its load-bearing floor. C02c = the **FIRST MUTATION**:
+`win_initialize_disk` (online + GPT-init both data disks; `uniqueid=`, `online: true`,
+`force: false`), gated by the C02b safety guard → C02d `win_partition` (100%+letter) → C02e
 `win_format` (NTFS+label; **MS-recommended allocation unit** — 64 KiB SQL/WID DB, MS-rec
 content, research at C02e P0). Module research banked; ground each step in MS docs.
