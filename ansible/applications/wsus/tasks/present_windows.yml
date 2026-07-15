@@ -6,7 +6,8 @@
 # loader via first_found; a future 'present_windows_<dist>_<ver>.yml' would shadow this
 # automatically). Receives the merged running configuration as 'config'.
 #
-# BUILD IN PROGRESS — C01 BEGIN guards are in place. Later pieces (C02+) append their
+# BUILD IN PROGRESS — C01r BEGIN guards require stable identifiers for the WID and
+# WSUS content disks and assert their presence. Later pieces (C02+) append their
 # implementation after the Initialization: Input Guards region, one command per
 # cycle piece.
 #
@@ -16,7 +17,11 @@
 
 - name: 'INFO | Entering OS Tasks (present_windows - wsus)'
   vars:
-    __data_disks__: "{{ config.data_disks | default([]) }}"
+    __data_disks__:
+      - purpose: 'db'
+        id: "{{ wid_disk_id | default('') }}"
+      - purpose: 'content'
+        id: "{{ wsus_disk_id | default('') }}"
   block:
 
     #region ------ [ Initialization ] -------------------------------------------------------- #
@@ -33,38 +38,32 @@
           Confirm the inventory target and loader routing before running this role.
         quiet: true
 
-    # Establish the container and element shape before reading keys from its members.
-    # ansible.builtin.assert evaluates these expressions in order and stops on failure.
-    - name: 'BEGIN | Assert Data Disk Inputs Are Well-Formed'
+    # Required per-target inputs mirror the loader's ENV/state contract. These checks
+    # are ordered so a missing or badly typed var fails cleanly, never during templating.
+    - name: 'BEGIN | Assert Data Disk Identifiers Are Provided'
       ansible.builtin.assert:
         that:
-          - __data_disks__ is sequence
-          - __data_disks__ is not string
-          - __data_disks__ | length == 2
-          - __data_disks__ | select('mapping') | list | length == __data_disks__ | length
-          - __data_disks__ | selectattr('purpose', 'defined') | list | length == __data_disks__ | length
-          - __data_disks__ | selectattr('size_gb', 'defined') | list | length == __data_disks__ | length
+          - wid_disk_id is defined
+          - wsus_disk_id is defined
+          - wid_disk_id is string
+          - wsus_disk_id is string
+          - (wid_disk_id | trim | length) > 0
+          - (wsus_disk_id | trim | length) > 0
         fail_msg: >-
-          wsus.data_disks must be a two-item list of mappings, and every item must
-          define both purpose and size_gb. Declare one database disk and one content
-          disk using the shape documented in the wsus role README.
+          wid_disk_id and wsus_disk_id are REQUIRED top-level vars, each a non-empty
+          string. Got wid_disk_id={{ wid_disk_id | default('<undefined>') | string }},
+          wsus_disk_id={{ wsus_disk_id | default('<undefined>') | string }}. Declare
+          them per the wsus role README (the unique_id of each target disk).
         quiet: true
 
-    # Separate value validation keeps malformed members from producing template errors.
-    - name: 'BEGIN | Assert Data Disk Input Values Are Well-Formed'
+    - name: 'BEGIN | Assert Data Disk Identifiers Are Distinct'
       ansible.builtin.assert:
         that:
-          - __data_disks__ | selectattr('purpose', 'string') | list | length == __data_disks__ | length
-          - __data_disks__ | map(attribute='purpose') | map('trim') | reject('equalto', '') | list | length == __data_disks__ | length
-          - __data_disks__ | selectattr('size_gb', 'integer') | list | length == __data_disks__ | length
-          - __data_disks__ | rejectattr('size_gb', 'boolean') | list | length == __data_disks__ | length
-          - __data_disks__ | selectattr('size_gb', 'gt', 0) | list | length == __data_disks__ | length
-          - __data_disks__ | map(attribute='purpose') | map('trim') | unique | list | length == __data_disks__ | length
-          - __data_disks__ | map(attribute='size_gb') | unique | list | length == __data_disks__ | length
+          - (wid_disk_id | trim) != (wsus_disk_id | trim)
         fail_msg: >-
-          Every wsus.data_disks item requires a non-empty string purpose and a positive
-          integer size_gb. Purposes and sizes must each be unique so every attached RAW
-          disk can be selected unambiguously.
+          wid_disk_id and wsus_disk_id must identify two DIFFERENT disks but both
+          equal '{{ wid_disk_id | default('') | trim }}'. Each disk's unique_id is
+          globally unique; declare the correct id for each volume.
         quiet: true
 
     # Trust pre-existing disk facts intentionally. In the composed play, gather_facts
@@ -76,30 +75,24 @@
         filter:
           - 'physical_disk'
 
-    - name: 'BEGIN | Assert Expected Blank Data Disks Are Attached'
+    - name: 'BEGIN | Assert Declared Data Disks Are Attached'
       loop: "{{ __data_disks__ }}"
       loop_control:
-        label: "{{ item.purpose }} ({{ item.size_gb }} GiB)"
+        label: "{{ item.purpose }}"
       vars:
-        __expected_size_bytes__: "{{ item.size_gb | int * 1073741824 }}"
         __matching_disks__: >-
-          {{
-            ansible_facts.disks
-            | selectattr('partition_style', 'equalto', 'RAW')
-            | selectattr('size', 'equalto', __expected_size_bytes__)
-            | list
-          }}
+          {{ ansible_facts.disks | selectattr('unique_id', 'equalto', item.id) | list }}
       ansible.builtin.assert:
         that:
           - __matching_disks__ | length == 1
         fail_msg: >-
-          Expected exactly one RAW {{ item.size_gb }} GiB disk for the
-          '{{ item.purpose }}' purpose, but found {{ __matching_disks__ | length }}.
+          Expected exactly one attached disk whose unique_id matches the
+          '{{ item.purpose }}' identifier ('{{ item.id }}'), but found
+          {{ __matching_disks__ | length }}.
           Attached disks:
           {% for disk in ansible_facts.disks %}
-          number={{ disk.number | default('unknown') }},
-          size={{ disk.size | default('unknown') }},
-          partition_style={{ disk.partition_style | default('unknown') }}{%- if not loop.last %}; {% endif %}
+          number={{ disk.number | default('unknown') }}, unique_id={{ disk.unique_id | default('unknown') }},
+          size={{ disk.size | default('unknown') }}{%- if not loop.last %}; {% endif %}
           {% endfor %}
         quiet: true
 
