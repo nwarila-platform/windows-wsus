@@ -50,14 +50,15 @@
           Declare them per the wsus role README (the unique_id of each target disk).
         quiet: true
 
-    # Trust pre-existing disk facts intentionally. In the composed play, gather_facts
-    # does not populate ansible_facts.disks, no earlier role sets it, fact caching is
-    # memory-only, and every target run begins from a reverted VM snapshot.
-    - name: 'BEGIN | Loading Physical Disk Facts'
-      when: ansible_facts.disks is not defined
+    # This is the single canonical read-only gather at the superset the safety path needs
+    # (partition_style + partitions[].drive_letter). No role task mutates disks before these
+    # facts are consumed, so the snapshot stays valid; C02c owns its post-mutation refresh.
+    - name: 'BEGIN | Loading Disk, Partition and Volume Facts'
       community.windows.win_disk_facts:
         filter:
           - 'physical_disk'
+          - 'partitions'
+          - 'volumes'
 
     - name: 'BEGIN | Assert Declared Data Disks Are Attached'
       loop: "{{ __data_disks__ }}"
@@ -85,16 +86,6 @@
     #endregion --- [ Initialization ] -------------------------------------------------------- #
 
     #region ------ [ Main: Data Volume Provisioning ] --------------------------------------- #
-
-    # C02b re-gathers the fuller superset (partitions + volumes) the safety assert needs; the
-    # Input Guard gathered physical_disk only, so a disks-not-defined guard would skip it. Later
-    # C02c-e reuse these read-only facts.
-    - name: 'MAIN | Loading Disk, Partition and Volume Facts'
-      community.windows.win_disk_facts:
-        filter:
-          - 'physical_disk'
-          - 'partitions'
-          - 'volumes'
 
     - name: 'MAIN | Assert Target Disk Is Safe To Provision'
       loop: "{{ __data_disks__ }}"
