@@ -91,6 +91,18 @@
   addition to the clean-baseline presence proof. (Exercised: C01 presence/absence/
   ambiguity proofs.)
 
+## 4c. Mutation safety — SEEDED (C02b, 2026-07-15)
+
+- A piece that MUTATES a declared resource carries a **state-aware safety assert BEFORE
+  the first mutation** — the destructive analog of the §4b read-only guard. It refuses
+  to clobber a resource that does not match the managed layout, recognizing an
+  already-managed target by a **declared convention** (e.g. the disk's target drive
+  letter), NEVER by size or enumeration number. Blank/RAW, already-ours, and neutral
+  (unlettered) states proceed; a foreign/occupied state refuses loudly with an
+  actionable `fail_msg`. (Exercised: C02b — RAW or our-drive-letter → provision; a
+  foreign drive letter → refuse. Idempotency: recognizing 'ours' lets a converged
+  resource pass, which a blank-only guard would wrongly reject.)
+
 ## 5. Windows conventions — SEEDED (first Windows role; ratify via research per cycle)
 
 - Transport: **SSH** (org standard; key auth, one transport story across the fleet).
