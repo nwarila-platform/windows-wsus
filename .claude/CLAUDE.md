@@ -66,8 +66,9 @@ checklist + position derivation before doing anything else.
 - **Smallest MS-doc-grounded steps (Director, 2026-07-15):** each piece is the SMALLEST
   next best Ansible operation (≈ one module), grounded in the Microsoft-documented
   procedure. Decompose larger goals (C02 → C02a–e). After E2E validation, write a
-  **judgement-decisions report** (any call you or Codex made, with justification) and
-  STOP for the Director's approval before the next step. See [[smallest-step-ms-doc-loop]].
+  **judgement-decisions report** — any call you or Codex made (with justification) **and
+  a list of every file updated** in the step — then STOP for the Director's approval
+  before the next step. See [[smallest-step-ms-doc-loop]].
 - Never print secrets into the transcript; never commit credentials.
 
 Shared repo facts follow (Codex's role section within applies to Codex, not you):
