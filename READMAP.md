@@ -27,9 +27,13 @@ Two standing rules from the Director shape everything:
 
 Sequence:
 
-1. **C02 — data volumes** (⛏️ next): the direct successor; consumes C01's guard
-   contract. ⚠️ C02 must NOT assume matched disks are online/writable (C01 recorded
-   limitation) — onlining is C02's job.
+1. **C02 — data volumes** (⛏️ next): consumes the C01r identifier contract
+   (`wid_disk_id`/`wsus_disk_id`). Resolve `unique_id`→disk_number (win_partition
+   needs it), online + clear read-only, GPT init, partition 100% (`partition_size:-1`),
+   NTFS + label, assign letter. ⚠️ C02 owns onlining AND state-aware destructive
+   safety — presence-only C01r does NOT authorize destruction; C02 must refuse to
+   clobber a non-target/system disk without reintroducing size selection (C01r
+   c02Handoff).
 2. **C03–C07 — the WSUS install spine** (staging dir → features → postinstall →
    SUSDB relocation → END verify), strictly in queue order.
 3. **§3 Director decisions** — can land any time; none block C02, but style §4b/§5
@@ -52,14 +56,22 @@ Sequence:
   (`loader-change-protocol.md`) + Director acceptance (RATIFIED 2026-07-15).
 - **Transport = SSH** (`ansible_shell_type: powershell`), **`become: false`** play-level
   (org standard; chassis become=sudo is POSIX-only).
-- **Handed-machine contract (§4a, RATIFIED)** — role owns ALL guest-OS state E2E;
-  hardware provisioning belongs to the deploy layer; disk selection is declarative
-  (size/characteristics), never disk-number-coupled.
+- **Handed-machine contract (§4a, RATIFIED; amended C01r)** — role owns ALL guest-OS
+  state E2E; hardware provisioning belongs to the deploy layer; disk selection is
+  declarative by a stable `unique_id`, never size- nor disk-number-coupled.
 - **Division of labor** — Claude plans/validates/merges; Codex reviews (P2) and
   executes (P3); Director consulted EVERY piece; no auto-approve.
 - **C01 (2026-07-15):** wazuh BEGIN/gather styling is the template idiom; defaults
   stay minimal (keys land with the piece that consumes them); no total-disk-count
   pin; negative proofs are standard for guard pieces.
+- **C01r (2026-07-15):** data disks are selected by a declared stable `unique_id`
+  (Get-Disk UniqueId / `win_disk_facts.unique_id`, `eui.<hex>`) supplied as REQUIRED
+  top-level vars `wid_disk_id` (DB→E:WSUSDB) / `wsus_disk_id` (content→F:WSUSDATA) —
+  never by size, never by enumeration number. Presence-only guard (drops C01 size +
+  RAW; `unique_id` is populated on RAW disks and stable through GPT init → closes the
+  second-run idempotency hole). Required inputs live OUTSIDE the `wsus:` dict.
+- **Director reviews `present_windows.yml` before merge (P4.5, C01r):** eyes-on the
+  role file + "is this good?" gate between P4 and P5. See [[STRICT-CYCLE-adapted.md]].
 - **TD-001 stays playbook-carried** (Director 2026-07-15): loader Windows gaps are
   marked workarounds in `wsus.yml`, evidence base for the future upstream v3.1 PR.
 - **Interim lint gate (C01/P4):** `ansible-lint --warn-list 'yaml[comments]'` from
@@ -76,7 +88,8 @@ Sequence:
 | ID | Piece (single command) | Status | Notes / gating |
 |----|------------------------|--------|----------------|
 | C01 | BEGIN guards: Windows family, data_disks inputs, blank-disk presence | ✅ merged `888ce9c [audited 78cad4f]` 2026-07-15 | All 3 proofs green (presence / absence / ambiguity). Found+fixed TD-001 seed-shadow; recorded TD-002. RTRACK-C01. |
-| C02 | Data volumes: init/GPT/NTFS/label/letter — 20 GB→`E:` `WSUSDB`, 30 GB→`F:` `WSUSDATA` | ⛏️ NEXT | Size-selected, idempotent. Owns disk onlining (C01 does not prove online/writable). Consumes `wsus_defaults.data_disks`; adds letters/labels/fs keys same cycle. |
+| C01r | Identifier-based selection: required `wid_disk_id`/`wsus_disk_id` (`unique_id`); presence-only; drops C01 size+RAW | ✅ merged `96dc197 [audited 6afe43f]` 2026-07-15 | Director-directive reshape. Proof-matrix a–g + VM presence/absence green; `win_disk_facts.unique_id`==`eui` confirmed. Ratified §4a(amended)/§4b/§5-ext; +new P4.5 review gate. RTRACK-C01r. |
+| C02 | Data volumes: resolve `unique_id`→disk_number, online+clear-RO, GPT init, partition 100%, NTFS+label, letter — `wid_disk_id`→`E:` `WSUSDB`, `wsus_disk_id`→`F:` `WSUSDATA` | ⛏️ NEXT | Identifier-based (C01r contract). `win_partition` needs disk_number → resolve from `win_disk_facts`; `partition_size:-1`=100%. Owns onlining AND state-aware destructive safety (refuse to clobber a non-target/system disk, no size selection — C01r c02Handoff). Adds letters/labels/fs to defaults same cycle. |
 | C03 | Role-owned staging dir via `ansible.windows.win_tempfile` (TD-001 stand-in) | ⛏️ | |
 | C04 | Install `UpdateServices` + `UpdateServices-WidDB` + `UpdateServices-Services` | ⛏️ | |
 | C05 | WSUS postinstall (`wsusutil.exe postinstall CONTENT_DIR=F:\WSUS…`) — idempotent guard | ⛏️ | `win_shell` escape-hatch policy (style §8) gets decided here at the latest. |
@@ -89,7 +102,7 @@ Sequence:
 |----|------|--------|-------|
 | G1 | Ratify C01 P4 scopeLock amendment + playbook repair | ❓ | Recorded in `C01.plan.json` + TD-001; merged under P4 bounded-repair authority. |
 | G2 | TD-002 disposition: bless interim `--warn-list` gate; update `AGENTS.md` verification snippet; authorize upstream warn_list PR | ❓ | Config-only upstream change — normal PR, NOT loader governance. |
-| G3 | Ratify style proposals: §4b BEGIN-stage contract, §5 `ansible_facts` set_fact ban | ❓ | Marked PROPOSED (C01) in the style guide. |
+| G3 | Ratify remaining style proposal: §5 `ansible_facts` set_fact ban | ❓ | §4a (amended) / §4b / §5-ext RATIFIED via C01r (2026-07-15). The §5 `ansible_facts` set_fact ban (C01) is still PROPOSED — pending Director. |
 | G4 | TD-001 upstream "loader v3.1 Windows support" proposal | 💤 deferred (Director 2026-07-15) | MUST pass `loader-change-protocol.md` (independent Fable + Sol validation) before any upstream PR. Evidence accumulates in TECH-DEBT. |
 
 ### Track T — template & publication (endgame)
@@ -106,23 +119,40 @@ _empty_
 
 ## ⏱️ SESSION HANDOFF — 2026-07-15 — for the next fresh session
 
-**STATE: C01 merged; repo is guards-only.** A composed run now SUCCEEDS while doing
-nothing but BEGIN guards — green recap ≠ "WSUS deployed" (see RTRACK-C01). `main`
-@ `8df979d`; worktree/branch for C01 removed; tree clean.
+**STATE: C01r merged; repo is guards-only (identifier-based).** `main` @ the C01r
+codification commit. A composed run SUCCEEDS doing nothing but the identifier guards —
+green recap ≠ "WSUS deployed" or "disks prepared" (see RTRACK-C01r). C01r
+worktree/branch removed; tree clean.
+
+**Contract now:** two REQUIRED top-level vars — `wid_disk_id` (DB→E:WSUSDB) and
+`wsus_disk_id` (content→F:WSUSDATA), each the disk's `unique_id` (Get-Disk UniqueId /
+`win_disk_facts.unique_id`, `eui.<hex>`). Baseline values (stable across revert —
+live-probed): `wid_disk_id=eui.6C7076230CC23C55000C2968C7AE5760` (20 GiB),
+`wsus_disk_id=eui.CF4AE05CEB88F43B000C29656D55634B` (30 GiB). OS disk, DO NOT touch:
+`eui.D71C311D211B6731000C296D8345C5CC`. Disks are NVMe (not SCSI). See memory
+`wsus-dev-vm-disk-identity`.
 
 **Verified live 2026-07-15:** both agent keys loaded; VM `WIN-2FA90PRKORT` @
-192.168.0.181 SSH-ready; single snapshot `pre-ansible-clean-ssh-ready`; baseline =
-GPT 60 GB system disk + RAW 20 GiB + RAW 30 GiB (enumerated in the C01 absence-proof
-fail_msg).
+192.168.0.181 SSH-ready; single snapshot `pre-ansible-clean-ssh-ready`; C01r
+presence+absence proofs green from a reverted baseline.
 
-**Operational gotchas banked this session:** proof-run overrides of the `wsus:` dict
-must re-state `temp_dir: false` (extra-vars replace, not merge) · run
-`scripts/revert-vm.sh` explicitly before `compose-and-run.sh` (permission classifier)
-· Codex sandbox cannot commit (no `.git` writes / no signing-agent socket) — Codex
-stages, Claude performs the mechanical commit with `Executed-by: Codex` trailers ·
-plain-gate ansible-lint exits 2 on `#region` banners (TD-002) — use
-`--warn-list 'yaml[comments]'`.
+**New process rule — P4.5 (ratified this session):** after P2 AGREE + Codex P3 +
+Claude P4, surface the final `present_windows.yml` into the Director's view and ask
+"is this good?" BEFORE the P5 merge. Never merge a role file the Director hasn't seen.
 
-**Next action:** confirm C02 with the Director → P0 (research: `win_initialize_disk`
-/ `win_partition` / `win_format` idempotency, online/read-only handling, GPT,
-allocation unit size for SQL-style workloads on the DB volume).
+**Operational gotchas in force:** revert before EVERY run (`scripts/revert-vm.sh`
+explicitly before `compose-and-run.sh` — classifier) · Codex sandbox cannot commit,
+run localhost fixtures, or reach the framework clone — Claude does staging/commit +
+composed-tree lint + fixtures + VM proofs in P4 · plain-gate ansible-lint exits 2 on
+`#region` (TD-002) → `--warn-list 'yaml[comments]'` · **id vars are now top-level
+(outside the `wsus:` dict), so proof `-e` overrides NO LONGER need `temp_dir: false`**
+(the C01 clobber footgun is gone for id-only overrides).
+
+**Next action:** confirm C02 with the Director → P0. C02 = data-volume prep on the
+C01r contract: resolve `unique_id`→disk_number (win_partition needs it), online + clear
+read-only (Set-Disk), GPT init, partition 100% (`partition_size:-1`), NTFS + label,
+assign letter; add letters/labels/fs to defaults same cycle. C02 owns state-aware
+destructive safety — refuse to clobber a non-target/system disk WITHOUT reintroducing
+size selection (C01r c02Handoff). Research: `win_initialize_disk` (uniqueid= / online),
+`win_partition` (disk_number, partition_size:-1), `win_format` (allocation_unit_size
+for the WID/SQL DB volume), idempotency across a second run.

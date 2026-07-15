@@ -71,18 +71,21 @@
 - This intentionally **diverges from wazuh**, where storage prep is an operator/packer
   prerequisite outside the app role. For nwarila-platform Windows app repos the app
   role is the single E2E configurator of the machine it is handed.
-- Disk identification is **declarative, not disk-number-coupled**: select the target
-  raw disk by size/characteristics (e.g. the 20 GB blank → WSUSDB, the 30 GB blank →
-  WSUSDATA), so the role is robust to enumeration order.
+- Disk identification is **declarative by a stable per-disk identifier — never
+  disk-number- nor size-coupled** (amended C01r, 2026-07-15): select the target disk
+  by its declared `unique_id` (Windows Get-Disk `UniqueId` / `win_disk_facts.unique_id`,
+  e.g. `eui.<hex>`), supplied as a REQUIRED input — never by size and never by
+  enumeration number, so the role is robust to enumeration order AND size changes.
+  (`unique_id` is populated on RAW/blank disks and stable through GPT initialization.)
 
-## 4b. BEGIN stage contract — PROPOSED (C01, awaiting Director ratification)
+## 4b. BEGIN stage contract — RATIFIED (C01 seeded, C01r ratified 2026-07-15)
 
 - The BEGIN stage is strictly **read-only**: facts gathering and asserts only. The
   first mutating task belongs to the piece that owns it, never to a guard.
 - Declarative disk (or resource) selection must assert **exactly one** match per
   declared spec — zero and multiple matches are both hand-off failures, failed
   loudly with a fail_msg that enumerates what was actually found; never silently
-  resolved. Declared specs must be mutually distinguishable (e.g. distinct sizes).
+  resolved. Declared specs must be mutually distinguishable (e.g. distinct identifiers).
 - Guard pieces carry a negative proof (a deliberately-wrong input must fail on the
   intended assert, and sibling specs must still pass — per-spec discrimination) in
   addition to the clean-baseline presence proof. (Exercised: C01 presence/absence/
@@ -99,6 +102,14 @@
   raw PowerShell where a module exists — TBD threshold for `win_shell` escape hatch.
 - Loader Windows gaps are TD-001 workarounds in the playbook, not role hacks — see
   `docs/TECH-DEBT.md`.
+- **RATIFIED (C01r, 2026-07-15) — required per-target inputs are dedicated top-level
+  vars.** Environment-specific inputs the role cannot default (e.g. disk identifiers
+  `wid_disk_id` / `wsus_disk_id`) are declared as top-level vars and asserted in the
+  BEGIN guard, mirroring the loader's `ENV`/`state` contract — NOT nested in the
+  `<role>:` override dict. This keeps a proof/override `-e` from clobbering sibling
+  config (a `-e` `<role>:` dict *replaces* the playbook's dict). The README must
+  clearly separate these required top-level inputs from merged `<role>_defaults`
+  config (operators must not write `<role>.<var>`).
 - **PROPOSED (C01):** never `set_fact` the name `ansible_facts` — the resulting
   set_fact variable shadows the live facts store and silently hides every later
   facts module's results (proven C01/P4: `win_disk_facts` results invisible until
