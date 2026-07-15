@@ -27,13 +27,13 @@ Two standing rules from the Director shape everything:
 
 Sequence:
 
-1. **Guard refactor → C02c–e — data volumes** (⛏️ next: R3). Assert policy (§4b "guards
+1. **Guard refactor → C02c–e — data volumes** (⛏️ next: R4). Assert policy (§4b "guards
    earn their keep") ratified; **V** + **R1** (Windows-family assert dropped) + **R2** (gathers
-   collapsed) merged. Guard trims: R3 fold Attached into a fail-closed resolution →
-   R3 fold Attached into a fail-closed resolution (feeds C02d) → R4 drop Provided. Then the
-   mutations: C02c `win_initialize_disk` (online+GPT) → C02d `win_partition` (100%+letter,
-   disk_number from `unique_id`) → C02e `win_format` (NTFS+label; MS-rec allocation-unit —
-   64 KiB SQL/WID DB, MS-rec content). The C02b safety guard gates the first mutation (C02c).
+   collapsed) + **R3** (block-var resolution, no set_fact) merged. Guard trim remaining: R4 drop
+   the Provided assert. Then the mutations: C02c `win_initialize_disk` (online+GPT) → C02d
+   `win_partition` (100%+letter, disk_number from `item.matches | first`) → C02e `win_format`
+   (NTFS+label; MS-rec allocation-unit — 64 KiB SQL/WID DB, MS-rec content). The C02b safety
+   guard gates the first mutation (C02c).
 2. **C03–C07 — the WSUS install spine** (staging dir → features → postinstall →
    SUSDB relocation → END verify), strictly in queue order.
 3. **§3 Director decisions** — can land any time; none block C02, but style §4b/§5
@@ -118,8 +118,8 @@ Sequence:
 | V | Config-validation home: loader **v3.1.0** generic `validate.yml` hook + `tasks/validate.yml` (id distinctness, state-gated); Distinct removed from present_windows | ✅ merged `5f6a053 [audited 5e5db4a]` 2026-07-15 | Loader gate Fable+Sol APPROVE; VM safe-pass + distinctness proof green; P4.5 approved. Ratified §4b policy; §8; TD-003. RTRACK-V. |
 | R1 | Guard trim: drop the Windows-family assert (loader `first_found` already enforces family) | ✅ merged `2ef0ad6 [audited cc987e2]` 2026-07-15 | Pure deletion; VM safe-pass ok=16; P4.5 approved. §4b(a). RTRACK-R1. |
 | R2 | Guard trim: collapse the two `win_disk_facts` gathers into ONE canonical superset | ✅ merged `46f9d3d [audited deea6cf]` 2026-07-15 | −1 SSH round-trip; VM safe-pass ok=15; P4.5 approved. §4b gather-once. RTRACK-R2. |
-| R3 | Fold "Attached" into a fail-closed resolution `set_fact` (length==1; feeds C02d `disk_number`); safety guard consumes it | ⛏️ NEXT | §4b read-only resolution facts. |
-| R4 | Guard trim: drop the Provided assert (delegated to the resolution + `win_initialize_disk`); harden survivors | ⛏️ | |
+| R3 | Resolve each disk once via a block-var `matches` (NO set_fact — no cross-role bleed); Attached + safety reuse it; feeds C02d | ✅ merged `09a73b4 [audited afeef0c]` 2026-07-15 | VM safe-pass ok=15 + negative (fail-closed); P4.5 approved. RATIFIED §4 avoid-set_fact + §4b block-var resolution. RTRACK-R3. |
+| R4 | Guard trim: drop the Provided assert (delegated to the resolution + `win_initialize_disk`); harden survivors | ⛏️ NEXT | Last guard trim; read-only. |
 | C02c | `win_initialize_disk` — online + GPT-init the two data disks | ⛏️ | `uniqueid=`, `online: true` (clears offline/read-only), `force: false` (idempotent). FIRST mutation; gated by the C02b safety guard; runs after the R-refactor. |
 | C02d | `win_partition` — 100% partition (`partition_size: -1`) + drive letter | ⛏️ | disk_number resolved from `unique_id` via `win_disk_facts`; drive_letter mandatory for idempotency. |
 | C02e | `win_format` — NTFS + label (WSUSDB/WSUSDATA); **MS-recommended allocation-unit** (Director): 64 KiB SQL/WID `SUSDB` (E:), MS-rec content (F:, research at P0) | ⛏️ | `force: false` + preserved labels = idempotent; adds label/fs/alloc to defaults. |
@@ -152,11 +152,11 @@ _empty_
 
 ## ⏱️ SESSION HANDOFF — 2026-07-15 — for the next fresh session
 
-**STATE: R2 merged; repo is read-only guards + config-validation home.** `main` @ the R2
+**STATE: R3 merged; repo is read-only guards + config-validation home.** `main` @ the R3
 codification commit. Loader is **v3.1.0** (generic `tasks/validate.yml` hook, Director
-exception, TD-003). Guard trims underway (V + R1 + R2 merged; R3-R4 remaining). A composed
+exception, TD-003). Guard trims underway (V + R1 + R2 + R3 merged; **R4 last**). A composed
 run SUCCEEDS doing nothing but read-only guards — green recap ≠ "WSUS deployed" or "disks
-prepared" (see RTRACK-R2). Worktrees/branches removed; tree clean. **R3-R4 next, then C02c
+prepared" (see RTRACK-R3). Worktrees/branches removed; tree clean. **R4 next, then C02c
 (first mutation).**
 
 **Contract now:** disk ids are declared in the `wsus:` override dict and read as
@@ -185,11 +185,11 @@ composed-tree lint + fixtures + VM proofs in P4 · plain-gate ansible-lint exits
 so a `-e '{"wsus":{…}}'` proof override REPLACES the dict and MUST re-state
 `temp_dir: false`** (presence proof needs no `-e`; footgun confined to `-e` overrides).
 
-**Next action:** confirm **R3** with the Director → P0. The guard-refactor trims
-`present_windows.yml` per the §4b "guards earn their keep" policy (R1-R2 done): **R3** fold
-the "Attached" check into a fail-closed resolution `set_fact` (assert length==1; expose the
-resolved disk so the safety guard consumes it instead of re-selecting; feeds C02d its
-`disk_number`) → **R4** drop the Provided assert. All read-only. THEN the mutations: C02c
+**Next action:** confirm **R4** with the Director → P0. The LAST guard trim per §4b "guards
+earn their keep" (R1-R3 done): **R4** drop the Provided (defined/string/non-empty) assert —
+type/required/non-empty is delegated to the `item.matches | length == 1` resolution ("found 0")
+and `win_initialize_disk`'s own failure on a bad `uniqueid` (§4b prong a). All read-only. THEN
+the mutations: C02c
 `win_initialize_disk` (online+GPT) → C02d `win_partition` (100%+letter) → C02e
 `win_format` (NTFS+label; **MS-recommended allocation unit** — 64 KiB SQL/WID DB, MS-rec
 content, research at C02e P0). Module research banked; ground each step in MS docs.
