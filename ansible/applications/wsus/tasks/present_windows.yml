@@ -6,10 +6,12 @@
 # loader via first_found; a future 'present_windows_<dist>_<ver>.yml' would shadow this
 # automatically). Receives the merged running configuration as 'config'.
 #
-# BUILD IN PROGRESS — C01r BEGIN guards require stable identifiers for the WID and
-# WSUS content disks and assert their presence. Later pieces (C02+) append their
-# implementation after the Initialization: Input Guards region, one command per
-# cycle piece.
+# BUILD IN PROGRESS — BEGIN Input Guards gather disk facts and resolve each declared
+# data disk (config.wid_disk_id -> E:, config.wsus_disk_id -> F:) to exactly one
+# attached disk. The Main region's state-aware safety guard authorizes provisioning.
+# Config-contract invariants (id distinctness) live in tasks/validate.yml (run by the
+# loader). Later pieces (C02c+) append the volume mutations after the Main region, one
+# command per cycle piece.
 #
 # =========================================================================================== #
 ---
@@ -31,26 +33,6 @@
     #region ------ [ Initialization ] -------------------------------------------------------- #
 
     #region ------ [ Initialization: Input Guards ] ------------------------------------------ #
-
-    # Required per-target inputs are declared in the wsus: override dict and merged
-    # into config (framework idiom). These checks are ordered so a missing or mistyped
-    # id fails cleanly, never during templating.
-    - name: 'BEGIN | Assert Data Disk Identifiers Are Provided'
-      ansible.builtin.assert:
-        that:
-          - config.wid_disk_id is defined
-          - config.wsus_disk_id is defined
-          - config.wid_disk_id is string
-          - config.wsus_disk_id is string
-          - (config.wid_disk_id | trim | length) > 0
-          - (config.wsus_disk_id | trim | length) > 0
-        fail_msg: >-
-          wid_disk_id and wsus_disk_id are REQUIRED and are declared in the wsus:
-          override dict (consumed as config.wid_disk_id / config.wsus_disk_id). Got
-          wid_disk_id={{ config.wid_disk_id | default('<undefined>') | string }},
-          wsus_disk_id={{ config.wsus_disk_id | default('<undefined>') | string }}.
-          Declare them per the wsus role README (the unique_id of each target disk).
-        quiet: true
 
     # This is the single canonical read-only gather at the superset the safety path needs
     # (partition_style + partitions[].drive_letter). No role task mutates disks before these
