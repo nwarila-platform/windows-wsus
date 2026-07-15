@@ -1,0 +1,26 @@
+# =========================================================================================== #
+# File: '{{ role_path }}/tasks/present_windows.yml'
+# --- [ Description ] ----------------------------------------------------------------------- #
+#
+# Complete install path for the wsus role on the Windows family (resolved by the v3
+# loader via first_found; a future 'present_windows_<dist>_<ver>.yml' would shadow this
+# automatically). Receives the merged running configuration as 'config'.
+#
+# BUILD IN PROGRESS — content lands one command per strict-cycle piece (C01, C02, ...).
+# The guard below is scaffold: it makes an accidental run fail LOUDLY instead of
+# reporting a silent no-op success. Piece C01 replaces it with the real BEGIN guards.
+#
+# =========================================================================================== #
+---
+#region ------ [ Scaffold Guard ] ------------------------------------------------------------ #
+
+- name: 'BEGIN | Refuse To Run Unbuilt Role (scaffold placeholder — replaced by C01)'
+  ansible.builtin.assert:
+    that: false
+    fail_msg: >-
+      The wsus role is scaffolding only — no build pieces have been merged yet.
+      See _handoff/QUEUE.md for the build queue and docs/ansible-style-guide.md for
+      the process. Remove this guard via cycle C01, never by hand.
+    quiet: true
+
+#endregion --- [ Scaffold Guard ] ------------------------------------------------------------ #
