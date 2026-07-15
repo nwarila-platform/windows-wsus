@@ -56,6 +56,13 @@ checklist + position derivation before doing anything else.
   2026-07-15): refresh it in the same P5 codification commit — forward-looking
   priority order, locked decisions, Director-decision queue, session handoff. It must
   always describe `main`'s merged state; a stale READMAP blocks the next P0.
+- **Director reviews `present_windows.yml` before the merge (Director, 2026-07-15):**
+  after you and Codex AGREE (P2) and Codex has executed (P3) + you have validated
+  (P4) green, surface the final `present_windows.yml` (and any changed role file)
+  into the Director's working view and STOP — ask "is this good?" and get explicit
+  approval BEFORE the P5 merge. Changes requested → bounded Codex repair in the
+  worktree, then re-surface and re-ask. Never merge a role-file change the Director
+  has not eyeballed.
 - Never print secrets into the transcript; never commit credentials.
 
 Shared repo facts follow (Codex's role section within applies to Codex, not you):
