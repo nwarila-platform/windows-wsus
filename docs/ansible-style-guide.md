@@ -102,14 +102,16 @@
   raw PowerShell where a module exists — TBD threshold for `win_shell` escape hatch.
 - Loader Windows gaps are TD-001 workarounds in the playbook, not role hacks — see
   `docs/TECH-DEBT.md`.
-- **RATIFIED (C01r, 2026-07-15) — required per-target inputs are dedicated top-level
-  vars.** Environment-specific inputs the role cannot default (e.g. disk identifiers
-  `wid_disk_id` / `wsus_disk_id`) are declared as top-level vars and asserted in the
-  BEGIN guard, mirroring the loader's `ENV`/`state` contract — NOT nested in the
-  `<role>:` override dict. This keeps a proof/override `-e` from clobbering sibling
-  config (a `-e` `<role>:` dict *replaces* the playbook's dict). The README must
-  clearly separate these required top-level inputs from merged `<role>_defaults`
-  config (operators must not write `<role>.<var>`).
+- **RATIFIED (C02a, 2026-07-15 — supersedes the C01r §5-ext) — required per-target
+  inputs live in the `<role>:` override dict, consumed via `config`.** Environment-
+  specific inputs the role cannot default (e.g. disk identifiers `wid_disk_id` /
+  `wsus_disk_id`) are declared inside the `<role>:` override dict (playbook /
+  group_vars / host_vars) and read as `config.<key>`, matching the framework/wazuh
+  idiom and the loader's `defaults -> overlays -> <role> override -> config` merge.
+  Only `ENV`/`state` stay top-level (loader-level). NOTE: a `-e '{"<role>":{...}}'`
+  override REPLACES the whole dict, so co-locate loader-read keys (`temp_dir`) with any
+  `-e`/override-provided keys, and any override must re-state them. The README documents
+  these as merged config, not top-level vars.
 - **PROPOSED (C01):** never `set_fact` the name `ansible_facts` — the resulting
   set_fact variable shadows the live facts store and silently hides every later
   facts module's results (proven C01/P4: `win_disk_facts` results invisible until
