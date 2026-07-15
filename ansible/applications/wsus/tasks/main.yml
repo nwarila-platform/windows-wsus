@@ -1,5 +1,5 @@
 # =========================================================================================== #
-# File: '{{ role_path }}/tasks/main.yml'                                      | Version 3.0.0 #
+# File: '{{ role_path }}/tasks/main.yml'                                      | Version 3.1.0 #
 # --- [ Description ] ----------------------------------------------------------------------- #
 #                                                                                             #
 #                        NO ROLE CUSTOMIZATIONS SHOULD HAPPEN IN THIS FILE                    #
@@ -9,10 +9,11 @@
 #   2. Gathers OS facts if not already available                                              #
 #   3. Builds the role's running configuration by merging layers in precedence order:         #
 #      defaults -> OS overlays (interleaved with env at each level) -> user overrides        #
-#   4. Creates a secure temp directory for the role to use during execution                   #
-#   5. Resolves the most-specific OS task file via first_found cascade:                      #
+#   4. Validates the merged running config via the role's optional tasks/validate.yml         #
+#   5. Creates a secure temp directory for the role to use during execution                   #
+#   6. Resolves the most-specific OS task file via first_found cascade:                      #
 #      e.g., present_redhat_rocky_10.yml -> present_redhat_rocky.yml -> present_redhat.yml   #
-#   6. Cleans up the temp directory regardless of success or failure                          #
+#   7. Cleans up the temp directory regardless of success or failure                          #
 #                                                                                             #
 #                        NO ROLE CUSTOMIZATIONS SHOULD HAPPEN IN THIS FILE                    #
 #                                                                                             #
@@ -197,6 +198,34 @@
             "{{ role_name }}_running": "{{ __base__ | combine(__overrides__, recursive=True, list_merge='replace') }}"
 
         #endregion --- [ Initialization: Loading Overlay(s): Override ] ---------------------------- #
+
+        #region ------ [ Initialization: Validating Merged Configuration ] ------------------------- #
+
+        # Optional generic hook: if the role ships 'tasks/validate.yml', run it once the running
+        # configuration is fully merged (defaults -> overlays -> overrides) and BEFORE the temp
+        # directory or any OS-specific work, so a malformed merged config fails fast. The merged
+        # config is passed as 'config', scoped to the include. Roles that ship no validate.yml are
+        # unaffected (first_found skip:true -> empty -> the include is skipped).
+        # NOTE: validate.yml runs for EVERY state (present/absent/clean) and receives only 'config';
+        # a role whose contract is state-dependent must branch on 'state' inside its validate.yml.
+        - name: 'INIT | Resolving Config Validation File'
+          ansible.builtin.set_fact:
+            __validate_file__: "{{ lookup('ansible.builtin.first_found', __resolve__) }}"
+          vars:
+            __resolve__:
+              files:
+                - 'validate.yml'
+              paths:
+                - "{{ role_path }}/tasks"
+              skip: true
+
+        - name: 'INIT | Validating Merged Configuration'
+          ansible.builtin.include_tasks: "{{ __validate_file__ }}"
+          vars:
+            config: "{{ lookup('vars', role_name ~ '_running') }}"
+          when: __validate_file__ | default('') | length > 0
+
+        #endregion --- [ Initialization: Validating Merged Configuration ] ------------------------- #
 
         #region ------ [ Initialization: Creating Temp Directory ] --------------------------------- #
 
