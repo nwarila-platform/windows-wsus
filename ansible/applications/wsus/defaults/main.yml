@@ -10,8 +10,13 @@
 #
 # =========================================================================================== #
 ---
-wsus_defaults: {}
-# Disk identity is supplied per target as REQUIRED top-level vars (see README):
-#   wid_disk_id  — unique_id of the WID/database disk (-> E: WSUSDB)
-#   wsus_disk_id — unique_id of the WSUS content disk (-> F: WSUSDATA)
-# Volume conventions (drive letters, labels, filesystem) land in C02 when consumed.
+wsus_defaults:
+  data_disks:
+    # Drive letters consumed by the C02b state-aware safety guard (recognize an already-managed
+    # disk by its target letter). Labels / filesystem / allocation unit land in C02e (win_format).
+    db:
+      drive_letter: 'E'
+    content:
+      drive_letter: 'F'
+# Disk identity (wid_disk_id / wsus_disk_id) is declared in the 'wsus:' override dict and read as
+# config.wid_disk_id / config.wsus_disk_id (see README); this file holds role-default conventions.

@@ -32,7 +32,20 @@ Each value is the case-sensitive Windows disk `unique_id` (for example,
 `community.windows.win_disk_facts` as the disk's `unique_id`. The role requires one
 exactly matching attached disk for each identifier. Drive letters, labels, and
 filesystem conventions are documented here for the fixed mapping but land as
-consumed configuration in C02.
+consumed configuration one strict-cycle piece at a time.
+
+### Merged configuration
+
+| `wsus_defaults` key | Default | Purpose |
+|---------------------|---------|---------|
+| `data_disks.db.drive_letter` | `E:` | Target drive letter for the WID/database disk |
+| `data_disks.content.drive_letter` | `F:` | Target drive letter for the WSUS content disk |
+
+The role provisions a declared disk only when it is RAW or already carries its target
+drive letter. It refuses an initialized disk carrying a foreign drive letter, which
+protects existing data and prevents an identifier mistake from selecting the OS/system
+disk with `C:`. Disk size is never used for selection. Volume labels, filesystem, and
+allocation-unit configuration arrive in C02e when formatting is implemented.
 
 The identifiers and `temp_dir` must co-locate in one `wsus:` declaration. The loader
 reads `temp_dir` from the raw `wsus` var, and Ansible does not merge role override
