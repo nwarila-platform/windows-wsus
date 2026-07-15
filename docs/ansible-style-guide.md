@@ -75,6 +75,19 @@
   raw disk by size/characteristics (e.g. the 20 GB blank → WSUSDB, the 30 GB blank →
   WSUSDATA), so the role is robust to enumeration order.
 
+## 4b. BEGIN stage contract — PROPOSED (C01, awaiting Director ratification)
+
+- The BEGIN stage is strictly **read-only**: facts gathering and asserts only. The
+  first mutating task belongs to the piece that owns it, never to a guard.
+- Declarative disk (or resource) selection must assert **exactly one** match per
+  declared spec — zero and multiple matches are both hand-off failures, failed
+  loudly with a fail_msg that enumerates what was actually found; never silently
+  resolved. Declared specs must be mutually distinguishable (e.g. distinct sizes).
+- Guard pieces carry a negative proof (a deliberately-wrong input must fail on the
+  intended assert, and sibling specs must still pass — per-spec discrimination) in
+  addition to the clean-baseline presence proof. (Exercised: C01 presence/absence/
+  ambiguity proofs.)
+
 ## 5. Windows conventions — SEEDED (first Windows role; ratify via research per cycle)
 
 - Transport: **SSH** (org standard; key auth, one transport story across the fleet).
@@ -86,6 +99,10 @@
   raw PowerShell where a module exists — TBD threshold for `win_shell` escape hatch.
 - Loader Windows gaps are TD-001 workarounds in the playbook, not role hacks — see
   `docs/TECH-DEBT.md`.
+- **PROPOSED (C01):** never `set_fact` the name `ansible_facts` — the resulting
+  set_fact variable shadows the live facts store and silently hides every later
+  facts module's results (proven C01/P4: `win_disk_facts` results invisible until
+  the TD-001 seed was rewritten to `packages: {} / cacheable: true`).
 
 ## 6. Controller & toolchain — SEEDED
 
