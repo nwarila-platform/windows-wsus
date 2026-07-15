@@ -20,8 +20,10 @@
     __data_disks__:
       - purpose: 'db'
         id: "{{ config.wid_disk_id | default('') }}"
+        drive_letter: "{{ config.data_disks.db.drive_letter }}"
       - purpose: 'content'
         id: "{{ config.wsus_disk_id | default('') }}"
+        drive_letter: "{{ config.data_disks.content.drive_letter }}"
   block:
 
     #region ------ [ Initialization ] -------------------------------------------------------- #
@@ -101,5 +103,45 @@
     #endregion --- [ Initialization: Input Guards ] ------------------------------------------ #
 
     #endregion --- [ Initialization ] -------------------------------------------------------- #
+
+    #region ------ [ Main: Data Volume Provisioning ] --------------------------------------- #
+
+    # C02b re-gathers the fuller superset (partitions + volumes) the safety assert needs; the
+    # Input Guard gathered physical_disk only, so a disks-not-defined guard would skip it. Later
+    # C02c-e reuse these read-only facts.
+    - name: 'MAIN | Loading Disk, Partition and Volume Facts'
+      community.windows.win_disk_facts:
+        filter:
+          - 'physical_disk'
+          - 'partitions'
+          - 'volumes'
+
+    - name: 'MAIN | Assert Target Disk Is Safe To Provision'
+      loop: "{{ __data_disks__ }}"
+      loop_control:
+        label: "{{ item.purpose }}"
+      vars:
+        __target_disk__: >-
+          {{ ansible_facts.disks | selectattr('unique_id', 'equalto', item.id) | first }}
+        __foreign_lettered__: >-
+          {{
+            __target_disk__.partitions | default([])
+            | selectattr('drive_letter', 'defined')
+            | selectattr('drive_letter')
+            | rejectattr('drive_letter', 'equalto', item.drive_letter)
+            | list
+          }}
+      ansible.builtin.assert:
+        that:
+          - __target_disk__.partition_style == 'RAW' or (__foreign_lettered__ | length == 0)
+        fail_msg: >-
+          Refusing to provision the '{{ item.purpose }}' disk (unique_id '{{ item.id }}'): it is
+          already initialized (partition_style {{ __target_disk__.partition_style }}) and carries
+          partition(s) with a foreign drive letter
+          ({{ __foreign_lettered__ | map(attribute='drive_letter') | join(', ') }}). The role will
+          not clobber existing data — clear the disk or correct the identifier.
+        quiet: true
+
+    #endregion --- [ Main: Data Volume Provisioning ] --------------------------------------- #
 
 #endregion --- [ Script ] -------------------------------------------------------------------- #
