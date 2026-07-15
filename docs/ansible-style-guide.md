@@ -56,6 +56,12 @@
 - Comments explain WHY (contract, failure modes), not what.
 - Service/state verification: retry loops with explicit `retries`/`delay`/`until`
   rather than fixed sleeps (wazuh_agent END-stage pattern).
+- **Avoid `set_fact` for role-internal derived/intermediate data — RATIFIED (R3, 2026-07-15).**
+  `set_fact` registers HOST FACTS that persist for the rest of the play and BLEED into later
+  roles (variable pollution + surprising precedence). Use scoped alternatives: block `vars:`
+  (lazily evaluated, block-scoped), task `vars:`, or `register`. Reserve `set_fact` for values
+  that persist BY CONTRACT (e.g. the loader's `<role>_running` merged config) and namespace them
+  (`<role>_*` / `__dunder__`).
 
 ## 4a. Role scope — the "handed machine" contract — RATIFIED (Director, 2026-07-15)
 
@@ -97,9 +103,11 @@ clobber, verified at the module source). These stay `quiet: true` with an action
 (§4c is the destructive analog; §4a the identifier rule.)
 
 **Guard / validate-stage shape:**
-- The guard stage is **read-only on the target**: facts gathering, asserts, and **target-read-only
-  resolution facts** (a `set_fact` deriving a declared-spec → resolved-object map from gathered
-  facts — no mutation). The first *mutating* task belongs to the piece that owns it, never a guard.
+- The guard stage is **read-only on the target**: facts gathering, asserts, and **scoped
+  resolution vars** — a block `vars:` attribute deriving a declared-spec → resolved-object from
+  gathered facts (no mutation, and NEVER `set_fact`, which bleeds across roles — see §4). The
+  first *mutating* task belongs to the piece that owns it, never a guard. (Exercised: R3 —
+  `__data_disks__[].matches` resolves each disk once, reused by the Attached assert + safety guard.)
 - Facts are gathered **once**, at the superset the load-bearing path needs; a mutating piece owns
   its own post-mutation refresh.
 - Declarative resource selection resolves to **exactly one** match per declared spec (assert
