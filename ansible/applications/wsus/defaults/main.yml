@@ -10,4 +10,11 @@
 #
 # =========================================================================================== #
 ---
-wsus_defaults: {}
+wsus_defaults:
+  data_disks:
+    # WID database files need a dedicated disk whose size is also its stable selector.
+    - purpose: 'db'
+      size_gb: 20
+    # WSUS update content is larger and isolated from database I/O on its own disk.
+    - purpose: 'content'
+      size_gb: 30
