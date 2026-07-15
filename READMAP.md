@@ -27,12 +27,12 @@ Two standing rules from the Director shape everything:
 
 Sequence:
 
-1. **C02b–e — data volumes** (⛏️ next: C02b), decomposed into smallest per-module
-   steps (Director 2026-07-15). C02a (ids→config) merged. Remaining: C02b state-aware
-   safety guard → C02c `win_initialize_disk` (online+GPT) → C02d `win_partition`
-   (100%+letter, disk_number from `unique_id`) → C02e `win_format` (NTFS+label, 64 KiB
-   DB alloc). ⚠️ C02b owns the destructive-safety line — refuse a non-target/system
-   disk (NOT RAW AND a foreign drive letter), no size selection (C01r c02Handoff).
+1. **C02c–e — data volumes** (⛏️ next: C02c), decomposed into smallest per-module
+   steps (Director 2026-07-15). C02a (ids→config) + C02b (state-aware safety guard)
+   merged. Remaining: C02c `win_initialize_disk` (online+GPT) → C02d `win_partition`
+   (100%+letter, disk_number from `unique_id`) → C02e `win_format` (NTFS+label;
+   MS-recommended allocation-unit — 64 KiB SQL/WID DB, MS-rec content). C02c is the
+   FIRST MUTATION; the C02b safety guard gates it.
 2. **C03–C07 — the WSUS install spine** (staging dir → features → postinstall →
    SUSDB relocation → END verify), strictly in queue order.
 3. **§3 Director decisions** — can land any time; none block C02, but style §4b/§5
@@ -79,7 +79,14 @@ Sequence:
   `-e '{"wsus":{…}}'` replaces the whole dict).
 - **Smallest-step MS-doc loop (Director 2026-07-15):** one operation/module per cycle,
   MS-doc-grounded; Claude proposes → Codex audits/executes → Claude validates + E2E
-  tests → judgement-decisions report → STOP for Director approval before the next step.
+  tests → judgement-decisions report (with the role/playbook/style-guide files updated)
+  → STOP for Director approval before the next step.
+- **C02b (2026-07-15):** before any disk mutation, a state-aware safety guard refuses a
+  non-target/system disk (NOT RAW AND a foreign drive letter), recognizing 'ours' by our
+  declared drive letter — no size selection (style §4c SEED).
+- **C02e allocation (Director 2026-07-15):** `win_format` uses the MS-recommended
+  allocation-unit size — 64 KiB for the SQL/WID `SUSDB` DB volume (E:), and the
+  MS-recommended size for the WSUS content volume (F:, to research at C02e P0).
 - **TD-001 stays playbook-carried** (Director 2026-07-15): loader Windows gaps are
   marked workarounds in `wsus.yml`, evidence base for the future upstream v3.1 PR.
 - **Interim lint gate (C01/P4):** `ansible-lint --warn-list 'yaml[comments]'` from
@@ -98,10 +105,10 @@ Sequence:
 | C01 | BEGIN guards: Windows family, data_disks inputs, blank-disk presence | ✅ merged `888ce9c [audited 78cad4f]` 2026-07-15 | All 3 proofs green (presence / absence / ambiguity). Found+fixed TD-001 seed-shadow; recorded TD-002. RTRACK-C01. |
 | C01r | Identifier-based selection: required `wid_disk_id`/`wsus_disk_id` (`unique_id`); presence-only; drops C01 size+RAW | ✅ merged `96dc197 [audited 6afe43f]` 2026-07-15 | Director-directive reshape. Proof-matrix a–g + VM presence/absence green; `win_disk_facts.unique_id`==`eui` confirmed. Ratified §4a(amended)/§4b/§5-ext; +new P4.5 review gate. RTRACK-C01r. |
 | C02a | Disk ids → `config` (declared in the `wsus:` dict, read as `config.wid_disk_id`/`config.wsus_disk_id`); reverse §5-ext | ✅ merged `d181f2f [audited e52eede]` 2026-07-15 | Smallest step of the C02 decomposition. Controller fixture + VM presence (no -e) / negative green; P4.5 approved. §5-ext REVERSED. RTRACK-C02a. |
-| C02b | State-aware safety guard: refuse a non-target/system disk (NOT RAW AND a foreign drive letter), no size selection | ⛏️ NEXT | Read-only guard, before any mutation. Uses `win_disk_facts` (partitions/volumes → `partition_style` + `partitions[].drive_letter`). C01r c02Handoff. |
-| C02c | `win_initialize_disk` — online + GPT-init the two data disks | ⛏️ | `uniqueid=`, `online: true` (clears offline/read-only), `force: false` (idempotent). |
+| C02b | State-aware safety guard: refuse a non-target/system disk (NOT RAW AND a foreign drive letter), recognize 'ours' by drive letter, no size selection | ✅ merged `b13a530 [audited f0efa69]` 2026-07-15 | Read-only. Controller fixture a-g + VM safe-pass green; P4.5 approved. Truthiness predicate handles ''/null/omitted. SEED §4c. RTRACK-C02b. |
+| C02c | `win_initialize_disk` — online + GPT-init the two data disks | ⛏️ NEXT | `uniqueid=`, `online: true` (clears offline/read-only), `force: false` (idempotent). FIRST mutation; gated by the C02b safety guard. |
 | C02d | `win_partition` — 100% partition (`partition_size: -1`) + drive letter | ⛏️ | disk_number resolved from `unique_id` via `win_disk_facts`; drive_letter mandatory for idempotency. |
-| C02e | `win_format` — NTFS + label (WSUSDB/WSUSDATA), 64 KiB DB alloc unit | ⛏️ | `force: false` + preserved labels = idempotent; adds volume conventions to defaults. |
+| C02e | `win_format` — NTFS + label (WSUSDB/WSUSDATA); **MS-recommended allocation-unit** (Director): 64 KiB SQL/WID `SUSDB` (E:), MS-rec content (F:, research at P0) | ⛏️ | `force: false` + preserved labels = idempotent; adds label/fs/alloc to defaults. |
 | C03 | Role-owned staging dir via `ansible.windows.win_tempfile` (TD-001 stand-in) | ⛏️ | |
 | C04 | Install `UpdateServices` + `UpdateServices-WidDB` + `UpdateServices-Services` | ⛏️ | |
 | C05 | WSUS postinstall (`wsusutil.exe postinstall CONTENT_DIR=F:\WSUS…`) — idempotent guard | ⛏️ | `win_shell` escape-hatch policy (style §8) gets decided here at the latest. |
@@ -131,10 +138,10 @@ _empty_
 
 ## ⏱️ SESSION HANDOFF — 2026-07-15 — for the next fresh session
 
-**STATE: C02a merged; repo is guards-only (identifier-based, config-sourced).** `main`
-@ the C02a codification commit. A composed run SUCCEEDS doing nothing but the identifier
-guards (now reading `config`) — green recap ≠ "WSUS deployed" or "disks prepared" (see
-RTRACK-C02a). C02a worktree/branch removed; tree clean.
+**STATE: C02b merged; repo is guards-only (identifier + state-aware safety).** `main`
+@ the C02b codification commit. A composed run SUCCEEDS doing nothing but the read-only
+guards — green recap ≠ "WSUS deployed" or "disks prepared" (see RTRACK-C02b). C02b
+worktree/branch removed; tree clean. **C02c is the FIRST mutation.**
 
 **Contract now:** disk ids are declared in the `wsus:` override dict and read as
 `config.wid_disk_id` (DB→E:WSUSDB) / `config.wsus_disk_id` (content→F:WSUSDATA), each the
@@ -144,8 +151,8 @@ disk's `unique_id` (`eui.<hex>`). Dev values hardcoded in the playbook `wsus:` d
 `eui.D71C311D211B6731000C296D8345C5CC`. Disks are NVMe. Memory `wsus-dev-vm-disk-identity`.
 
 **Verified live 2026-07-15:** both agent keys loaded; VM `WIN-2FA90PRKORT` @
-192.168.0.181 SSH-ready; single snapshot `pre-ansible-clean-ssh-ready`; C02a
-presence+negative proofs green from a reverted baseline.
+192.168.0.181 SSH-ready; single snapshot `pre-ansible-clean-ssh-ready`; C02b
+controller fixture + VM safe-pass green from a reverted baseline.
 
 **Process rules in force (ratified this session):**
 - **P4.5** — surface `present_windows.yml` for the Director + "is this good?" BEFORE the
@@ -162,11 +169,10 @@ composed-tree lint + fixtures + VM proofs in P4 · plain-gate ansible-lint exits
 so a `-e '{"wsus":{…}}'` proof override REPLACES the dict and MUST re-state
 `temp_dir: false`** (presence proof needs no `-e`; footgun confined to `-e` overrides).
 
-**Next action:** confirm **C02b** with the Director → P0. C02b = the **state-aware safety
-guard** (read-only): refuse to clobber a non-target/system disk — NOT RAW AND carrying a
-foreign drive letter, no size selection (C01r c02Handoff). Uses `win_disk_facts`
-(partitions/volumes → `partition_style` + `partitions[].drive_letter`). Then C02c
-`win_initialize_disk` (online+GPT), C02d `win_partition` (100%+letter, disk_number from
-`unique_id`), C02e `win_format` (NTFS+label, 64 KiB DB alloc). Module research banked
+**Next action:** confirm **C02c** with the Director → P0. C02c = the **FIRST MUTATION**:
+`win_initialize_disk` (online + GPT-init both data disks; `uniqueid=`, `online: true`,
+`force: false`), gated by the C02b safety guard. Then C02d `win_partition` (100%+letter,
+disk_number from `unique_id`), C02e `win_format` (NTFS+label; **MS-recommended allocation
+unit** — 64 KiB SQL/WID DB, MS-rec content, research at C02e P0). Module research banked
 (ansible-doc: idempotency, uniqueid/online, partition_size:-1, force:false); ground each
 step in the MS WSUS-on-WID procedure.
