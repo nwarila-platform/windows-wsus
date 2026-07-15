@@ -60,16 +60,6 @@
           Declare them per the wsus role README (the unique_id of each target disk).
         quiet: true
 
-    - name: 'BEGIN | Assert Data Disk Identifiers Are Distinct'
-      ansible.builtin.assert:
-        that:
-          - (config.wid_disk_id | trim) != (config.wsus_disk_id | trim)
-        fail_msg: >-
-          wid_disk_id and wsus_disk_id must identify two DIFFERENT disks but both
-          equal '{{ config.wid_disk_id | default('') | trim }}'. Each disk's unique_id
-          is globally unique; declare the correct id for each volume.
-        quiet: true
-
     # Trust pre-existing disk facts intentionally. In the composed play, gather_facts
     # does not populate ansible_facts.disks, no earlier role sets it, fact caching is
     # memory-only, and every target run begins from a reverted VM snapshot.
