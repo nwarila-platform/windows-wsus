@@ -21,9 +21,11 @@
       - purpose: 'db'
         id: "{{ config.wid_disk_id | default('') }}"
         drive_letter: "{{ config.data_disks.db.drive_letter }}"
+        matches: "{{ ansible_facts.disks | selectattr('unique_id', 'equalto', config.wid_disk_id | default('')) | list }}"
       - purpose: 'content'
         id: "{{ config.wsus_disk_id | default('') }}"
         drive_letter: "{{ config.data_disks.content.drive_letter }}"
+        matches: "{{ ansible_facts.disks | selectattr('unique_id', 'equalto', config.wsus_disk_id | default('')) | list }}"
   block:
 
     #region ------ [ Initialization ] -------------------------------------------------------- #
@@ -64,16 +66,13 @@
       loop: "{{ __data_disks__ }}"
       loop_control:
         label: "{{ item.purpose }}"
-      vars:
-        __matching_disks__: >-
-          {{ ansible_facts.disks | selectattr('unique_id', 'equalto', item.id) | list }}
       ansible.builtin.assert:
         that:
-          - __matching_disks__ | length == 1
+          - item.matches | length == 1
         fail_msg: >-
           Expected exactly one attached disk whose unique_id matches the
           '{{ item.purpose }}' identifier ('{{ item.id }}'), but found
-          {{ __matching_disks__ | length }}.
+          {{ item.matches | length }}.
           Attached disks:
           {% for disk in ansible_facts.disks %}
           number={{ disk.number | default('unknown') }}, unique_id={{ disk.unique_id | default('unknown') }},
@@ -92,8 +91,7 @@
       loop_control:
         label: "{{ item.purpose }}"
       vars:
-        __target_disk__: >-
-          {{ ansible_facts.disks | selectattr('unique_id', 'equalto', item.id) | first }}
+        __target_disk__: "{{ item.matches | first }}"
         __foreign_lettered__: >-
           {{
             __target_disk__.partitions | default([])
