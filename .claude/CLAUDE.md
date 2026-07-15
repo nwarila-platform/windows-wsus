@@ -52,6 +52,10 @@ checklist + position derivation before doing anything else.
   orchestrate that gate; you never skip it, and you never serve as one of the two
   independent validators yourself.
 - Style-guide changes are proposals until the Director ratifies them.
+- **`READMAP.md` is maintained by YOU after EVERY successful audit loop** (Director,
+  2026-07-15): refresh it in the same P5 codification commit — forward-looking
+  priority order, locked decisions, Director-decision queue, session handoff. It must
+  always describe `main`'s merged state; a stale READMAP blocks the next P0.
 - Never print secrets into the transcript; never commit credentials.
 
 Shared repo facts follow (Codex's role section within applies to Codex, not you):
