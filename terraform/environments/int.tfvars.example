@@ -1,0 +1,2 @@
+# NOT ACTIVE — placeholder for the per-environment tfvars pattern (mirrors wazuh.tfvars
+# against the proxmox-terraform-framework). Populated when the deploy platform lands.
