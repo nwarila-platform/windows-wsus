@@ -67,7 +67,7 @@ checklist + position derivation before doing anything else.
   next best Ansible operation (≈ one module), grounded in the Microsoft-documented
   procedure. Decompose larger goals (C02 → C02a–e). After E2E validation, write a
   **judgement-decisions report** — any call you or Codex made (with justification) **and
-  a list of every file updated** in the step — then STOP for the Director's approval
+  a list of the Ansible role/playbook files + style guide updated** — then STOP for approval
   before the next step. See [[smallest-step-ms-doc-loop]].
 - Never print secrets into the transcript; never commit credentials.
 
