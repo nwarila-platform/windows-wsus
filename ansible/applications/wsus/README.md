@@ -17,15 +17,15 @@ Defaults live under `wsus_defaults` (`defaults/main.yml`) and merge with
 
 ### Required inputs
 
-The disk identifiers are required **top-level vars**, supplied through `group_vars`,
-`host_vars`, inventory, or extra-vars. They are outside the merged configuration:
-do not put them inside `wsus_defaults`, and do not declare them as
-`wsus.wid_disk_id` or `wsus.wsus_disk_id`.
+The disk identifiers are declared in the `wsus:` override dict in the playbook,
+`group_vars`, or `host_vars`. The loader merges that dict into the role configuration,
+where the role consumes them as `config.wid_disk_id` and `config.wsus_disk_id`. They
+are **not** top-level vars and are **not** nested under `wsus.data_disks.*`.
 
-| Top-level var | Fixed target |
-|---------------|--------------|
-| `wid_disk_id` | WID/database disk, mapped to `E:` with label `WSUSDB` |
-| `wsus_disk_id` | WSUS content disk, mapped to `F:` with label `WSUSDATA` |
+| `wsus:` override key | Consumed as | Fixed target |
+|----------------------|-------------|--------------|
+| `wid_disk_id` | `config.wid_disk_id` | WID/database disk, mapped to `E:` with label `WSUSDB` |
+| `wsus_disk_id` | `config.wsus_disk_id` | WSUS content disk, mapped to `F:` with label `WSUSDATA` |
 
 Each value is the case-sensitive Windows disk `unique_id` (for example,
 `eui.<hex>`). Read it with PowerShell's `Get-Disk` `UniqueId` property or from
@@ -33,6 +33,11 @@ Each value is the case-sensitive Windows disk `unique_id` (for example,
 exactly matching attached disk for each identifier. Drive letters, labels, and
 filesystem conventions are documented here for the fixed mapping but land as
 consumed configuration in C02.
+
+The identifiers and `temp_dir` must co-locate in one `wsus:` declaration. The loader
+reads `temp_dir` from the raw `wsus` var, and Ansible does not merge role override
+dicts across precedence levels; a higher-precedence `wsus:` value replaces the whole
+mapping.
 
 ## Requirements
 
