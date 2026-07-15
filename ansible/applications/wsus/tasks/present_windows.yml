@@ -6,21 +6,105 @@
 # loader via first_found; a future 'present_windows_<dist>_<ver>.yml' would shadow this
 # automatically). Receives the merged running configuration as 'config'.
 #
-# BUILD IN PROGRESS — content lands one command per strict-cycle piece (C01, C02, ...).
-# The guard below is scaffold: it makes an accidental run fail LOUDLY instead of
-# reporting a silent no-op success. Piece C01 replaces it with the real BEGIN guards.
+# BUILD IN PROGRESS — C01 BEGIN guards are in place. Later pieces (C02+) append their
+# implementation after the Initialization: Input Guards region, one command per
+# strict-cycle piece.
 #
 # =========================================================================================== #
 ---
-#region ------ [ Scaffold Guard ] ------------------------------------------------------------ #
+#region ------ [ Script ] -------------------------------------------------------------------- #
 
-- name: 'BEGIN | Refuse To Run Unbuilt Role (scaffold placeholder — replaced by C01)'
-  ansible.builtin.assert:
-    that: false
-    fail_msg: >-
-      The wsus role is scaffolding only — no build pieces have been merged yet.
-      See _handoff/QUEUE.md for the build queue and docs/ansible-style-guide.md for
-      the process. Remove this guard via cycle C01, never by hand.
-    quiet: true
+- name: 'INFO | Entering OS Tasks (present_windows - wsus)'
+  vars:
+    __data_disks__: "{{ config.data_disks | default([]) }}"
+  block:
 
-#endregion --- [ Scaffold Guard ] ------------------------------------------------------------ #
+    #region ------ [ Initialization ] -------------------------------------------------------- #
+
+    #region ------ [ Initialization: Input Guards ] ------------------------------------------ #
+
+    - name: 'BEGIN | Assert Target Is Windows Family'
+      ansible.builtin.assert:
+        that:
+          - ansible_facts.os_family | default('') == 'Windows'
+        fail_msg: >-
+          The wsus state=present path requires a Windows-family target, but Ansible
+          reported os_family='{{ ansible_facts.os_family | default('undefined') }}'.
+          Confirm the inventory target and loader routing before running this role.
+        quiet: true
+
+    # Establish the container and element shape before reading keys from its members.
+    # ansible.builtin.assert evaluates these expressions in order and stops on failure.
+    - name: 'BEGIN | Assert Data Disk Inputs Are Well-Formed'
+      ansible.builtin.assert:
+        that:
+          - __data_disks__ is sequence
+          - __data_disks__ is not string
+          - __data_disks__ | length == 2
+          - __data_disks__ | select('mapping') | list | length == __data_disks__ | length
+          - __data_disks__ | selectattr('purpose', 'defined') | list | length == __data_disks__ | length
+          - __data_disks__ | selectattr('size_gb', 'defined') | list | length == __data_disks__ | length
+        fail_msg: >-
+          wsus.data_disks must be a two-item list of mappings, and every item must
+          define both purpose and size_gb. Declare one database disk and one content
+          disk using the shape documented in the wsus role README.
+        quiet: true
+
+    # Separate value validation keeps malformed members from producing template errors.
+    - name: 'BEGIN | Assert Data Disk Input Values Are Well-Formed'
+      ansible.builtin.assert:
+        that:
+          - __data_disks__ | selectattr('purpose', 'string') | list | length == __data_disks__ | length
+          - __data_disks__ | map(attribute='purpose') | map('trim') | reject('equalto', '') | list | length == __data_disks__ | length
+          - __data_disks__ | selectattr('size_gb', 'integer') | list | length == __data_disks__ | length
+          - __data_disks__ | rejectattr('size_gb', 'boolean') | list | length == __data_disks__ | length
+          - __data_disks__ | selectattr('size_gb', 'gt', 0) | list | length == __data_disks__ | length
+          - __data_disks__ | map(attribute='purpose') | map('trim') | unique | list | length == __data_disks__ | length
+          - __data_disks__ | map(attribute='size_gb') | unique | list | length == __data_disks__ | length
+        fail_msg: >-
+          Every wsus.data_disks item requires a non-empty string purpose and a positive
+          integer size_gb. Purposes and sizes must each be unique so every attached RAW
+          disk can be selected unambiguously.
+        quiet: true
+
+    # Trust pre-existing disk facts intentionally. In the composed play, gather_facts
+    # does not populate ansible_facts.disks, no earlier role sets it, fact caching is
+    # memory-only, and every target run begins from a reverted VM snapshot.
+    - name: 'BEGIN | Loading Physical Disk Facts'
+      when: ansible_facts.disks is not defined
+      community.windows.win_disk_facts:
+        filter:
+          - 'physical_disk'
+
+    - name: 'BEGIN | Assert Expected Blank Data Disks Are Attached'
+      loop: "{{ __data_disks__ }}"
+      loop_control:
+        label: "{{ item.purpose }} ({{ item.size_gb }} GiB)"
+      vars:
+        __expected_size_bytes__: "{{ item.size_gb | int * 1073741824 }}"
+        __matching_disks__: >-
+          {{
+            ansible_facts.disks
+            | selectattr('partition_style', 'equalto', 'RAW')
+            | selectattr('size', 'equalto', __expected_size_bytes__)
+            | list
+          }}
+      ansible.builtin.assert:
+        that:
+          - __matching_disks__ | length == 1
+        fail_msg: >-
+          Expected exactly one RAW {{ item.size_gb }} GiB disk for the
+          '{{ item.purpose }}' purpose, but found {{ __matching_disks__ | length }}.
+          Attached disks:
+          {% for disk in ansible_facts.disks %}
+          number={{ disk.number | default('unknown') }},
+          size={{ disk.size | default('unknown') }},
+          partition_style={{ disk.partition_style | default('unknown') }}{%- if not loop.last %}; {% endif %}
+          {% endfor %}
+        quiet: true
+
+    #endregion --- [ Initialization: Input Guards ] ------------------------------------------ #
+
+    #endregion --- [ Initialization ] -------------------------------------------------------- #
+
+#endregion --- [ Script ] -------------------------------------------------------------------- #
