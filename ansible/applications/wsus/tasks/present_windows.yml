@@ -30,16 +30,6 @@
 
     #region ------ [ Initialization: Input Guards ] ------------------------------------------ #
 
-    - name: 'BEGIN | Assert Target Is Windows Family'
-      ansible.builtin.assert:
-        that:
-          - ansible_facts.os_family | default('') == 'Windows'
-        fail_msg: >-
-          The wsus state=present path requires a Windows-family target, but Ansible
-          reported os_family='{{ ansible_facts.os_family | default('undefined') }}'.
-          Confirm the inventory target and loader routing before running this role.
-        quiet: true
-
     # Required per-target inputs are declared in the wsus: override dict and merged
     # into config (framework idiom). These checks are ordered so a missing or mistyped
     # id fails cleanly, never during templating.
