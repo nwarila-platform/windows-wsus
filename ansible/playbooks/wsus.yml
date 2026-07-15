@@ -33,12 +33,14 @@
   pre_tasks:
     # TD-001: the loader's 'INIT | Loading Installed Package Facts' task runs
     # ansible.builtin.package_facts (Python-only, no disable flag) and would hard-fail
-    # on Windows. Seeding an empty dict satisfies its 'when' guard. The wsus role MUST
-    # NOT read ansible_facts.packages while this seed exists.
+    # on Windows. Seeding an empty dict satisfies its 'when' guard. Set the 'packages'
+    # fact directly; NEVER set the name 'ansible_facts', because that set_fact variable
+    # shadows the live facts store and hides all later facts-module results.
     - name: 'PRE | Seed empty package facts (loader Windows gap)'
       when: ansible_facts.packages is not defined
       ansible.builtin.set_fact:
-        ansible_facts: "{{ ansible_facts | combine({'packages': {}}) }}"
+        packages: {}
+        cacheable: true
 
   roles:
     - role: 'wsus'
