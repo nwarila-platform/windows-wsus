@@ -1,0 +1,23 @@
+# =========================================================================================== #
+# File: 'ansible/inventory/vmware.yml'
+# --- [ Description ] ----------------------------------------------------------------------- #
+#
+# DEV inventory — VMware Workstation lab VM (see AGENTS.md).
+# Discipline: revert the VM to snapshot 'pre-ansible-clean-ssh-ready' before EVERY
+# playbook execution (scripts/revert-vm.sh). Never run against a dirty VM.
+#
+# Auth: SSH key (hellbomb-ssh-key) supplied by the controller's persistent ssh-agent;
+# no key path or password belongs in this file.
+#
+# =========================================================================================== #
+---
+all:
+  children:
+    wsus_servers:
+      hosts:
+        wsus-dev:
+          ansible_host: '192.168.0.181'
+  vars:
+    ansible_user: 'administrator'
+    ansible_connection: 'ssh'
+    ansible_shell_type: 'powershell'

@@ -1,0 +1,13 @@
+# =========================================================================================== #
+# File: '{{ role_path }}/defaults/main.yml'
+# --- [ Description ] ----------------------------------------------------------------------- #
+#
+# Lowest-precedence configuration for the wsus role, merged by the v3 loader into
+# 'wsus_running' (defaults -> vars/<os>[_<env>].yml overlays -> playbook 'wsus:' dict).
+#
+# Populated one piece at a time via the cycle build queue (the build queue);
+# every key added here must be documented in the role README the same cycle.
+#
+# =========================================================================================== #
+---
+wsus_defaults: {}

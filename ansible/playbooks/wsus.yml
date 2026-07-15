@@ -1,0 +1,44 @@
+# =========================================================================================== #
+# File: 'ansible/playbooks/wsus.yml'
+# --- [ Description ] ----------------------------------------------------------------------- #
+#
+# Deploys the WSUS (WID-backed) role to the 'wsus_servers' inventory group.
+# Runs from the COMPOSED tree only — scripts/compose-and-run.sh overlays the role into a
+# pinned ansible-framework checkout and executes this playbook with the framework chassis.
+#
+# Windows-over-SSH notes: the framework v3 loader is not yet Windows-aware; every
+# workaround below is tagged TD-001 and tracked in docs/TECH-DEBT.md. Remove them when
+# the framework ships loader v3.1 Windows support and .framework-pin is bumped.
+#
+# =========================================================================================== #
+---
+- name: 'PLAY | WSUS Server (WID-backed)'
+  hosts: 'wsus_servers'
+  # TD-001: playbook-level gathering routes to the Windows setup module; with facts
+  # already present, the loader skips its own ansible.builtin.setup call.
+  gather_facts: true
+  # TD-001: framework chassis ansible.cfg sets become=sudo (POSIX-only). The admin
+  # account over SSH already holds an elevated token on Windows.
+  become: false
+
+  vars:
+    # Platform convention: 'env' is the operator-facing extra-var; 'ENV' is the
+    # play-var the loader validates (mirrors the wazuh central playbooks).
+    ENV: "{{ env }}"
+    wsus:
+      # TD-001: disable the loader's POSIX temp-dir; the role owns its staging via
+      # ansible.windows.win_tempfile (queue piece C02).
+      temp_dir: false
+
+  pre_tasks:
+    # TD-001: the loader's 'INIT | Loading Installed Package Facts' task runs
+    # ansible.builtin.package_facts (Python-only, no disable flag) and would hard-fail
+    # on Windows. Seeding an empty dict satisfies its 'when' guard. The wsus role MUST
+    # NOT read ansible_facts.packages while this seed exists.
+    - name: 'PRE | Seed empty package facts (loader Windows gap)'
+      when: ansible_facts.packages is not defined
+      ansible.builtin.set_fact:
+        ansible_facts: "{{ ansible_facts | combine({'packages': {}}) }}"
+
+  roles:
+    - role: 'wsus'
