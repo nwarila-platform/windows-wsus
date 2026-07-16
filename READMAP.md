@@ -104,6 +104,17 @@ Sequence:
   which a 30 GiB varied-file content volume is not. `force:false` idempotent (verified vs module source
   + a live RAW-volume probe: FileSystem empty / Size 0 / BlockSize null → pristine format, no FailJson).
   Director approved F:=4 KiB at P4.5 (would flip to 64 KiB only if Data Dedup on F: becomes intended).
+- **WSUS install spine + SUSDB location (RESOLVED 2026-07-16, from MS research):** the WSUS
+  install is `Install-WindowsFeature` + `wsusutil postinstall` — NO downloaded installer, NO
+  staging/temp dir, so the queued **C03 (win_tempfile staging dir) is DROPPED** (no MS consumer).
+  Reshaped spine: create `F:\WSUS` (content dir) → install `UpdateServices`(+WidDB+Services) →
+  `wsusutil postinstall CONTENT_DIR=F:\WSUS` → **relocate SUSDB to E:** → verify. **SUSDB reality:**
+  WID always installs `SUSDB.mdf` to `C:\Windows\WID\Data`; MS exposes NO supported way to place it
+  elsewhere (only `CONTENT_DIR`), and calls moving the WID DB "not recommended." **Director decision
+  (2026-07-16): do the community detach/move/attach relocation to E:** (the just-provisioned WSUSDB /
+  64 KiB volume) — preserves the WID backend (mission) AND the E: disk's purpose; MS-unsupported but
+  reversible + snapshot-protected. Alternatives rejected: accept SUSDB on C: (orphans E:), WID→SQL
+  (abandons the WID mission). See [[susdb-wid-relocation-decision]].
 - **TD-001 stays playbook-carried** (Director 2026-07-15): loader Windows gaps are
   marked workarounds in `wsus.yml`, evidence base for the future upstream v3.1 PR.
 - **Interim lint gate (C01/P4):** `ansible-lint --warn-list 'yaml[comments]'` from
@@ -131,11 +142,12 @@ Sequence:
 | C02c | `win_initialize_disk` — GPT-init the two data disks (FIRST mutation) | ✅ merged `a0fe69c [audited 1b96d8e]` 2026-07-16 | Convergence RAW→GPT (Get-Disk) + idempotency re-run changed=0; P4.5 approved. `online:true` scoped to RAW-online baseline (Codex P2). RTRACK-C02c. |
 | C02d | `win_partition` — 100% partition (`partition_size: -1`) + drive letter | ✅ merged `92b3d6f [audited edd5c24]` 2026-07-16 | disk_number from `item.matches \| first` `.number`; drive_letter for idempotency; gpt_type basic_data. Convergence changed=2 + idempotency re-run changed=0; SSH-verified E:20GB/F:30GB RAW partitions; P4.5 approved. RTRACK-C02d. |
 | C02e | `win_format` — NTFS + label (WSUSDB/WSUSDATA) at **MS allocation units**: 64 KiB SQL/WID `SUSDB` (E:), 4 KiB NTFS-default content (F:, researched — MS silent) | ✅ merged `954c538 [audited 274c9d0]` 2026-07-16 | `force:false` idempotent (verified vs module source + live RAW probe). Convergence changed=3 (format ran, no force error) + idempotency re-run changed=0; SSH-verified E:NTFS/WSUSDB/65536, F:NTFS/WSUSDATA/4096; P4.5 approved. Closes the C02 arc. RTRACK-C02e. |
-| C03 | Role-owned staging dir via `ansible.windows.win_tempfile` (TD-001 stand-in) | ⛏️ NEXT | First piece of the WSUS install spine; the C02 disk arc is done. |
-| C04 | Install `UpdateServices` + `UpdateServices-WidDB` + `UpdateServices-Services` | ⛏️ | |
-| C05 | WSUS postinstall (`wsusutil.exe postinstall CONTENT_DIR=F:\WSUS…`) — idempotent guard | ⛏️ | `win_shell` escape-hatch policy (style §8) gets decided here at the latest. |
-| C06 | Relocate SUSDB to `E:` via WID named pipe (detach/move/attach) | ⛏️ | Move-before-first-sync. |
-| C07 | END verify: `WsusService` running + console port 8530 + DB/content on E:/F: | ⛏️ | Retry-loop idiom (style §4). |
+| ~~C03~~ | ~~Role-owned staging dir via `win_tempfile`~~ | ❌ DROPPED 2026-07-16 | MS install spine needs no staging/temp dir (research). |
+| C03 | Create the WSUS content dir on F: (`F:\WSUS`) via `ansible.windows.win_file` (state: directory) | ⛏️ NEXT | Must exist before postinstall (creates `WSUSContent` inside it). Smallest install-spine step. |
+| C04 | Install the WSUS role (WID): `win_feature` `UpdateServices` + `UpdateServices-WidDB` + `UpdateServices-Services` (+ mgmt-tools decision); handle pending reboot | ⛏️ | WID is the default backend (no SQL sub-feature). |
+| C05 | WSUS postinstall: `wsusutil.exe postinstall CONTENT_DIR="F:\WSUS"` (from `C:\Program Files\Update Services\Tools`) — idempotent guard | ⛏️ | Creates SUSDB (in WID, on C:), WSUSContent, IIS 8530. `win_shell`/`win_command` escape-hatch policy (§8) decided here at the latest. |
+| C06 | Relocate SUSDB `C:\Windows\WID\Data` → `E:` (community, MS-unsupported per Director 2026-07-16): stop WsusService → detach via `\\.\pipe\Microsoft##WID\tsql\query` → move `.mdf`/`.ldf` → reattach → start | ⛏️ | Move-before-first-sync. Will sub-decompose C06a–e. |
+| C07 | END verify: `WsusService` running + `Get-WsusServer` + console port 8530 + DB on E: / content on F: | ⛏️ | Retry-loop idiom (style §4). |
 | C08+ | Sync config, products/classifications, GPO-facing settings | 💤 | Scoped later, after C07 proves the spine. |
 
 ### Track G — governance / Director decisions
@@ -196,11 +208,11 @@ composed-tree lint + fixtures + VM proofs in P4 · plain-gate ansible-lint exits
 so a `-e '{"wsus":{…}}'` proof override REPLACES the dict and MUST re-state
 `temp_dir: false`** (presence proof needs no `-e`; footgun confined to `-e` overrides).
 
-**Next action:** BUILD **C03** — no pre-approval stop (refined loop, Director 2026-07-16: build the
-change, surface it at P4.5 in the LOCKED presentation format). C03 opens the WSUS install spine:
-role-owned staging directory via `ansible.windows.win_tempfile` (the TD-001 loader-temp-dir stand-in —
-`temp_dir: false` disables the loader's POSIX temp dir, so the role owns its own staging). Ground it in
-the MS WSUS-on-WID install procedure; keep it the SMALLEST next module; revert before every run; surface
-at P4.5. Then C04 (install `UpdateServices` + `UpdateServices-WidDB` + `UpdateServices-Services`
-features) → C05 (`wsusutil postinstall CONTENT_DIR=F:\WSUS…`) → C06 (relocate SUSDB to E:) → C07 (END
-verify). NOTE the P4.5 presentation format is LOCKED — mirror the C02d/C02e message shape exactly.
+**Next action:** BUILD the reshaped **C03** — no pre-approval stop (refined loop: build, surface at P4.5
+in the LOCKED format). C03 = create the WSUS content directory `F:\WSUS` via `ansible.windows.win_file`
+(state: directory) — the smallest install-spine step; it must exist before postinstall (which creates
+`WSUSContent` inside it). Idempotent by nature. Then C04 (install `UpdateServices` + `UpdateServices-WidDB`
++ `UpdateServices-Services`, WID default) → C05 (`wsusutil postinstall CONTENT_DIR="F:\WSUS"`) → C06
+(community SUSDB relocation C:→E:, Director-approved MS-unsupported) → C07 (verify). The old C03
+(win_tempfile staging dir) was DROPPED — the MS install spine needs no staging dir. Mirror the C02d/C02e
+P4.5 message shape EXACTLY. Revert before every run.
