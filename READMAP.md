@@ -27,13 +27,11 @@ Two standing rules from the Director shape everything:
 
 Sequence:
 
-1. **C02c–e — data volumes** (⛏️ next: C02c). The **guard refactor is COMPLETE** (§4b "guards
-   earn their keep"): **V + R1-R4 merged** — `present_windows.yml` is at its load-bearing floor
-   (block-var resolution → one `win_disk_facts` gather → fail-closed Attached → the C02b safety
-   guard; distinctness in `validate.yml`). Now the mutations: C02c `win_initialize_disk`
-   (online+GPT) → C02d `win_partition` (100%+letter, disk_number from `item.matches | first`) →
-   C02e `win_format` (NTFS+label; MS-rec allocation-unit — 64 KiB SQL/WID DB, MS-rec content).
-   The C02b safety guard gates the first mutation (C02c).
+1. **C02d–e — data volumes** (⛏️ next: C02d). Guard refactor COMPLETE; **C02c** (`win_initialize_disk`,
+   GPT-init — first mutation, idempotent) merged. Remaining mutations: C02d `win_partition` (100%
+   partition + drive letter, disk_number from `item.matches | first` `.number`) → C02e `win_format`
+   (NTFS+label; MS-rec allocation-unit — 64 KiB SQL/WID DB, MS-rec content). The C02b safety guard
+   gates each mutation; the guard chain is proven idempotent on GPT disks (C02c re-run changed=0).
 2. **C03–C07 — the WSUS install spine** (staging dir → features → postinstall →
    SUSDB relocation → END verify), strictly in queue order.
 3. **§3 Director decisions** — can land any time; none block C02, but style §4b/§5
@@ -120,8 +118,8 @@ Sequence:
 | R2 | Guard trim: collapse the two `win_disk_facts` gathers into ONE canonical superset | ✅ merged `46f9d3d [audited deea6cf]` 2026-07-15 | −1 SSH round-trip; VM safe-pass ok=15; P4.5 approved. §4b gather-once. RTRACK-R2. |
 | R3 | Resolve each disk once via a block-var `matches` (NO set_fact — no cross-role bleed); Attached + safety reuse it; feeds C02d | ✅ merged `09a73b4 [audited afeef0c]` 2026-07-15 | VM safe-pass ok=15 + negative (fail-closed); P4.5 approved. RATIFIED §4 avoid-set_fact + §4b block-var resolution. RTRACK-R3. |
 | R4 | Guard trim: drop the Provided assert (§4b(a)) + refresh stale file-header | ✅ merged `fd206b4 [audited ed83585]` 2026-07-15 | VM safe-pass ok=14 + negative (id omitted → Attached 'found 0'); P4.5 approved. Guard refactor COMPLETE. RTRACK-R4. |
-| C02c | `win_initialize_disk` — online + GPT-init the two data disks | ⛏️ NEXT | `uniqueid=`, `online: true` (clears offline/read-only), `force: false` (idempotent). FIRST mutation; gated by the C02b safety guard. |
-| C02d | `win_partition` — 100% partition (`partition_size: -1`) + drive letter | ⛏️ | disk_number resolved from `unique_id` via `win_disk_facts`; drive_letter mandatory for idempotency. |
+| C02c | `win_initialize_disk` — GPT-init the two data disks (FIRST mutation) | ✅ merged `a0fe69c [audited 1b96d8e]` 2026-07-16 | Convergence RAW→GPT (Get-Disk) + idempotency re-run changed=0; P4.5 approved. `online:true` scoped to RAW-online baseline (Codex P2). RTRACK-C02c. |
+| C02d | `win_partition` — 100% partition (`partition_size: -1`) + drive letter | ⛏️ NEXT | disk_number from `item.matches | first` `.number` (win_partition needs disk_number); drive_letter mandatory for idempotency. |
 | C02e | `win_format` — NTFS + label (WSUSDB/WSUSDATA); **MS-recommended allocation-unit** (Director): 64 KiB SQL/WID `SUSDB` (E:), MS-rec content (F:, research at P0) | ⛏️ | `force: false` + preserved labels = idempotent; adds label/fs/alloc to defaults. |
 | C03 | Role-owned staging dir via `ansible.windows.win_tempfile` (TD-001 stand-in) | ⛏️ | |
 | C04 | Install `UpdateServices` + `UpdateServices-WidDB` + `UpdateServices-Services` | ⛏️ | |
@@ -152,12 +150,13 @@ _empty_
 
 ## ⏱️ SESSION HANDOFF — 2026-07-15 — for the next fresh session
 
-**STATE: R4 merged — the guard refactor is COMPLETE.** `main` @ the R4 codification commit.
-`present_windows.yml` is at its load-bearing floor (block-var resolution → one `win_disk_facts`
-gather → fail-closed Attached → the C02b state-aware safety guard); config-contract invariants
-(distinctness) live in `validate.yml` (loader **v3.1.0**, TD-003). A composed run SUCCEEDS doing
-nothing but read-only guards — green recap ≠ "WSUS deployed" or "disks prepared" (see RTRACK-R4).
-Worktrees/branches removed; tree clean. **C02c next — the FIRST mutation.**
+**STATE: C02c merged — first mutation LIVE (disks GPT-initialized).** `main` @ the C02c
+codification commit. `present_windows.yml`: the read-only guards (block-var resolution → one
+`win_disk_facts` gather → fail-closed Attached → the C02b safety guard) + the first mutation
+(`win_initialize_disk`, GPT-init, idempotent). Config-contract (distinctness) in `validate.yml`
+(loader **v3.1.0**, TD-003). A composed run now GPT-inits the two data disks (green recap ≠ "WSUS
+deployed"). ⚠️ **The dev VM is DIRTY** (disks left GPT by the C02c proofs) — the next run reverts
+to the RAW baseline as always. Worktrees/branches removed; tree clean. **C02d next.**
 
 **Contract now:** disk ids are declared in the `wsus:` override dict and read as
 `config.wid_disk_id` (DB→E:WSUSDB) / `config.wsus_disk_id` (content→F:WSUSDATA), each the
@@ -185,9 +184,9 @@ composed-tree lint + fixtures + VM proofs in P4 · plain-gate ansible-lint exits
 so a `-e '{"wsus":{…}}'` proof override REPLACES the dict and MUST re-state
 `temp_dir: false`** (presence proof needs no `-e`; footgun confined to `-e` overrides).
 
-**Next action:** confirm **C02c** with the Director → P0. Guard refactor COMPLETE (V + R1-R4);
-`present_windows.yml` at its load-bearing floor. C02c = the **FIRST MUTATION**:
-`win_initialize_disk` (online + GPT-init both data disks; `uniqueid=`, `online: true`,
-`force: false`), gated by the C02b safety guard → C02d `win_partition` (100%+letter) → C02e
-`win_format` (NTFS+label; **MS-recommended allocation unit** — 64 KiB SQL/WID DB, MS-rec
-content, research at C02e P0). Module research banked; ground each step in MS docs.
+**Next action:** BUILD **C02d** — no pre-approval stop (refined loop, Director 2026-07-16: build the
+change, surface it at P4.5). `win_partition`: create a 100% partition (`partition_size: -1`) + assign
+the drive letter (E:/F:) on each initialized disk; `disk_number` from `item.matches | first` `.number`
+(win_partition requires disk_number); drive_letter is mandatory for idempotency. Surface the diff at
+P4.5. Then C02e `win_format` (NTFS+label; **MS-recommended allocation unit** — 64 KiB SQL/WID DB,
+MS-rec content, research at C02e P0). Ground each in the MS WSUS-on-WID procedure; revert before every run.
