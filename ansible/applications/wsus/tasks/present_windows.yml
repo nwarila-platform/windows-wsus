@@ -416,6 +416,52 @@
       loop_control:
         label: '{{ item }}'
 
+    # INDEPENDENT health gate for the destructive C: delete (C06g forward commitment):
+    # re-derives ONLINE + read-write + all-files-on-E. C06c 'relocated' is only files-on-E
+    # and would pass a broken DB. This probe is read-only, so changed_when is false.
+    - name: 'MAIN | Probe SUSDB Relocation Health (delete gate)'
+      ansible.windows.win_shell: |
+        $dir = $env:WID_DATA_DIR
+        $conn = New-Object System.Data.SqlClient.SqlConnection(
+          'server=\\.\pipe\Microsoft##WID\tsql\query;database=master;trusted_connection=true;')
+        $conn.Open()
+        $cmd = $conn.CreateCommand()
+        $cmd.CommandText = "SELECT d.state_desc AS s, d.is_read_only AS ro, m.physical_name AS pn FROM sys.databases d JOIN sys.master_files m ON m.database_id = d.database_id WHERE d.name = 'SUSDB';"
+        $reader = $cmd.ExecuteReader()
+        $state = $null
+        $ro = $null
+        $files = @()
+        while ($reader.Read()) {
+            $state = [string]$reader['s']
+            $ro = [int]$reader['ro']
+            $files += [string]$reader['pn']
+        }
+        $reader.Close()
+        $conn.Close()
+        $prefix = $dir.TrimEnd('\') + '\'
+        $offTarget = @($files | Where-Object { -not $_.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase) })
+        if ($state -eq 'ONLINE' -and $ro -eq 0 -and $files.Count -ge 2 -and $offTarget.Count -eq 0) {
+            Write-Output 'healthy'
+        } else {
+            Write-Output 'unsafe'
+        }
+      environment:
+        WID_DATA_DIR: '{{ __wid_data_dir__ }}'
+      register: __susdb_relocated_healthy__
+      changed_when: false
+
+    # Retire the copy-don't-move fallback: delete stale C: originals ONLY when the probe says
+    # 'healthy'. win_file absent is idempotent; this is the arc's only fallback-destroying
+    # step, hence the strictest gate. The explicit two-file loop never touches WID system DBs.
+    - name: 'MAIN | Remove SUSDB Originals From System Volume'
+      ansible.windows.win_file:
+        path: '{{ __wid_source_dir__ }}\{{ item }}'
+        state: absent
+      loop: ['SUSDB.mdf', 'SUSDB_log.ldf']
+      loop_control:
+        label: '{{ item }}'
+      when: __susdb_relocated_healthy__.stdout | trim == 'healthy'
+
     #endregion --- [ Main: SUSDB Relocation ] ----------------------------------------------- #
 
 #endregion --- [ Script ] -------------------------------------------------------------------- #
