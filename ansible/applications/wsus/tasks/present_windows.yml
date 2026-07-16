@@ -35,6 +35,8 @@
     # Content root derived from the SINGLE source of truth (the content drive letter) + the folder name,
     # so it can never drift onto a different volume than the one provisioned. Renders e.g. F:\WSUS.
     __content_dir__: "{{ config.data_disks.content.drive_letter }}:\\{{ config.content_subdir }}"
+    # SUSDB relocation target, same no-drift derivation as __content_dir__. Renders e.g. E:\WID\Data.
+    __wid_data_dir__: "{{ config.data_disks.db.drive_letter }}:\\{{ config.db_subdir }}"
   block:
 
     #region ------ [ Initialization ] -------------------------------------------------------- #
@@ -203,5 +205,18 @@
           - 'CONTENT_DIR={{ __content_dir__ }}'
 
     #endregion --- [ Main: WSUS Installation ] ---------------------------------------------- #
+
+    #region ------ [ Main: SUSDB Relocation ] ----------------------------------------------- #
+
+    # Target directory for the SUSDB relocation (C06 — community procedure, MS-unsupported,
+    # Director-approved 2026-07-16) on the dedicated DB volume. Must exist before the WID
+    # service-account ACL grant (C06b) and the attach (C06g). win_file creates parents
+    # (E:\WID then E:\WID\Data) and no-ops when present.
+    - name: 'MAIN | Ensure WID Data Directory Exists'
+      ansible.windows.win_file:
+        path: "{{ __wid_data_dir__ }}"
+        state: directory
+
+    #endregion --- [ Main: SUSDB Relocation ] ----------------------------------------------- #
 
 #endregion --- [ Script ] -------------------------------------------------------------------- #
