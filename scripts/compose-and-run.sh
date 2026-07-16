@@ -14,6 +14,8 @@
 #
 # Usage: scripts/compose-and-run.sh [-e env=int] [any extra ansible-playbook args...]
 #        SKIP_REVERT=1 to bypass the snapshot-revert gate (composition testing only).
+#        REVERT_TO=pre-<piece> to revert to the rolling per-step snapshot instead of
+#        the fresh-OS baseline (passed through to revert-vm.sh; VM-LIFECYCLE.md §2).
 #
 # =========================================================================================== #
 set -euo pipefail
