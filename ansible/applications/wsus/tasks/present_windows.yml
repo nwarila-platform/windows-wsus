@@ -158,6 +158,25 @@
         path: "{{ __content_dir__ }}"
         state: directory
 
+    # Installs the WSUS role on the WID backend (MS Step 1: Install-WindowsFeature -Name
+    # UpdateServices -IncludeManagementTools). The WID role services are named EXPLICITLY —
+    # MS never states the bare-parent auto-pull verbatim, and a missing WidDB would only
+    # surface later as a postinstall failure. include_management_tools brings the WSUS console
+    # + the UpdateServices PowerShell module (C07's Get-WsusServer). DO NOT set
+    # include_sub_features: it maps to -IncludeAllSubFeature and would also pull
+    # UpdateServices-DB (SQL Server Connectivity), which a WID build must NOT have.
+    # Idempotent: changed only when the cmdlet returns a non-empty FeatureResult (a converged
+    # re-run reports exitcode NoChangeNeeded). The module never reboots — it only reports
+    # reboot_required; C04 deliberately does not act on it (measured at P4 first).
+    - name: 'MAIN | Install WSUS Server Role (WID)'
+      ansible.windows.win_feature:
+        name:
+          - 'UpdateServices'
+          - 'UpdateServices-WidDB'
+          - 'UpdateServices-Services'
+        include_management_tools: true
+        state: present
+
     #endregion --- [ Main: WSUS Installation ] ---------------------------------------------- #
 
 #endregion --- [ Script ] -------------------------------------------------------------------- #
