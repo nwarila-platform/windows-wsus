@@ -177,6 +177,31 @@
         include_management_tools: true
         state: present
 
+    # Read-only completion probe: Get-WsusServer succeeds ONLY when postinstall has fully
+    # configured the stack (registry + SUSDB + IIS + service), so it cannot false-skip after a
+    # midway failure (a file marker like WSUSContent is created EARLY and would silently
+    # false-converge). win_shell because Get-WsusServer is a PowerShell CMDLET (§8).
+    # failed_when: false — a nonzero rc IS the 'not yet configured' signal, not an error.
+    - name: 'MAIN | Probe WSUS Post-Installation State'
+      ansible.windows.win_shell: 'Get-WsusServer'
+      register: __wsus_postinstall_probe__
+      changed_when: false
+      failed_when: false
+
+    # Runs the WSUS post-installation: creates SUSDB in WID (on C: — relocated at C06), creates
+    # WSUSContent inside the content root, configures the IIS 'WSUS Administration' site (8530),
+    # and enables+starts WsusService. WID is selected by the ABSENCE of SQL_INSTANCE_NAME. Gated
+    # by the probe above (rc==0 = already configured -> skip). argv auto-quotes per Win32 rules
+    # (the exe path contains spaces). NO trailing backslash on CONTENT_DIR. wsusutil logs to a
+    # random .tmp in %TEMP% (stdout names it); the first run takes minutes.
+    - name: 'MAIN | Run WSUS Post-Installation (WID, content on F:)'
+      when: __wsus_postinstall_probe__.rc != 0
+      ansible.windows.win_command:
+        argv:
+          - 'C:\Program Files\Update Services\Tools\wsusutil.exe'
+          - 'postinstall'
+          - 'CONTENT_DIR={{ __content_dir__ }}'
+
     #endregion --- [ Main: WSUS Installation ] ---------------------------------------------- #
 
 #endregion --- [ Script ] -------------------------------------------------------------------- #
