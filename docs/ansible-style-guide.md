@@ -179,6 +179,16 @@ clobber, verified at the module source). These stay `quiet: true` with an action
   4. No `chdir` when the tool has no working-directory requirement; invoke by absolute
      path. No asserts on undocumented/localizable stdout — rc + a functional probe are
      the contract.
+- **SEEDED (U1, 2026-07-16 — Director directive, P2-narrowed) — Users browse-access ACL
+  hygiene.** Role-created directories INTENDED FOR INTERACTIVE ADMINISTRATION/BROWSING,
+  under an explicitly documented trust model ("all interactive users are admins"), get an
+  explicit `BUILTIN\Users` ReadAndExecute grant (`win_acl`, allow,
+  `ContainerInherit, ObjectInherit`) co-located with their creation. WHY: an unreadable
+  folder makes Explorer offer "Continue", which stamps the browsing admin's PERSONAL ACE
+  onto the ACL — stale/orphaned SIDs after they depart. Explicit, never inherited-by-luck
+  (format-default root ACLs evaporate under hardening). EXCLUDED BY DEFAULT: secrets,
+  private service data, product-managed ACL boundaries (e.g. WSUSContent — postinstall
+  owns it). `E:\WID\Data` is an explicit Director-approved exception in this role.
 
 ## 6. Controller & toolchain — SEEDED
 
