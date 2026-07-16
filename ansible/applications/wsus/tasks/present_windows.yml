@@ -320,6 +320,25 @@
         label: '{{ item }}'
       when: __susdb_probe__.stdout | trim in ['pending', 'orphaned']
 
+    # MS wid-to-sql detach batch. SET SINGLE_USER WITH ROLLBACK IMMEDIATE drops any straggler
+    # session so detach cannot block (WSUS/IIS already stopped by C06d); sp_detach_db leaves the
+    # .mdf/.ldf on disk: copy-don't-move keeps C: intact until C06g attach-from-E: is verified.
+    # The ==pending-only gate is the idempotency mechanism: orphaned is already detached and a
+    # re-detach throws. SqlClient over the WID pipe is the C06c §8 idiom (no native module).
+    - name: 'MAIN | Detach SUSDB For Relocation'
+      ansible.windows.win_shell: |
+        $conn = New-Object System.Data.SqlClient.SqlConnection(
+          'server=\\.\pipe\Microsoft##WID\tsql\query;database=master;trusted_connection=true;')
+        $conn.Open()
+        $cmd = $conn.CreateCommand()
+        $cmd.CommandText = 'ALTER DATABASE SUSDB SET SINGLE_USER WITH ROLLBACK IMMEDIATE; EXEC master.dbo.sp_detach_db @dbname = N''SUSDB'';'
+        $cmd.ExecuteNonQuery() | Out-Null
+        $conn.Close()
+        Write-Output 'detached'
+      register: __susdb_detach__
+      changed_when: true
+      when: __susdb_probe__.stdout | trim == 'pending'
+
     #endregion --- [ Main: SUSDB Relocation ] ----------------------------------------------- #
 
 #endregion --- [ Script ] -------------------------------------------------------------------- #
