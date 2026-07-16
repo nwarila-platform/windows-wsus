@@ -30,8 +30,9 @@ Sequence:
 1. **C02 disk-provisioning arc — COMPLETE** (✅ C02a–e all merged; idempotent E:/F: volumes at MS
    allocation units, safety-guard-gated).
 2. **WSUS install spine — C03/C04/C05 ✅ merged (WSUS IS ALIVE: Get-WsusServer OK :8530), C06 🔄
-   in-flight** (SUSDB relocation C:→E:, decomposed C06a–i; C06a-c+U1 merged (gate LIVE: resumable three-state), C06d (stop services) NEXT) →
-   C07 END verify.
+   in-flight** (SUSDB relocation C:→E:, decomposed C06a–i; C06a-c+U1+**C05r** merged; postinstall
+   guard now service-independent (completion flags), so the arc can stop services without flapping;
+   **C06d (stop services) NEXT**) → C07 END verify.
 3. **§3 Director decisions** — can land any time; none block C02, but style §4b/§5
    ratification is cheapest before more pieces cite them.
 4. **C08+ — sync config, products/classifications, GPO-facing settings** (💤 scoped later).
@@ -144,7 +145,8 @@ Sequence:
 | C03 | Create the WSUS content dir on F: (derived `F:\WSUS`) via `ansible.windows.win_file` (state: directory); opens the 'Main: WSUS Installation' region | ✅ merged `c9ef489 [audited ef4ac89]` 2026-07-16 | `__content_dir__` derived from `data_disks.content.drive_letter` + `content_subdir` (no drift, no set_fact). Convergence changed=4 + idempotency changed=0; SSH-verified `F:\WSUS`; P4.5 approved. P3 unblocked by the isolated Codex session. RTRACK-C03. |
 | C04 | Install the WSUS role (WID): `win_feature` explicit `UpdateServices`+`-WidDB`+`-Services` + mgmt tools; `include_sub_features` UNSET (would pull `-DB`/SQL); NO reboot machinery | ✅ merged `31ecee7 [audited 655706c]` 2026-07-16 | 33 features resolved; SSH-verified incl. the `UpdateServices-DB` NOT-installed negative; **reboot measured UNNECESSARY (all 3 signals)**; idempotency `NoChangeNeeded` changed=0; P4.5 approved. RTRACK-C04. |
 | C05 | WSUS postinstall via `win_command` argv, gated by a read-only `Get-WsusServer` probe (FIRST §8 escape hatch — 0/118 modules cover WSUS server ops) | ✅ merged `28cee42 [audited 1a76964]` 2026-07-16 | WSUS ALIVE: SUSDB (10.2 MB) in WID on C:, WSUSContent on F:, IIS :8530/:8531 Started, WsusService Running/Automatic. Probe replaced the community `creates:` marker (P2: silent false convergence). Setup-key ground truth dumped (ContentDir=F:\WSUS, SqlServerName=MICROSOFT##WID, IRS flags all =2). Idempotency changed=0. §8 PROPOSED. RTRACK-C05. |
-| C06 | SUSDB relocation C:→E: — DECOMPOSED C06a–i (QUEUE.md; research + live probe 2026-07-16: zero-install SqlClient over the WID pipe, administrator=sysadmin, sys.master_files three-state gate, COPY-don't-move, ACL-before-attach) | 🔄 in-flight | C06a ✅ + C06b ✅ + U1 ✅ (explicit BUILTIN\Users R&X on F:\WSUS + E:\WID\Data — Director stale-SID directive; style rule SEEDED, narrowed by Codex) merged. NEXT: C06c read-only probe (SqlClient → sys.master_files three-state gate). Then C06d stop svcs → C06e detach → C06f copy → C06g attach → C06h start → C06i delete C: originals. |
+| C05r | Reshape the postinstall guard: `win_reg_stat` on the four 'Installed Role Services' completion flags replaces the `Get-WsusServer` win_shell — the C06 arc stops services mid-flight and Get-WsusServer FAILS then (flap, C06d P2 catch) | ✅ merged `e04c2e9 [audited 5799fc6]` 2026-07-16 | P2 REVISE r1→SOUND (atomicity via real postinstall-log forensics); P3 close-out via 3 bounded xhigh Codex audits (all PASS); P4 green incl. flap regression (services down → postinstall still skips, SCM forensics); P4.5 approved. Process this session: codex-exec stdin-drain hang root-caused+fixed (`</dev/null`), reasoning pinned xhigh, per-step rolling snapshot discipline added. RTRACK-C05r. |
+| C06 | SUSDB relocation C:→E: — DECOMPOSED C06a–i (QUEUE.md; research + live probe 2026-07-16: zero-install SqlClient over the WID pipe, administrator=sysadmin, sys.master_files three-state gate, COPY-don't-move, ACL-before-attach) | 🔄 in-flight | C06a ✅ + C06b ✅ + U1 ✅ + C06c ✅ (resumable three-state gate LIVE) + **C05r ✅** (postinstall guard now service-independent). **NEXT: C06d** — `win_service` stop WsusService+W3SVC (gated pending\|orphaned; WID stays running). Then C06e detach → C06f copy → C06g attach → C06h start → C06i delete C: originals. |
 | C07 | END verify: `WsusService` running + `Get-WsusServer` + console port 8530 + DB on E: / content on F: | ⛏️ | Retry-loop idiom (style §4). |
 | C08+ | Sync config, products/classifications, GPO-facing settings | 💤 | Scoped later, after C07 proves the spine. |
 
@@ -170,23 +172,37 @@ _empty_
 
 ## ⏱️ SESSION HANDOFF — 2026-07-16 — for the next fresh session
 
-**STATE: C05 merged — WSUS is ALIVE (installed AND configured).** `main` @ the C05 codification
-commit. `present_windows.yml`: the read-only guards (block-var resolution → one `win_disk_facts`
-gather → fail-closed Attached → the C02b safety guard) + THREE disk mutations (`win_initialize_disk`
-→ `win_partition` → `win_format`) + the **`Main: WSUS Installation`** region (C03 content root →
-C04 `win_feature` WSUS role → C05 probe-gated `wsusutil postinstall`). A composed run now delivers a
-WORKING WSUS: `Get-WsusServer` OK on :8530, WsusService Running/Automatic, WSUSContent on F:,
-**SUSDB (10.2 MB) in WID at `C:\Windows\WID\Data` — the C06 relocation source**. Registry ground
-truth captured (RTRACK-C05): `ContentDir=F:\WSUS`, `SqlServerName=MICROSOFT##WID`,
-`Installed Role Services` flags all =2. §8 escape-hatch policy PROPOSED in the style guide (pending
-Director ratification — G-track). ⚠️ **The dev VM is DIRTY** (C05 proofs — live WSUS) — the next run
-reverts to the RAW baseline as always. Worktrees/branches removed; tree clean. **C06 in-flight: C06a-c+U1 merged; C06d (win_service stop, gated) next. Actor contract: stdout|trim; d/f/g on pending|orphaned, e on pending.**
+**STATE: C05r merged — WSUS ALIVE + the postinstall guard is now service-independent.** `main` @
+the C05r codification commit (merge `e04c2e9 [audited 5799fc6]`). `present_windows.yml`: read-only
+guards (block-var resolution → one `win_disk_facts` gather → fail-closed Attached → C02b safety
+guard) + THREE disk mutations (`win_initialize_disk` → `win_partition` → `win_format`) + the
+**`Main: WSUS Installation`** region (C03 content root → C04 `win_feature` WSUS role → **C05r**
+`win_reg_stat` completion-flags probe → probe-gated `wsusutil postinstall`) + the opening of the
+**`Main: SUSDB Relocation`** region (C06a dir → C06b WID-svc ACL → U1 Users ACL → C06c three-state
+gate probe). A composed run delivers a WORKING WSUS: `Get-WsusServer` OK :8530, WsusService
+Running/Automatic, WSUSContent on F:, **SUSDB (10.2 MB) in WID at `C:\Windows\WID\Data` — the C06
+relocation source**, IRS completion flags all =2. §8 escape-hatch policy PROPOSED (G-track).
+⚠️ **The dev VM is DIRTY** (C05r proofs — live WSUS, converged, services Running, gate 'pending').
+**NEXT: C06d** (`win_service` stop WsusService+W3SVC, gated pending|orphaned; WID stays running).
+Actor contract (C06c binding): `stdout|trim`; d/f/g fire on pending|orphaned, e on pending only.
 
-**Codex tooling (2026-07-16):** this repo now has an ISOLATED per-project Codex session —
-`export CODEX_HOME=/root/.codex-homes/windows-wsus`, drive it as `codex exec -p wsus ...` (profile
-pins model `gpt-5.6-sol`, read-only default sandbox, writable_roots `/root/.cache` + `/root/.ansible`
-— the hand-typed `--add-dir` flags are retired). **A hanging `codex exec` = REVOKED token, not infra**
-(`codex login status` lies); probe once, hand the Director `docs/CODEX-SESSION.md`.
+**⛔ CODEX INVOCATION — the #1 gotcha (root-caused 2026-07-16, cost ~1h):** `codex exec` drains
+stdin after the prompt arg (`Reading additional input from stdin...`); in any backgrounded/piped
+shell stdin never EOFs → **codex blocks FOREVER before the model turn**, looking exactly like a slow
+model / revoked token / "xhigh too slow" / contention. **FIX: append `< /dev/null` to EVERY
+non-interactive `codex exec`.** The `wsus` profile now pins `model_reasoning_effort = "xhigh"` (the
+model auto-picks `low` otherwise; its self-report is unreliable — trust otel `reasoning_effort=`).
+**Fast pattern (Director directive):** decompose each P2/P3 into 2-3 razor-narrow `PASS|FAIL`-line-1
+bounded audits (adherence/scope/gate-logic), each `< /dev/null` — each converges in seconds at xhigh
+(C05r P3: 3 audits all PASS in ~30s). Full writeup: `docs/CODEX-SESSION.md` #1 + memory
+`codex-driving-mechanics`. Isolated home `CODEX_HOME=/root/.codex-homes/windows-wsus`, `-p wsus`.
+
+**⏱️ PER-STEP ROLLING SNAPSHOT (Director, 2026-07-16):** baseline `pre-ansible-clean-ssh-ready` stays
+the sacred fresh-OS anchor; ONE rolling `pre-<piece>` snapshot (`scripts/snapshot-step.sh <piece>`,
+taken post-merge only) is the usual revert target — `REVERT_TO=pre-<piece> scripts/compose-and-run.sh`
+so merged pieces no-op fast instead of re-converging. At most TWO snapshots ever (`docs/VM-LIFECYCLE.md`
+§4). From-baseline E2E re-proven once at C07. **`pre-C06d` snapshot taken at this P5 from the verified
+post-C05r converged state.**
 
 **Contract now:** disk ids are declared in the `wsus:` override dict and read as
 `config.wid_disk_id` (DB→E:WSUSDB) / `config.wsus_disk_id` (content→F:WSUSDATA), each the
@@ -214,15 +230,14 @@ composed-tree lint + fixtures + VM proofs in P4 · plain-gate ansible-lint exits
 so a `-e '{"wsus":{…}}'` proof override REPLACES the dict and MUST re-state
 `temp_dir: false`** (presence proof needs no `-e`; footgun confined to `-e` overrides).
 
-**Next action:** P0 for **C06** — the SUSDB relocation `C:\Windows\WID\Data` → `E:` (community
-detach/move/attach, Director-approved MS-unsupported; move-before-first-sync). **SUB-DECOMPOSE at
-P0 into the smallest per-module steps (C06a–e-ish):** stop `WsusService` (+ W3SVC?) →
-detach SUSDB via the WID named pipe `\\.\pipe\Microsoft##WID\tsql\query` (sqlcmd — FIRST P0 CHECK:
-is sqlcmd even on the box? Server 2025 ships no SQL tools by default — research the invoke path:
-sqlcmd install? Invoke-Sqlcmd? .NET SqlClient via PowerShell?) → move `.mdf`/`.ldf` to E: →
-re-attach from E: → start services. Ground truth in hand (RTRACK-C05): `SqlServerName=MICROSOFT##WID`,
-SUSDB.mdf 10.2 MB + log 1.1 MB. Known failure mode to design against: ORPHANED SUSDB files
-(present-but-not-attached → postinstall/attach errors). Idempotency: skip if SUSDB already lives on
-E: (probe the WID catalog, not the filesystem). Each piece through the full cycle; P4.5 in the
-LOCKED format; revert before every run. Then C07 (END verify: WsusService + Get-WsusServer + :8530 +
-DB on E: / content on F:). Open G-track item: Director ratification of the PROPOSED §8 policy.
+**Next action:** **C06d re-enters P2** (its packet `_handoff/steps/C06d.plan.json` is P0-refreshed
+with the per-step-snapshot proofs + a p2History entry recording the flap catch that spawned C05r).
+`win_service` stop WsusService+W3SVC, loop, gated `__susdb_probe__.stdout | trim in ['pending',
+'orphaned']`; WID service (`MSSQL$MICROSOFT##WID`) STAYS RUNNING (executes the later detach). Drive it
+FAST with the fixed Codex pattern (bounded audits, `< /dev/null`, xhigh); P4 via `REVERT_TO=pre-C06d`;
+P4.5 LOCKED format. Then C06e detach → C06f copy → C06g attach → C06h start → C06i delete C: originals
+→ C07 (END verify: WsusService + Get-WsusServer + :8530 + DB on E: / content on F:). Ground truth
+(RTRACK-C05): `SqlServerName=MICROSOFT##WID`, SUSDB.mdf 10.2 MB + log 1.1 MB; C06 relocation uses
+zero-install `System.Data.SqlClient` over the WID pipe (administrator = WID sysadmin), COPY-don't-move,
+`sys.master_files` three-state gate (C06c LIVE). Open G-track: Director ratification of the PROPOSED §8
+policy.
