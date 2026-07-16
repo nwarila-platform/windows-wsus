@@ -41,5 +41,9 @@ wsus_defaults:
     periodic_restart: '00:00:00'
     idle_timeout: '00:00:00'
     pinging_enabled: false
+  # Role-managed directory for the SUSDB maintenance scripts + timestamped run logs;
+  # overridable for hosts with a different maintenance layout.
+  maintenance:
+    dir: 'C:\ProgramData\wsus-maintenance'
 # Disk identity (wid_disk_id / wsus_disk_id) is declared in the 'wsus:' override dict and read as
 # config.wid_disk_id / config.wsus_disk_id (see README); this file holds role-default conventions.
