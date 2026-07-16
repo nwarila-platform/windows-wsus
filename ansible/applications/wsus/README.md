@@ -40,12 +40,16 @@ consumed configuration one cycle piece at a time.
 |---------------------|---------|---------|
 | `data_disks.db.drive_letter` | `E:` | Target drive letter for the WID/database disk |
 | `data_disks.content.drive_letter` | `F:` | Target drive letter for the WSUS content disk |
+| `data_disks.db.label` | `WSUSDB` | NTFS volume label for the WID/database disk (E:) |
+| `data_disks.db.allocation_unit` | `65536` | NTFS allocation unit (bytes) for E: — 64 KiB, MS SQL/WID storage best practice |
+| `data_disks.content.label` | `WSUSDATA` | NTFS volume label for the WSUS content disk (F:) |
+| `data_disks.content.allocation_unit` | `4096` | NTFS allocation unit (bytes) for F: — 4 KiB NTFS default (MS is silent on WSUS-content cluster size) |
 
 The role provisions a declared disk only when it is RAW or already carries its target
 drive letter. It refuses an initialized disk carrying a foreign drive letter, which
 protects existing data and prevents an identifier mistake from selecting the OS/system
-disk with `C:`. Disk size is never used for selection. Volume labels, filesystem, and
-allocation-unit configuration arrive in C02e when formatting is implemented.
+disk with `C:`. Disk size is never used for selection. C02e NTFS-formats E:/F: with these labels +
+allocation units (WSUSDB at 64 KiB, WSUSDATA at 4 KiB).
 
 The identifiers and `temp_dir` must co-locate in one `wsus:` declaration. The loader
 reads `temp_dir` from the raw `wsus` var, and Ansible does not merge role override

@@ -23,10 +23,14 @@
       - purpose: 'db'
         id: "{{ config.wid_disk_id | default('') }}"
         drive_letter: "{{ config.data_disks.db.drive_letter }}"
+        label: "{{ config.data_disks.db.label }}"
+        allocation_unit: "{{ config.data_disks.db.allocation_unit }}"
         matches: "{{ ansible_facts.disks | selectattr('unique_id', 'equalto', config.wid_disk_id | default('')) | list }}"
       - purpose: 'content'
         id: "{{ config.wsus_disk_id | default('') }}"
         drive_letter: "{{ config.data_disks.content.drive_letter }}"
+        label: "{{ config.data_disks.content.label }}"
+        allocation_unit: "{{ config.data_disks.content.allocation_unit }}"
         matches: "{{ ansible_facts.disks | selectattr('unique_id', 'equalto', config.wsus_disk_id | default('')) | list }}"
   block:
 
@@ -118,6 +122,23 @@
         drive_letter: "{{ item.drive_letter }}"
         gpt_type: basic_data
         state: present
+      loop: "{{ __data_disks__ }}"
+      loop_control:
+        label: "{{ item.purpose }}"
+
+    # NTFS-formats the RAW partition (C02d) with its label + MS-recommended allocation unit.
+    # force:false is idempotent on the pristine RAW volume (first run size 0 -> format; re-run
+    # size!=0 + label preserved + ALU match -> no-op). full:false = quick format (thin VMware
+    # disks). allocation_unit_size is in BYTES (65536=64 KiB E: / 4096=4 KiB F:). Closes the C02
+    # disk-provisioning arc; volumes are ready for WSUS install (C04+).
+    - name: 'MAIN | Format Data Volume (NTFS, labelled, MS allocation unit)'
+      community.windows.win_format:
+        drive_letter: "{{ item.drive_letter }}"
+        file_system: ntfs
+        new_label: "{{ item.label }}"
+        allocation_unit_size: "{{ item.allocation_unit }}"
+        full: false
+        force: false
       loop: "{{ __data_disks__ }}"
       loop_control:
         label: "{{ item.purpose }}"
