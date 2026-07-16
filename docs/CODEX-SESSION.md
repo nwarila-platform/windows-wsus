@@ -1,14 +1,42 @@
 # CODEX-SESSION — the per-project Codex session for this repo
 
-**Symptom:** `codex exec` HANGS until timeout with no output (looks like infra flakiness or a
-slow model). Meanwhile `codex login status` cheerfully says *"Logged in using ChatGPT"* — it only
-reads the local file and never asks the server.
+## ⛔ #1 HANG CAUSE — stdin drain (read this BEFORE blaming auth/model/sandbox)
 
-**Cause:** the OAuth **refresh token was revoked**. Codex silently retries a dead websocket until
-the clock runs out. Confirm in one shot (do NOT fire more 8-minute retries):
+**Symptom:** `codex exec` HANGS to timeout with ZERO output — looks exactly like a slow model,
+a revoked token, "xhigh is too slow", or account contention. **It is almost always none of those.**
+
+**Cause (root-caused 2026-07-16, cost ~1h of a deadline session):** `codex exec` reads the prompt
+argument **and then also drains stdin** — the log line is `Reading additional input from stdin...`.
+In ANY non-interactive shell (Claude's Bash tool, `run_in_background`, a pipe like `| tail`), stdin
+is an open pipe that **never sends EOF**, so codex blocks on that read **forever, before the model
+turn even starts**. Proven with `RUST_LOG=info`: it hangs pre-turn at the stdin read; auth 200 OK,
+sandbox fine, and the actual turn (once unblocked) runs at xhigh in seconds.
+
+**THE FIX — append `< /dev/null` to EVERY non-interactive `codex exec`:**
 
 ```bash
-timeout 180 codex exec -s read-only "Reply READY"
+codex exec -p wsus -C ../.worktrees/Cxx "<prompt>" < /dev/null    # <-- ALWAYS
+```
+
+Diagnose in one shot if you ever doubt it:
+```bash
+RUST_LOG=info timeout 60 codex exec -p wsus "say hi" < /dev/null 2>&1 | grep -E "reasoning_effort|turn_ttft"
+# healthy => you see reasoning_effort="xhigh" and a turn completing. Hang WITHOUT </dev/null => stdin.
+```
+
+Corollaries proven the same day: the model's self-report of its reasoning effort is **unreliable**
+(it said "low" while telemetry said `xhigh`) — trust the otel `reasoning_effort=` line, not the
+model. Long "xhigh" runs were the stdin hang wearing a costume; xhigh itself is fast for bounded tasks.
+
+## #2 HANG CAUSE — revoked OAuth token
+
+Only after ruling out stdin: `codex login status` cheerfully says *"Logged in using ChatGPT"* — it
+only reads the local file and never asks the server. The OAuth **refresh token may be revoked**;
+codex silently retries a dead websocket until the clock runs out. Confirm in one shot (WITH the
+stdin fix, so you don't misdiagnose; do NOT fire more 8-minute retries):
+
+```bash
+timeout 180 codex exec -s read-only "Reply READY" < /dev/null
 # revoked token =>  401 Unauthorized  on wss://.../codex/responses
 #                   "Your access token could not be refreshed because your refresh token was revoked."
 ```
@@ -48,18 +76,25 @@ hand-typed flags. Validated against Codex 0.144.3's schema with `--strict-config
 | Key | Value | Why |
 |-----|-------|-----|
 | `model` | `gpt-5.6-sol` | the "Codex 5.6 (Sol)" named in `AGENTS.md` + `_handoff/loop/loader-change-protocol.md` |
+| `model_reasoning_effort` | `xhigh` | Director-pinned 2026-07-16 — real P2/P3 run at full depth (gpt-5.6-sol auto-picks `low` on short prompts). Confirm via otel `reasoning_effort=`, NOT the model's self-report. |
 | `sandbox_mode` | `read-only` | safe default (P2 review); P3 overrides with `-s workspace-write` |
 | `sandbox_workspace_write.writable_roots` | `/root/.cache`, `/root/.ansible` | `ansible-lint`/`ansible` exit before doing any work without these (was `--add-dir` by hand) |
 
 ```bash
 export CODEX_HOME=/root/.codex-homes/windows-wsus
 
-# P2 — adversarial plan review (read-only; profile default)
-codex exec -p wsus -o <scratchpad-file> "<review prompt>"
+# P2 — adversarial plan review (read-only; profile default). NOTE the </dev/null (stdin fix above).
+# Avoid -o <scratchpad-file>: scratchpad is outside writable_roots; capture stdout instead.
+codex exec -p wsus "<review prompt>" < /dev/null
 
 # P3 — execution in the piece's worktree (override the sandbox; writable_roots come from the profile)
-codex exec -p wsus -C ../.worktrees/Cxx -s workspace-write "<execution prompt>"
+codex exec -p wsus -C ../.worktrees/Cxx -s workspace-write "<execution prompt>" < /dev/null
 ```
+
+**Fast bounded-audit pattern (Director 2026-07-16, "break it into 2-3 small parallel audits"):**
+instead of one sprawling "verify everything" prompt, ask 2-3 razor-narrow questions (adherence /
+scope / gate-logic), each `PASS|FAIL:<reason>` on line 1. Each converges in seconds at xhigh; run
+them back-to-back (each `< /dev/null`). Used for the C05r P3 close-out — all three PASS in ~30s total.
 
 ## Notes
 
