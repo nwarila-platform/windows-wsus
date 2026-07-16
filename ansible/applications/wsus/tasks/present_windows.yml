@@ -305,6 +305,21 @@
       register: __susdb_probe__
       changed_when: false
 
+    # MS's wid-to-sql sequence stops WSUS + IIS before detach: WsusService and W3SVC hold
+    # SUSDB connections (the WSUS app pools live in W3SVC). The WID engine service
+    # MSSQL$MICROSOFT##WID deliberately stays running to execute the C06e detach. Gated on
+    # the C06c pending|orphaned contract; an orphaned resume may find them already stopped,
+    # a native no-op. C06h restarts both after verified attach. TRANSITIONAL: until C06h, a
+    # converged pending run ends with both stopped — acceptable in the revert-every-run lab.
+    - name: 'MAIN | Stop WSUS Services For Relocation'
+      ansible.windows.win_service:
+        name: '{{ item }}'
+        state: stopped
+      loop: ['WsusService', 'W3SVC']
+      loop_control:
+        label: '{{ item }}'
+      when: __susdb_probe__.stdout | trim in ['pending', 'orphaned']
+
     #endregion --- [ Main: SUSDB Relocation ] ----------------------------------------------- #
 
 #endregion --- [ Script ] -------------------------------------------------------------------- #
