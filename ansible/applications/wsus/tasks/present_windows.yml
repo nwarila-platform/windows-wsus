@@ -404,6 +404,18 @@
       changed_when: true
       when: __susdb_probe__.stdout | trim in ['pending', 'orphaned']
 
+    # C06d stopped IIS + WSUS for relocation; bring the stack back in reverse order (IIS first,
+    # then WSUS). UNGATED terminal desired-state: every run ends with both services running,
+    # reached only after C06g succeeds/skips (a bad attach fails). state: started is idempotent;
+    # WID never stopped, so SUSDB remains reachable.
+    - name: 'MAIN | Start WSUS Services After Relocation'
+      ansible.windows.win_service:
+        name: '{{ item }}'
+        state: started
+      loop: ['W3SVC', 'WsusService']
+      loop_control:
+        label: '{{ item }}'
+
     #endregion --- [ Main: SUSDB Relocation ] ----------------------------------------------- #
 
 #endregion --- [ Script ] -------------------------------------------------------------------- #
