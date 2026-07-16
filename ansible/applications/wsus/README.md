@@ -45,6 +45,7 @@ consumed configuration one cycle piece at a time.
 | `data_disks.content.label` | `WSUSDATA` | NTFS volume label for the WSUS content disk (F:) |
 | `data_disks.content.allocation_unit` | `4096` | NTFS allocation unit (bytes) for F: — 4 KiB NTFS default (MS is silent on WSUS-content cluster size) |
 | `content_subdir` | `WSUS` | WSUS content folder name; the role forms the content root as `<content drive letter>:\<content_subdir>` (e.g. `F:\WSUS`); `wsusutil postinstall` (C05) creates `WSUSContent` inside it |
+| `db_subdir` | `WID\Data` | SUSDB relocation target dir name; the role forms `<db drive letter>:\<db_subdir>` (e.g. `E:\WID\Data`); C06 relocates `SUSDB.mdf`/`.ldf` there |
 
 The role provisions a declared disk only when it is RAW or already carries its target
 drive letter. It refuses an initialized disk carrying a foreign drive letter, which
