@@ -141,7 +141,8 @@ clobber, verified at the module source). These stay `quiet: true` with an action
   built-in administrator over SSH is already elevated). Revisit for least-privilege
   runs (runas) when a non-admin service account is introduced — TBD.
 - Windows modules from `ansible.windows` (fallback `community.windows`); never invoke
-  raw PowerShell where a module exists — TBD threshold for `win_shell` escape hatch.
+  raw PowerShell where a module exists — escape-hatch threshold decided at C05, see the
+  PROPOSED (C05) rule below.
 - Loader Windows gaps are TD-001 workarounds in the playbook, not role hacks — see
   `docs/TECH-DEBT.md`.
 - **RATIFIED (C02a, 2026-07-15 — supersedes the C01r §5-ext) — required per-target
@@ -158,6 +159,26 @@ clobber, verified at the module source). These stay `quiet: true` with an action
   set_fact variable shadows the live facts store and silently hides every later
   facts module's results (proven C01/P4: `win_disk_facts` results invisible until
   the TD-001 seed was rewritten to `packages: {} / cacheable: true`).
+- **PROPOSED (C05, P2-refined) — the escape-hatch policy.** Native module FIRST, always
+  (C05 verified the gap empirically: 0 of 118 modules across `ansible.windows` +
+  `community.windows` cover WSUS server ops). Where no module exists:
+  1. `ansible.windows.win_command` in **`argv` form** is the sanctioned escape hatch
+     (each element auto-quoted per Win32 rules — spaced paths are a non-issue; no shell
+     parsing surface).
+  2. `win_shell` ONLY for genuine shell semantics — e.g. a PowerShell **cmdlet**
+     (`Get-WsusServer`), pipes, redirects. Never for plain .exe invocation.
+  3. Idempotency: `creates:`/`removes:` ONLY when the marker reliably represents
+     **completed** desired state. An artifact the command creates EARLY in its run does
+     NOT qualify — a midway failure leaves it behind and every later run silently
+     false-converges (C05/P2 rejected the community-standard `creates: ...\WSUSContent`
+     for exactly this). Where no reliable completion file exists, use the
+     **probe-gates-actor idiom**: a read-only registered probe
+     (`changed_when: false`, `failed_when: false` — nonzero rc IS the signal, not an
+     error) gating the mutating command via `when:` (C05: `Get-WsusServer` gating
+     `wsusutil postinstall`; the UpdateServicesDsc model, implemented natively).
+  4. No `chdir` when the tool has no working-directory requirement; invoke by absolute
+     path. No asserts on undocumented/localizable stdout — rc + a functional probe are
+     the contract.
 
 ## 6. Controller & toolchain — SEEDED
 
@@ -185,7 +206,9 @@ clobber, verified at the module source). These stay `quiet: true` with an action
 
 ## 8. Open questions (moved to RATIFIED/rule sections as cycles decide them)
 
-- `win_shell`/`win_command` escape-hatch policy and idempotency guards.
+- ~~`win_shell`/`win_command` escape-hatch policy and idempotency guards~~ — **DECIDED
+  (C05, 2026-07-16):** moved to the PROPOSED (C05) rule in §5; pending Director
+  ratification.
 - Handler usage & service-restart conventions on Windows.
 - Molecule (or equivalent) test story for Windows roles — framework roles ship
   `molecule/`; no Windows driver decision yet.
