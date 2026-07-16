@@ -107,6 +107,21 @@
         online: true
         force: false
 
+    # Creates a 100% partition (partition_size:-1 is the maximum free extent, the whole
+    # initialized disk) and assigns its drive letter. drive_letter is mandatory for
+    # win_partition idempotency; disk_number comes from the resolved disk
+    # ((item.matches | first).number). The partition remains unformatted until C02e.
+    - name: 'MAIN | Create 100% Data Partition With Drive Letter'
+      community.windows.win_partition:
+        disk_number: "{{ (item.matches | first).number }}"
+        partition_size: -1
+        drive_letter: "{{ item.drive_letter }}"
+        gpt_type: basic_data
+        state: present
+      loop: "{{ __data_disks__ }}"
+      loop_control:
+        label: "{{ item.purpose }}"
+
     #endregion --- [ Main: Data Volume Provisioning ] --------------------------------------- #
 
 #endregion --- [ Script ] -------------------------------------------------------------------- #
