@@ -29,9 +29,12 @@ Sequence:
 
 1. **C02 disk-provisioning arc — COMPLETE** (✅ C02a–e all merged; idempotent E:/F: volumes at MS
    allocation units, safety-guard-gated).
-2. **WSUS install spine — C03/C04/C05 ✅ merged (WSUS IS ALIVE: Get-WsusServer OK :8530), C06 🔄
-   ✅ COMPLETE** (SUSDB relocation C:→E:, C06a–i all merged; **SUSDB fully on E:**, C: originals retired,
-   WSUS operational — Get-WsusServer OK :8530, idempotent); **C07 (END verify) NEXT — the final piece**.
+2. **WSUS install + relocation spine — ✅ COMPLETE.** C03/C04/C05 merged (WSUS alive) + C05r (service-
+   independent postinstall guard) + C06a–i (SUSDB relocation C:→E:). **SUSDB fully on E:\WID\Data**
+   (ONLINE, read-write), content on F:\WSUS, WSUS operational (Get-WsusServer OK :8530), fully
+   idempotent, proven by a from-baseline E2E converge (`ok=34 changed=16 failed=0`). **C07 (END verify)
+   DROPPED** (Director: theater — every check is guaranteed by an upstream fail-closed gate; §4b).
+   **THE ROLE IS COMPLETE** — mission #1 done; next is the T-track endgame (backport → GitHub import).
 3. **§3 Director decisions** — can land any time; none block C02, but style §4b/§5
    ratification is cheapest before more pieces cite them.
 4. **C08+ — sync config, products/classifications, GPO-facing settings** (💤 scoped later).
@@ -177,16 +180,19 @@ _empty_
 
 ## ⏱️ SESSION HANDOFF — 2026-07-16 — for the next fresh session
 
-**STATE: C06i merged — the C06 SUSDB RELOCATION ARC IS COMPLETE.** `main` @ the C06i codification
-commit (merge `5e240ad [audited 2bb17fe]`). A composed run now converges a fresh box to a WORKING WSUS
-with **SUSDB living entirely on `E:\WID\Data`** (ONLINE + read-write), **content on `F:\WSUS`**,
-services RUNNING, `Get-WsusServer OK :8530`, C: holding only the WID system DBs. FULLY IDEMPOTENT (a
-re-run is `changed=0`: probe `relocated`, all destructive actors skip). **NEXT: C07 — the FINAL piece**:
-END verify (a read-only assertion block confirming `WsusService` running + `Get-WsusServer` +
-console :8530 answering + SUSDB on E: + content on F: — style §4 retry-loop idiom where a service/port
-needs settle time). After C07 the role is fully operational (mission #1 done) → endgame T-track
-(backport to `*-template`, GitHub import). `pre-C07` rolling snapshot from the converged post-C06i state
-(fully relocated, WSUS operational). Older handoff detail below is historical. `present_windows.yml`: read-only
+**STATE: THE WSUS ROLE IS COMPLETE (mission #1 done).** `main` @ the C07-drop codification commit.
+C07 (END verify) was DESIGNED + built + P4-green, then **DROPPED by Director decision** as engineering
+theater (every check is guaranteed by an upstream fail-closed gate: C06h service-start, C06g/C06i DB
+health, C05 ContentDir; conflicts with ratified §4b "don't assert what fails anyway"). The role is
+SELF-VERIFYING — a green converge is the proof. **Definitive proof: a full from-baseline E2E converge**
+(revert to RAW `pre-ansible-clean-ssh-ready` → one composed pass) went `ok=34 changed=16 failed=0`:
+disk init (GPT/partition/format E:+F:) → WSUS install (win_feature) → postinstall → the FULL relocation
+arc (stop→detach→copy→attach→start→delete C:) → a working WSUS with **SUSDB on `E:\WID\Data`** (ONLINE,
+read-write), **content on `F:\WSUS`**, services running, `Get-WsusServer OK :8530`. Per-piece
+idempotency proven (each C06x re-run `changed=0`, probe `relocated`). **NEXT: the T-track endgame** —
+backport this repo to a `*-template`, then GitHub import (`nwarila-platform` org); optionally C08+
+(sync config/products/classifications) if the Director scopes it. The rolling `pre-C07` snapshot is now
+just a converged-operational checkpoint (role done; no next build piece). Older detail below is historical. `present_windows.yml`: read-only
 guards (block-var resolution → one `win_disk_facts` gather → fail-closed Attached → C02b safety
 guard) + THREE disk mutations (`win_initialize_disk` → `win_partition` → `win_format`) + the
 **`Main: WSUS Installation`** region (C03 content root → C04 `win_feature` WSUS role → **C05r**
