@@ -30,8 +30,9 @@ Sequence:
 1. **C02 disk-provisioning arc — COMPLETE** (✅ C02a–e all merged; idempotent E:/F: volumes at MS
    allocation units, safety-guard-gated).
 2. **WSUS install spine — C03/C04/C05 ✅ merged (WSUS IS ALIVE: Get-WsusServer OK :8530), C06 🔄
-   in-flight** (SUSDB relocation C:→E:, decomposed C06a–i; C06a-c+U1+C05r+C06d-f+**C06g** merged; **SUSDB
-   NOW LIVE ON E:** (attached ONLINE + read-write, C: retained as fallback); **C06h (start services) NEXT**) → C07 END.
+   in-flight** (SUSDB relocation C:→E:, decomposed C06a–i; C06a-c+U1+C05r+C06d-g+**C06h** merged; **WSUS
+   OPERATIONAL on E:** (Get-WsusServer OK :8530, services running, SUSDB ONLINE on E:); **C06i (delete C:
+   originals, health-gated) NEXT** → then C07 END verify).
 3. **§3 Director decisions** — can land any time; none block C02, but style §4b/§5
    ratification is cheapest before more pieces cite them.
 4. **C08+ — sync config, products/classifications, GPO-facing settings** (💤 scoped later).
@@ -150,6 +151,7 @@ Sequence:
 | C06e | `win_shell` (SqlClient/WID pipe) — `SET SINGLE_USER WITH ROLLBACK IMMEDIATE` + `sp_detach_db 'SUSDB'` (gated ==pending); leaves files on C: (copy-don't-move) | ✅ merged `f961735 [audited 50b0079]` 2026-07-16 | P2 AGREE (8-point MS-cited); P3 50b0079; P4 green: converge detached (sys.master_files 0 rows) + .mdf/.ldf still on C: + failed=0, idempotency orphaned→skip changed=0. RTRACK-C06e. |
 | C06f | `win_copy remote_src` — copy SUSDB `.mdf`/`.ldf` `%SystemDrive%\Windows\WID\Data` → `E:\WID\Data` (gated pending\|orphaned; copy-don't-move) | ✅ merged `00696a1 [audited 0b9d2fe]` 2026-07-16 | P2 REVISE r1 (SystemDrive-derived source + MS 'copies') → AGREE r2; P3 0b9d2fe; P4 green: converge E: sizes match C: + C: intact + WID-svc ACE inherited=True on E: files + failed=0, idempotency changed=0 (checksum). RTRACK-C06f. |
 | C06g | `win_shell` (SqlClient/WID pipe) — `CREATE DATABASE SUSDB ... FOR ATTACH` from E: + fail-closed health gate (ONLINE + is_read_only=0 + all files on E:) + DROP-on-failure revert. The relocation pivot | ✅ merged `f4b39ae [audited 036d635]` 2026-07-16 | P2 REVISE r1→r2→r3 → AGREE r4 (4-round hardening: registered-but-unhealthy restart hole, DROP vs sp_detach_db, env-path injection, reader-close); P3 036d635; P4 green: converge SUSDB ONLINE+rw on E: + C: intact, idempotency relocated → all d/e/f/g SKIP changed=0. RTRACK-C06g. |
+| C06h | `win_service` state:started loop [W3SVC, WsusService], UNGATED terminal desired-state — returns WSUS to operational on the E: SUSDB | ✅ merged `afd14d6 [audited 4400687]` 2026-07-16 | P2 AGREE (7-point); P3 4400687; P4 green: converge both start + Get-WsusServer OK :8530 + SUSDB ONLINE on E:, idempotency changed=0. RTRACK-C06h. |
 | C07 | END verify: `WsusService` running + `Get-WsusServer` + console port 8530 + DB on E: / content on F: | ⛏️ | Retry-loop idiom (style §4). |
 | C08+ | Sync config, products/classifications, GPO-facing settings | 💤 | Scoped later, after C07 proves the spine. |
 
@@ -175,16 +177,16 @@ _empty_
 
 ## ⏱️ SESSION HANDOFF — 2026-07-16 — for the next fresh session
 
-**STATE: C06g merged — SUSDB NOW LIVE ON E: (attached ONLINE + read-write; C: retained as fallback).**
-`main` @ the C06g codification commit (merge `f4b39ae [audited 036d635]`). Gate reads 'relocated' (all
-files on E:). Services are STILL STOPPED (C06d stopped them; nothing has restarted them yet). **NEXT:
-C06h** — `win_service` state: started, loop [W3SVC, WsusService], ENSURE-STARTED (NOT relocation-gated:
-the role's end state is services-running regardless of relocation; win_service state:started is
-idempotent). Start order IIS→WSUS (reverse of C06d's stop). **Then C06i** — delete the C: SUSDB
-originals, INDEPENDENTLY health-gated (only when SUSDB is ONLINE+read_write on E: — the C06g forward
-commitment). **Then C07** — END verify (WsusService running + Get-WsusServer + :8530 + DB on E: /
-content on F:). `pre-C06h` rolling snapshot from the converged post-C06g state (services stopped, SUSDB
-relocated/ONLINE on E:, C: intact). Older handoff detail below is historical. `present_windows.yml`: read-only
+**STATE: C06h merged — WSUS OPERATIONAL on the relocated E: SUSDB.** `main` @ the C06h codification
+commit (merge `afd14d6 [audited 4400687]`). Services RUNNING, `Get-WsusServer OK :8530`, SUSDB ONLINE +
+read-write on `E:\WID\Data`. The C: SUSDB originals STILL EXIST (the last fallback). Gate reads
+'relocated'. **NEXT: C06i** — `ansible.windows.win_file state:absent` to delete the C: originals
+(`%SystemDrive%\Windows\WID\Data\SUSDB.mdf` + `SUSDB_log.ldf`), **INDEPENDENTLY health-gated** (the
+C06g forward commitment): a read-only probe must confirm SUSDB is ONLINE + read_write + all files under
+E: BEFORE deleting — never delete the fallback for a db that isn't verified-good on E:. Loop the two
+files. **Then C07** — END verify (WsusService running + Get-WsusServer + :8530 + DB on E: / content on
+F:). `pre-C06i` rolling snapshot from the converged post-C06h state (services running, SUSDB ONLINE on
+E:, C: originals still present). Older handoff detail below is historical. `present_windows.yml`: read-only
 guards (block-var resolution → one `win_disk_facts` gather → fail-closed Attached → C02b safety
 guard) + THREE disk mutations (`win_initialize_disk` → `win_partition` → `win_format`) + the
 **`Main: WSUS Installation`** region (C03 content root → C04 `win_feature` WSUS role → **C05r**
