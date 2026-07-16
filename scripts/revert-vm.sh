@@ -3,20 +3,33 @@
 # File: 'scripts/revert-vm.sh'
 # --- [ Description ] ----------------------------------------------------------------------- #
 #
-# Reverts the dev VM to the clean baseline snapshot and waits for SSH to answer.
+# Reverts the dev VM to a clean snapshot and waits for SSH to answer.
 # DISCIPLINE: run this before EVERY playbook execution — never deploy onto a dirty VM.
-# The baseline snapshot was taken RUNNING (memory included), so revert resumes the guest
-# almost instantly; 'vmrun start' is issued defensively for the powered-off case.
+# Default target is the fresh-OS baseline. Per-step discipline (Director, 2026-07-16):
+# REVERT_TO=pre-<piece> reverts to the rolling pre-change snapshot instead (taken by
+# scripts/snapshot-step.sh from the previous piece's verified, merged state) — prior
+# pieces then no-op fast instead of re-converging from scratch. The target must EXIST;
+# a typo fails loud here rather than silently reverting somewhere unexpected.
+# Snapshots are taken RUNNING (memory included), so revert resumes the guest almost
+# instantly; 'vmrun start' is issued defensively for the powered-off case.
 #
 # =========================================================================================== #
 set -euo pipefail
 
 VMRUN="/mnt/c/Program Files (x86)/VMware/VMware Workstation/vmrun.exe"
 VMX='D:\Documents\Virtual Machines\Windows Server 2025\Windows Server 2025.vmx'
-SNAPSHOT='pre-ansible-clean-ssh-ready'
+BASELINE='pre-ansible-clean-ssh-ready'
+SNAPSHOT="${REVERT_TO:-${BASELINE}}"
 GUEST_HOST='192.168.0.181'
 GUEST_USER='administrator'
 SSH_WAIT_SECS="${SSH_WAIT_SECS:-180}"
+
+# Validate the target snapshot exists (exact-name match) before reverting.
+if ! "${VMRUN}" -T ws listSnapshots "${VMX}" | grep -qxF "${SNAPSHOT}"; then
+    echo "!! snapshot '${SNAPSHOT}' not found on the VM — refusing to revert." >&2
+    "${VMRUN}" -T ws listSnapshots "${VMX}" >&2
+    exit 1
+fi
 
 echo ">> Reverting to snapshot '${SNAPSHOT}' ..."
 "${VMRUN}" -T ws revertToSnapshot "${VMX}" "${SNAPSHOT}"

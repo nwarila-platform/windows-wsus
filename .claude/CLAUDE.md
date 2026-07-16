@@ -15,8 +15,10 @@ checklist + position derivation before doing anything else.
    client-side empty agent.
 2. **VM reachable?** `ssh administrator@192.168.0.181 'hostname'` → `WIN-2FA90PRKORT`
    (static IP; baked into the baseline).
-3. **Baseline present?** `vmrun -T ws listSnapshots` on the VMX shows exactly one:
-   `pre-ansible-clean-ssh-ready`.
+3. **Baseline present?** `vmrun -T ws listSnapshots` on the VMX shows
+   `pre-ansible-clean-ssh-ready` plus AT MOST one rolling `pre-<piece>` step
+   snapshot (Director, 2026-07-16 — see `docs/VM-LIFECYCLE.md` §4; the rolling
+   name tells you which piece the VM is staged for).
 4. **Codex session authed?** This repo uses an ISOLATED per-project Codex home
    (Director, 2026-07-16): `export CODEX_HOME=/root/.codex-homes/windows-wsus` and drive
    Codex as `codex exec -p wsus ...` (the `wsus` profile pins model `gpt-5.6-sol`, a

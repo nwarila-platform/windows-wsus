@@ -67,7 +67,11 @@ Ansible portion is developed and executed today.
   192.168.0.181/24**, **2 vCPU / 4 GB RAM**, **two attached BLANK/RAW data disks
   20 GB + 30 GB**, fresh OS, no WSUS). The role is handed this exact machine and
   configures it end-to-end incl. disk init (style guide §4a). **Revert before EVERY
-  playbook execution** — `scripts/revert-vm.sh`, never against a dirty VM.
+  playbook execution** — `scripts/revert-vm.sh`, never against a dirty VM. Per-step
+  discipline (Director, 2026-07-16): one rolling `pre-<piece>` snapshot
+  (`scripts/snapshot-step.sh`, taken post-merge only) is the usual revert target
+  (`REVERT_TO=pre-<piece>`); the baseline stays the fresh-OS anchor, re-proven E2E
+  at END verify. At most TWO snapshots ever exist (`docs/VM-LIFECYCLE.md` §4).
 - Full lifecycle ownership (baseline contract, re-baselining, snapshot hygiene,
   DHCP-IP risk, failure playbook): `docs/VM-LIFECYCLE.md`.
 - `vmrun` lives at `/mnt/c/Program Files (x86)/VMware/VMware Workstation/vmrun.exe`.

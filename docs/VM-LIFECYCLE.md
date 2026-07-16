@@ -25,10 +25,16 @@ known-clean state.*
 - A baseline must NEVER be taken from a VM that has had a playbook run against it
   since the last revert. Clean chain only: revert → (baseline-level change) → snapshot.
 
-## 2. Daily loop (the only two supported modes)
+## 2. Daily loop (the only three supported modes)
 
 - **Normal:** `scripts/compose-and-run.sh -e env=int` — reverts first (gate built in),
   then composes and runs. Equivalent manual form: `scripts/revert-vm.sh` then run.
+- **Per-step (Director, 2026-07-16):** `REVERT_TO=pre-<piece> scripts/compose-and-run.sh
+  -e env=int` — reverts to the rolling pre-change snapshot (the previous piece's
+  verified, merged state; see §4) so all merged pieces no-op fast instead of
+  re-converging from the fresh OS. This IS a clean-revert run for P4 evidence — the
+  pre-change point is a known-verified state. The from-baseline E2E guarantee is
+  re-proven once at the END-verify piece (C07), from `pre-ansible-clean-ssh-ready`.
 - **Debug exception:** `SKIP_REVERT=1 scripts/compose-and-run.sh ...` — re-run against
   the CURRENT (dirty) state to iterate on a failure or inspect post-mortem. Rules:
   never draw idempotency or correctness conclusions from a dirty run; never snapshot
@@ -60,8 +66,16 @@ any cycle uses it.
 
 ## 4. Snapshot hygiene
 
-- Exactly ONE snapshot exists: the baseline. `vmrun snapshot` with an existing name
-  creates a DUPLICATE chain entry — always `deleteSnapshot` first (procedure above).
+- AT MOST TWO snapshots exist (amended from exactly-one — Director, 2026-07-16):
+  1. **The baseline** `pre-ansible-clean-ssh-ready` — the fresh-OS anchor. NEVER
+     touched outside the re-baseline procedure (§3).
+  2. **One rolling per-step snapshot** `pre-<piece>` (e.g. `pre-C06d`) — the
+     pre-change point for the NEXT piece, taken by `scripts/snapshot-step.sh` ONLY
+     from a **verified, merged** post-piece state (after P4.5 approval + P5 merge —
+     never mid-proof, never from a failed run). The script deletes the previous
+     rolling snapshot first, so the count never exceeds two.
+- `vmrun snapshot` with an existing name creates a DUPLICATE chain entry — always
+  `deleteSnapshot` first (`snapshot-step.sh` and the §3 procedure both enforce this).
 - No ad-hoc/experimental snapshots on this VM; a debug state worth keeping is a sign
   the piece needs a better proof, not a snapshot.
 - Snapshot deltas grow the disk over time; after many re-baselines, consolidate
