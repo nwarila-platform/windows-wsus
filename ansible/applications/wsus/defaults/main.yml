@@ -11,6 +11,10 @@
 # =========================================================================================== #
 ---
 wsus_defaults:
+  # WSUS content folder NAME only; the role joins it with data_disks.content.drive_letter to
+  # form the content root (e.g. F:\WSUS). wsusutil postinstall (C05) creates WSUSContent inside
+  # it. Name-only keeps the content drive in ONE place so it cannot drift.
+  content_subdir: 'WSUS'
   data_disks:
     # Drive letters consumed by the C02b state-aware safety guard (recognize an already-managed
     # disk by its target letter). These labels + allocation units are now consumed by C02e
