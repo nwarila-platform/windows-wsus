@@ -17,7 +17,16 @@ checklist + position derivation before doing anything else.
    (static IP; baked into the baseline).
 3. **Baseline present?** `vmrun -T ws listSnapshots` on the VMX shows exactly one:
    `pre-ansible-clean-ssh-ready`.
-4. Derive position per `_handoff/RESTART.md` §5, then confirm the next piece with
+4. **Codex session authed?** This repo uses an ISOLATED per-project Codex home
+   (Director, 2026-07-16): `export CODEX_HOME=/root/.codex-homes/windows-wsus` and drive
+   Codex as `codex exec -p wsus ...` (the `wsus` profile pins model `gpt-5.6-sol`, a
+   read-only default sandbox, and the `/root/.cache` + `/root/.ansible` writable roots —
+   no more hand-typed `--add-dir`). Check with `CODEX_HOME=... codex doctor` → expect
+   `✓ auth`. **A hanging `codex exec` is almost always a REVOKED token, not infra** —
+   `codex login status` lies ("Logged in") because it only reads the local file. Probe ONCE
+   (`timeout 180 codex exec -s read-only "Reply READY"` → 401 = revoked); do NOT retry-storm.
+   Only the Director can re-login — hand them `docs/CODEX-SESSION.md`.
+5. Derive position per `_handoff/RESTART.md` §5, then confirm the next piece with
    the Director.
 
 ## Your role in the strict-cycle (`_handoff/loop/STRICT-CYCLE-adapted.md`)
