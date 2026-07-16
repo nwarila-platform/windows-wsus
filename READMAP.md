@@ -30,7 +30,7 @@ Sequence:
 1. **C02 disk-provisioning arc — COMPLETE** (✅ C02a–e all merged; idempotent E:/F: volumes at MS
    allocation units, safety-guard-gated).
 2. **WSUS install spine — C03/C04/C05 ✅ merged (WSUS IS ALIVE: Get-WsusServer OK :8530), C06 🔄
-   in-flight** (SUSDB relocation C:→E:, decomposed C06a–i; C06a+C06b+U1 merged, C06c (probe) NEXT) →
+   in-flight** (SUSDB relocation C:→E:, decomposed C06a–i; C06a-c+U1 merged (gate LIVE: resumable three-state), C06d (stop services) NEXT) →
    C07 END verify.
 3. **§3 Director decisions** — can land any time; none block C02, but style §4b/§5
    ratification is cheapest before more pieces cite them.
@@ -180,7 +180,7 @@ WORKING WSUS: `Get-WsusServer` OK on :8530, WsusService Running/Automatic, WSUSC
 truth captured (RTRACK-C05): `ContentDir=F:\WSUS`, `SqlServerName=MICROSOFT##WID`,
 `Installed Role Services` flags all =2. §8 escape-hatch policy PROPOSED in the style guide (pending
 Director ratification — G-track). ⚠️ **The dev VM is DIRTY** (C05 proofs — live WSUS) — the next run
-reverts to the RAW baseline as always. Worktrees/branches removed; tree clean. **C06 in-flight: C06a+C06b+U1 (Users-ACL directive) merged; C06c (probe) next.**
+reverts to the RAW baseline as always. Worktrees/branches removed; tree clean. **C06 in-flight: C06a-c+U1 merged; C06d (win_service stop, gated) next. Actor contract: stdout|trim; d/f/g on pending|orphaned, e on pending.**
 
 **Codex tooling (2026-07-16):** this repo now has an ISOLATED per-project Codex session —
 `export CODEX_HOME=/root/.codex-homes/windows-wsus`, drive it as `codex exec -p wsus ...` (profile

@@ -179,6 +179,13 @@ clobber, verified at the module source). These stay `quiet: true` with an action
   4. No `chdir` when the tool has no working-directory requirement; invoke by absolute
      path. No asserts on undocumented/localizable stdout — rc + a functional probe are
      the contract.
+- **RATIFIED (C06c P4.5, Director 2026-07-16) — embedded PowerShell follows OTBS.** Any
+  multi-statement PowerShell inside a `win_shell` block scalar uses One True Brace Style:
+  opening brace on the statement line; cuddled `} elseif (...) {` / `} else {`; multi-statement
+  bodies on their own indented lines (4-space); NO semicolon statement-chaining; blank lines
+  between logical sections. Idiomatic one-line pipeline filter blocks
+  (`Where-Object { ... }`) stay inline — OTBS governs control statements. First applied:
+  the C06c relocation probe; binding on all later embedded scripts (C06e/C06g+).
 - **SEEDED (U1, 2026-07-16 — Director directive, P2-narrowed) — Users browse-access ACL
   hygiene.** Role-created directories INTENDED FOR INTERACTIVE ADMINISTRATION/BROWSING,
   under an explicitly documented trust model ("all interactive users are admins"), get an
