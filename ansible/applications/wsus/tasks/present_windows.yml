@@ -160,6 +160,20 @@
         path: "{{ __content_dir__ }}"
         state: directory
 
+    # Org convention (Director 2026-07-16): every interactive user on a server is an admin. An
+    # unreadable folder makes Explorer offer 'Continue', which stamps the admin's PERSONAL ACE
+    # onto the ACL — stale SIDs after they depart. The explicit Users grant kills the prompt.
+    # R&X only (writes stay behind deliberate elevation); explicit rather than relying on the
+    # format-default root-ACL inheritance, which a later hardening pass would silently remove.
+    - name: 'MAIN | Grant Users Browse Access On The Content Root'
+      ansible.windows.win_acl:
+        path: "{{ __content_dir__ }}"
+        user: 'BUILTIN\Users'
+        rights: 'ReadAndExecute'
+        type: allow
+        inherit: 'ContainerInherit, ObjectInherit'
+        state: present
+
     # Installs the WSUS role on the WID backend (MS Step 1: Install-WindowsFeature -Name
     # UpdateServices -IncludeManagementTools). The WID role services are named EXPLICITLY —
     # MS never states the bare-parent auto-pull verbatim, and a missing WidDB would only
@@ -227,6 +241,18 @@
         path: "{{ __wid_data_dir__ }}"
         user: 'NT SERVICE\MSSQL$MICROSOFT##WID'
         rights: 'FullControl'
+        type: allow
+        inherit: 'ContainerInherit, ObjectInherit'
+        state: present
+
+    # Same org convention as the content-root Users grant (see the WSUS Installation region).
+    # DB files readable by Users is accepted in this trust model — everyone is an admin anyway;
+    # this is ACL hygiene (stale-SID prevention), not access control.
+    - name: 'MAIN | Grant Users Browse Access On The WID Data Directory'
+      ansible.windows.win_acl:
+        path: "{{ __wid_data_dir__ }}"
+        user: 'BUILTIN\Users'
+        rights: 'ReadAndExecute'
         type: allow
         inherit: 'ContainerInherit, ObjectInherit'
         state: present
