@@ -217,6 +217,20 @@
         path: "{{ __wid_data_dir__ }}"
         state: directory
 
+    # Load-bearing ACL for the relocation: without it the C06g attach SUCCEEDS but SUSDB comes
+    # up READ-ONLY and WSUS silently stops syncing. Detach flips file ownership, so this dir
+    # grant (inherited by the copied .mdf/.ldf) is what guarantees the engine can open them.
+    # FullControl mirrors the engine's ACL on its own C:\Windows\WID\Data; the virtual account
+    # name is fixed by the WID instance (MICROSOFT##WID) — architectural, not config.
+    - name: 'MAIN | Grant WID Service Account Rights On The Relocation Target'
+      ansible.windows.win_acl:
+        path: "{{ __wid_data_dir__ }}"
+        user: 'NT SERVICE\MSSQL$MICROSOFT##WID'
+        rights: 'FullControl'
+        type: allow
+        inherit: 'ContainerInherit, ObjectInherit'
+        state: present
+
     #endregion --- [ Main: SUSDB Relocation ] ----------------------------------------------- #
 
 #endregion --- [ Script ] -------------------------------------------------------------------- #
