@@ -46,6 +46,12 @@ consumed configuration one strict-cycle piece at a time.
 | `data_disks.content.allocation_unit` | `4096` | NTFS allocation unit (bytes) for F: — 4 KiB NTFS default (MS is silent on WSUS-content cluster size) |
 | `content_subdir` | `WSUS` | WSUS content folder name; the role forms the content root as `<content drive letter>:\<content_subdir>` (e.g. `F:\WSUS`); `wsusutil postinstall` (C05) creates `WSUSContent` inside it |
 | `db_subdir` | `WID\Data` | SUSDB relocation target dir name; the role forms `<db drive letter>:\<db_subdir>` (e.g. `E:\WID\Data`); C06 relocates `SUSDB.mdf`/`.ldf` there |
+| `wsuspool.queue_length` | `2000` | WsusPool IIS app-pool request queue length (MS best-practice, up from 1000). C08 |
+| `wsuspool.private_memory_kb` | `0` | WsusPool private-memory recycle limit in KB; `0` = unlimited (MS value for a **dedicated** WSUS host). Override with a finite KB value on a shared/co-located host. C08 |
+| `wsuspool.virtual_memory_kb` | `0` | WsusPool virtual-memory recycle limit in KB; `0` = unlimited. C08 |
+| `wsuspool.periodic_restart` | `00:00:00` | WsusPool periodic-restart interval (`hh:mm:ss`); `00:00:00` disables the default 29-hour recycle. C08 |
+| `wsuspool.idle_timeout` | `00:00:00` | WsusPool idle timeout (`hh:mm:ss`); `00:00:00` disables idle shutdown. C08 |
+| `wsuspool.pinging_enabled` | `false` | WsusPool worker-process pinging; `false` stops IIS killing a busy worker. C08 |
 
 The role provisions a declared disk only when it is RAW or already carries its target
 drive letter. It refuses an initialized disk carrying a foreign drive letter, which
