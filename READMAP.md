@@ -30,8 +30,8 @@ Sequence:
 1. **C02 disk-provisioning arc — COMPLETE** (✅ C02a–e all merged; idempotent E:/F: volumes at MS
    allocation units, safety-guard-gated).
 2. **WSUS install spine — C03/C04/C05 ✅ merged (WSUS IS ALIVE: Get-WsusServer OK :8530), C06 🔄
-   in-flight** (SUSDB relocation C:→E:, decomposed C06a–i; C06a-c+U1+C05r+C06d+**C06e** merged; SUSDB
-   now DETACHED (files still on C:, copy-don't-move); **C06f (copy .mdf/.ldf C:→E:) NEXT**) → C07 END.
+   in-flight** (SUSDB relocation C:→E:, decomposed C06a–i; C06a-c+U1+C05r+C06d-e+**C06f** merged; SUSDB
+   detached + files now COPIED to E: (C: still intact); **C06g (attach FROM E: + verify ONLINE) NEXT**) → C07 END.
 3. **§3 Director decisions** — can land any time; none block C02, but style §4b/§5
    ratification is cheapest before more pieces cite them.
 4. **C08+ — sync config, products/classifications, GPO-facing settings** (💤 scoped later).
@@ -148,6 +148,7 @@ Sequence:
 | C06 | SUSDB relocation C:→E: — DECOMPOSED C06a–i (QUEUE.md; research + live probe 2026-07-16: zero-install SqlClient over the WID pipe, administrator=sysadmin, sys.master_files three-state gate, COPY-don't-move, ACL-before-attach) | 🔄 in-flight | C06a-c ✅ + U1 ✅ + C05r ✅ + C06d ✅ + **C06e ✅** (detach: sys.master_files 0 rows, files still on C:, idempotency orphaned-skip). **NEXT: C06f** — `win_copy remote_src` copy `.mdf`+`.ldf` C:→E: (gated pending\|orphaned). Then C06g attach → C06h start → C06i delete C: originals. |
 | C06d | `win_service` — stop `WsusService` + `W3SVC` (gated pending\|orphaned); WID engine STAYS running for the C06e detach | ✅ merged `ec9a0cb [audited 5bca897]` 2026-07-16 | P2 AGREE (7-point review); P3 5bca897; P4 green: converge both stop + WID Running + failed=0, idempotency changed=0, C05r cross-check (postinstall skips with services down). First cycle under per-step snapshot proof (`pre-C06d`). RTRACK-C06d. |
 | C06e | `win_shell` (SqlClient/WID pipe) — `SET SINGLE_USER WITH ROLLBACK IMMEDIATE` + `sp_detach_db 'SUSDB'` (gated ==pending); leaves files on C: (copy-don't-move) | ✅ merged `f961735 [audited 50b0079]` 2026-07-16 | P2 AGREE (8-point MS-cited); P3 50b0079; P4 green: converge detached (sys.master_files 0 rows) + .mdf/.ldf still on C: + failed=0, idempotency orphaned→skip changed=0. RTRACK-C06e. |
+| C06f | `win_copy remote_src` — copy SUSDB `.mdf`/`.ldf` `%SystemDrive%\Windows\WID\Data` → `E:\WID\Data` (gated pending\|orphaned; copy-don't-move) | ✅ merged `00696a1 [audited 0b9d2fe]` 2026-07-16 | P2 REVISE r1 (SystemDrive-derived source + MS 'copies') → AGREE r2; P3 0b9d2fe; P4 green: converge E: sizes match C: + C: intact + WID-svc ACE inherited=True on E: files + failed=0, idempotency changed=0 (checksum). RTRACK-C06f. |
 | C07 | END verify: `WsusService` running + `Get-WsusServer` + console port 8530 + DB on E: / content on F: | ⛏️ | Retry-loop idiom (style §4). |
 | C08+ | Sync config, products/classifications, GPO-facing settings | 💤 | Scoped later, after C07 proves the spine. |
 
@@ -173,13 +174,13 @@ _empty_
 
 ## ⏱️ SESSION HANDOFF — 2026-07-16 — for the next fresh session
 
-**STATE: C06e merged — SUSDB DETACHED from WID (files still on C:, copy-don't-move).** `main` @ the
-C06e codification commit (merge `f961735 [audited 50b0079]`). The gate now reads 'orphaned' (detached,
-0 rows). **NEXT: C06f** — `ansible.windows.win_copy remote_src: true` to COPY `SUSDB.mdf` + `SUSDB_log.ldf`
-from `C:\Windows\WID\Data` → `E:\WID\Data` (gated `stdout|trim in ['pending','orphaned']` per the C06c
-d/f/g contract; the C: originals STAY — deleted only at C06i after a verified E: attach). `pre-C06f`
-rolling snapshot from the converged post-C06e state (services stopped, SUSDB detached/orphaned, files
-on C:). Older `pre-C05r` handoff detail below is historical. `present_windows.yml`: read-only
+**STATE: C06f merged — SUSDB detached + files COPIED to E: (C: originals still intact, ACE inherited
+on E:).** `main` @ the C06f codification commit (merge `00696a1 [audited 0b9d2fe]`). Gate reads
+'orphaned' (detached; sys.master_files 0 rows). **NEXT: C06g** — attach SUSDB FROM E: via SqlClient:
+`CREATE DATABASE SUSDB ON (FILENAME = N'E:\WID\Data\SUSDB.mdf'), (FILENAME = N'E:\WID\Data\SUSDB_log.ldf')
+FOR ATTACH;` then verify state_desc ONLINE + files at E: (probe flips to 'relocated'). Gate `stdout|trim
+in ['pending','orphaned']` (C06c d/f/g contract). `pre-C06g` rolling snapshot from the converged post-C06f
+state (services stopped, SUSDB orphaned, files on BOTH C: and E:). Older handoff detail below is historical. `present_windows.yml`: read-only
 guards (block-var resolution → one `win_disk_facts` gather → fail-closed Attached → C02b safety
 guard) + THREE disk mutations (`win_initialize_disk` → `win_partition` → `win_format`) + the
 **`Main: WSUS Installation`** region (C03 content root → C04 `win_feature` WSUS role → **C05r**
