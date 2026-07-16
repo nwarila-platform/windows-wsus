@@ -31,5 +31,15 @@ wsus_defaults:
       drive_letter: 'F'
       label: 'WSUSDATA'
       allocation_unit: 4096
+  # MS WSUS best practices, "Disable recycling and configure memory limits". These are MS's
+  # dedicated-host defaults; shared/co-located hosts should override private_memory_kb with a
+  # finite limit and adjust the remaining WsusPool settings as required.
+  wsuspool:
+    queue_length: 2000
+    private_memory_kb: 0
+    virtual_memory_kb: 0
+    periodic_restart: '00:00:00'
+    idle_timeout: '00:00:00'
+    pinging_enabled: false
 # Disk identity (wid_disk_id / wsus_disk_id) is declared in the 'wsus:' override dict and read as
 # config.wid_disk_id / config.wsus_disk_id (see README); this file holds role-default conventions.
