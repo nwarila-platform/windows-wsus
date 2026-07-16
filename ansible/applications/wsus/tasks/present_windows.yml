@@ -480,7 +480,7 @@
 
     # MS WSUS best practices, "Disable recycling and configure memory limits": prevents the
     # scan-storm / HTTP-503 / high-memory cascade when a recycle drops + rebuilds the metadata
-    # cache. Private + virtual memory 0 is for this dedicated single-purpose WSUS host. The
+    # cache. Values are role defaults (config.wsuspool.*), overridable for shared hosts. The
     # native module diffs current vs desired (idempotent). Source:
     # learn.microsoft.com/troubleshoot/mem/configmgr/update-management/windows-server-update-services-best-practices
     - name: 'MAIN | Tune WsusPool Application Pool'
@@ -488,12 +488,12 @@
         name: WsusPool
         state: started
         attributes:
-          queueLength: 2000
-          recycling.periodicRestart.privateMemory: 0
-          recycling.periodicRestart.memory: 0
-          recycling.periodicRestart.time: '00:00:00'
-          processModel.idleTimeout: '00:00:00'
-          processModel.pingingEnabled: false
+          queueLength: '{{ config.wsuspool.queue_length | int }}'
+          recycling.periodicRestart.privateMemory: '{{ config.wsuspool.private_memory_kb | int }}'
+          recycling.periodicRestart.memory: '{{ config.wsuspool.virtual_memory_kb | int }}'
+          recycling.periodicRestart.time: '{{ config.wsuspool.periodic_restart }}'
+          processModel.idleTimeout: '{{ config.wsuspool.idle_timeout }}'
+          processModel.pingingEnabled: '{{ config.wsuspool.pinging_enabled | bool }}'
 
     #endregion --- [ Main: WSUS Tuning ] -------------------------------------------------- #
 
