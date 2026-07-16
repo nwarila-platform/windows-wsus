@@ -37,6 +37,10 @@
     __content_dir__: "{{ config.data_disks.content.drive_letter }}:\\{{ config.content_subdir }}"
     # SUSDB relocation target, same no-drift derivation as __content_dir__. Renders e.g. E:\WID\Data.
     __wid_data_dir__: "{{ config.data_disks.db.drive_letter }}:\\{{ config.db_subdir }}"
+    # WID instance's fixed default data directory under %SystemDrive% (MS-specified; SUSDB installs
+    # here — ground truth the C05 change record). Derived from the gathered SystemDrive fact, NOT literal C:
+    # and NOT from db_subdir (which names the configurable E: TARGET; the source is fixed by WID).
+    __wid_source_dir__: "{{ ansible_facts.env.SystemDrive }}\\Windows\\WID\\Data"
   block:
 
     #region ------ [ Initialization ] -------------------------------------------------------- #
@@ -338,6 +342,22 @@
       register: __susdb_detach__
       changed_when: true
       when: __susdb_probe__.stdout | trim == 'pending'
+
+    # MS wid-to-sql COPIES the detached DB files: copy-don't-move leaves the C: originals as the
+    # fallback until C06g verifies attach-from-E:; C06i deletes them then. win_copy is native and
+    # checksum-idempotent; remote_src keeps both endpoints on-guest. Copying into E:\WID\Data
+    # inherits the C06b WID-service FullControl ACE, preventing a read-only C06g attach. The
+    # explicit two-file list excludes WID system DBs (master/model/msdb/tempdb), which must not
+    # move. Gated pending|orphaned per the C06c d/f/g contract.
+    - name: 'MAIN | Copy SUSDB Files To Relocation Target'
+      ansible.windows.win_copy:
+        src: '{{ __wid_source_dir__ }}\{{ item }}'
+        dest: '{{ __wid_data_dir__ }}\{{ item }}'
+        remote_src: true
+      loop: ['SUSDB.mdf', 'SUSDB_log.ldf']
+      loop_control:
+        label: '{{ item }}'
+      when: __susdb_probe__.stdout | trim in ['pending', 'orphaned']
 
     #endregion --- [ Main: SUSDB Relocation ] ----------------------------------------------- #
 
