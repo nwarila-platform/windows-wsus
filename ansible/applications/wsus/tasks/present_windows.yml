@@ -32,6 +32,9 @@
         label: "{{ config.data_disks.content.label }}"
         allocation_unit: "{{ config.data_disks.content.allocation_unit }}"
         matches: "{{ ansible_facts.disks | selectattr('unique_id', 'equalto', config.wsus_disk_id | default('')) | list }}"
+    # Content root derived from the SINGLE source of truth (the content drive letter) + the folder name,
+    # so it can never drift onto a different volume than the one provisioned. Renders e.g. F:\WSUS.
+    __content_dir__: "{{ config.data_disks.content.drive_letter }}:\\{{ config.content_subdir }}"
   block:
 
     #region ------ [ Initialization ] -------------------------------------------------------- #
@@ -144,5 +147,17 @@
         label: "{{ item.purpose }}"
 
     #endregion --- [ Main: Data Volume Provisioning ] --------------------------------------- #
+
+    #region ------ [ Main: WSUS Installation ] ---------------------------------------------- #
+
+    # Creates the WSUS content root on the formatted content volume (derived F:\WSUS).
+    # win_file state:directory is idempotent (creates if absent, no-op if present).
+    # wsusutil postinstall (C05) creates WSUSContent inside it.
+    - name: 'MAIN | Ensure WSUS Content Directory Exists'
+      ansible.windows.win_file:
+        path: "{{ __content_dir__ }}"
+        state: directory
+
+    #endregion --- [ Main: WSUS Installation ] ---------------------------------------------- #
 
 #endregion --- [ Script ] -------------------------------------------------------------------- #
