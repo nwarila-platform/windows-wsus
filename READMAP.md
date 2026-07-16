@@ -30,7 +30,7 @@ Sequence:
 1. **C02 disk-provisioning arc — COMPLETE** (✅ C02a–e all merged; idempotent E:/F: volumes at MS
    allocation units, safety-guard-gated).
 2. **WSUS install spine — C03/C04/C05 ✅ merged (WSUS IS ALIVE: Get-WsusServer OK :8530), C06 🔄
-   in-flight** (SUSDB relocation C:→E:, decomposed C06a–i; C06a merged, C06b `win_acl` NEXT) →
+   in-flight** (SUSDB relocation C:→E:, decomposed C06a–i; C06a+C06b merged, C06c (read-only probe) NEXT) →
    C07 END verify.
 3. **§3 Director decisions** — can land any time; none block C02, but style §4b/§5
    ratification is cheapest before more pieces cite them.
@@ -144,7 +144,7 @@ Sequence:
 | C03 | Create the WSUS content dir on F: (derived `F:\WSUS`) via `ansible.windows.win_file` (state: directory); opens the 'Main: WSUS Installation' region | ✅ merged `c9ef489 [audited ef4ac89]` 2026-07-16 | `__content_dir__` derived from `data_disks.content.drive_letter` + `content_subdir` (no drift, no set_fact). Convergence changed=4 + idempotency changed=0; SSH-verified `F:\WSUS`; P4.5 approved. P3 unblocked by the isolated Codex session. RTRACK-C03. |
 | C04 | Install the WSUS role (WID): `win_feature` explicit `UpdateServices`+`-WidDB`+`-Services` + mgmt tools; `include_sub_features` UNSET (would pull `-DB`/SQL); NO reboot machinery | ✅ merged `31ecee7 [audited 655706c]` 2026-07-16 | 33 features resolved; SSH-verified incl. the `UpdateServices-DB` NOT-installed negative; **reboot measured UNNECESSARY (all 3 signals)**; idempotency `NoChangeNeeded` changed=0; P4.5 approved. RTRACK-C04. |
 | C05 | WSUS postinstall via `win_command` argv, gated by a read-only `Get-WsusServer` probe (FIRST §8 escape hatch — 0/118 modules cover WSUS server ops) | ✅ merged `28cee42 [audited 1a76964]` 2026-07-16 | WSUS ALIVE: SUSDB (10.2 MB) in WID on C:, WSUSContent on F:, IIS :8530/:8531 Started, WsusService Running/Automatic. Probe replaced the community `creates:` marker (P2: silent false convergence). Setup-key ground truth dumped (ContentDir=F:\WSUS, SqlServerName=MICROSOFT##WID, IRS flags all =2). Idempotency changed=0. §8 PROPOSED. RTRACK-C05. |
-| C06 | SUSDB relocation C:→E: — DECOMPOSED C06a–i (QUEUE.md; research + live probe 2026-07-16: zero-install SqlClient over the WID pipe, administrator=sysadmin, sys.master_files three-state gate, COPY-don't-move, ACL-before-attach) | 🔄 in-flight | C06a ✅ merged `aee94d3 [audited 3445c81]` (E:\WID\Data + `db_subdir` + 'Main: SUSDB Relocation' region). NEXT: C06b `win_acl` grant for `NT SERVICE\MSSQL$MICROSOFT##WID`. Then C06c probe → C06d stop svcs → C06e detach → C06f copy → C06g attach → C06h start → C06i delete C: originals. |
+| C06 | SUSDB relocation C:→E: — DECOMPOSED C06a–i (QUEUE.md; research + live probe 2026-07-16: zero-install SqlClient over the WID pipe, administrator=sysadmin, sys.master_files three-state gate, COPY-don't-move, ACL-before-attach) | 🔄 in-flight | C06a ✅ (E:\WID\Data) + C06b ✅ (WID service-account ACL, the READ-ONLY-attach insurance) merged. NEXT: C06c read-only probe (SqlClient → sys.master_files three-state gate). Then C06d stop svcs → C06e detach → C06f copy → C06g attach → C06h start → C06i delete C: originals. |
 | C07 | END verify: `WsusService` running + `Get-WsusServer` + console port 8530 + DB on E: / content on F: | ⛏️ | Retry-loop idiom (style §4). |
 | C08+ | Sync config, products/classifications, GPO-facing settings | 💤 | Scoped later, after C07 proves the spine. |
 
@@ -180,7 +180,7 @@ WORKING WSUS: `Get-WsusServer` OK on :8530, WsusService Running/Automatic, WSUSC
 truth captured (RTRACK-C05): `ContentDir=F:\WSUS`, `SqlServerName=MICROSOFT##WID`,
 `Installed Role Services` flags all =2. §8 escape-hatch policy PROPOSED in the style guide (pending
 Director ratification — G-track). ⚠️ **The dev VM is DIRTY** (C05 proofs — live WSUS) — the next run
-reverts to the RAW baseline as always. Worktrees/branches removed; tree clean. **C06 in-flight: C06a merged; C06b (win_acl) next.**
+reverts to the RAW baseline as always. Worktrees/branches removed; tree clean. **C06 in-flight: C06a+C06b merged; C06c (probe) next.**
 
 **Codex tooling (2026-07-16):** this repo now has an ISOLATED per-project Codex session —
 `export CODEX_HOME=/root/.codex-homes/windows-wsus`, drive it as `codex exec -p wsus ...` (profile
