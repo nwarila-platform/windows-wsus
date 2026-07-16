@@ -25,7 +25,8 @@ GUEST_USER='administrator'
 SSH_WAIT_SECS="${SSH_WAIT_SECS:-180}"
 
 # Validate the target snapshot exists (exact-name match) before reverting.
-if ! "${VMRUN}" -T ws listSnapshots "${VMX}" | grep -qxF "${SNAPSHOT}"; then
+# vmrun.exe is a Windows binary — its output is CRLF; strip \r or the -x match fails.
+if ! "${VMRUN}" -T ws listSnapshots "${VMX}" | tr -d '\r' | grep -qxF "${SNAPSHOT}"; then
     echo "!! snapshot '${SNAPSHOT}' not found on the VM — refusing to revert." >&2
     "${VMRUN}" -T ws listSnapshots "${VMX}" >&2
     exit 1
