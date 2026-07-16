@@ -66,7 +66,13 @@ checklist + position derivation before doing anything else.
   Source Control. **Leave it visible until they approve** — revert only at merge time,
   never before they have looked. Changes requested → bounded Codex repair in the
   worktree, then re-surface and re-ask. Never merge a role-file change the Director
-  has not eyeballed.
+  has not eyeballed. **Present it in the LOCKED P4.5 format (Director, 2026-07-16:
+  "mirror this EXACTLY"):** intro (preview live/unstaged, in Source Control → Changes)
+  → `## Cxx — <module> — ready for your review` → **The change** (yaml excerpt) →
+  **Cycle trace** table (`Phase | Result`, rows P2/P3/P4) → **Judgement calls**
+  (numbered) → **Files changed (role/playbook/style-guide)** → "Is this good to
+  merge?". Full template in `_handoff/loop/STRICT-CYCLE-adapted.md` §P4.5. See
+  [[p45-presentation-format]].
 - **Smallest MS-doc-grounded steps (Director, 2026-07-15):** each piece is the SMALLEST
   next best Ansible operation (≈ one module), grounded in the Microsoft-documented
   procedure. Decompose larger goals (C02 → C02a–e). After E2E validation, write a
