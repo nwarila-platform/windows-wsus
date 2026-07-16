@@ -27,11 +27,12 @@ Two standing rules from the Director shape everything:
 
 Sequence:
 
-1. **C02d–e — data volumes** (⛏️ next: C02d). Guard refactor COMPLETE; **C02c** (`win_initialize_disk`,
-   GPT-init — first mutation, idempotent) merged. Remaining mutations: C02d `win_partition` (100%
-   partition + drive letter, disk_number from `item.matches | first` `.number`) → C02e `win_format`
-   (NTFS+label; MS-rec allocation-unit — 64 KiB SQL/WID DB, MS-rec content). The C02b safety guard
-   gates each mutation; the guard chain is proven idempotent on GPT disks (C02c re-run changed=0).
+1. **C02e — data volumes** (⛏️ next: C02e). Guard refactor COMPLETE; **C02c** (`win_initialize_disk`,
+   GPT-init) and **C02d** (`win_partition` — 100% partition + drive letter E:/F:) merged; disks now
+   carry RAW/unformatted basic_data partitions. Remaining mutation: C02e `win_format` (NTFS+label;
+   MS-rec allocation-unit — 64 KiB SQL/WID DB E:, MS-rec content F: → research at P0). The C02b safety
+   guard gates each mutation; the guard chain is proven idempotent on GPT/partitioned disks (C02c+C02d
+   re-runs changed=0).
 2. **C03–C07 — the WSUS install spine** (staging dir → features → postinstall →
    SUSDB relocation → END verify), strictly in queue order.
 3. **§3 Director decisions** — can land any time; none block C02, but style §4b/§5
@@ -71,6 +72,12 @@ Sequence:
   the `wsus:` dict → `config` — see below.)
 - **Director reviews `present_windows.yml` before merge (P4.5, C01r):** eyes-on the
   role file + "is this good?" gate between P4 and P5. See [[STRICT-CYCLE-adapted.md]].
+- **P4.5 presentation format LOCKED (Director 2026-07-16, "mirror this EXACTLY"):** every
+  P4.5 surface uses the canonical shape — intro (unstaged preview in Source Control →
+  Changes) → `## Cxx — <module>` → **The change** (yaml excerpt) → **Cycle trace** table
+  (`Phase | Result`, P2/P3/P4) → **Judgement calls** (numbered) → **Files changed
+  (role/playbook/style-guide)** → "Is this good to merge?". Template in
+  `STRICT-CYCLE-adapted.md` §P4.5.
 - **C02a (2026-07-15):** disk ids are declared in the `wsus:` override dict and read as
   `config.wid_disk_id` / `config.wsus_disk_id` (framework idiom) — this REVERSED the
   C01r §5-ext (top-level inputs). `temp_dir` + ids co-locate in ONE `wsus:` declaration
@@ -119,8 +126,8 @@ Sequence:
 | R3 | Resolve each disk once via a block-var `matches` (NO set_fact — no cross-role bleed); Attached + safety reuse it; feeds C02d | ✅ merged `09a73b4 [audited afeef0c]` 2026-07-15 | VM safe-pass ok=15 + negative (fail-closed); P4.5 approved. RATIFIED §4 avoid-set_fact + §4b block-var resolution. RTRACK-R3. |
 | R4 | Guard trim: drop the Provided assert (§4b(a)) + refresh stale file-header | ✅ merged `fd206b4 [audited ed83585]` 2026-07-15 | VM safe-pass ok=14 + negative (id omitted → Attached 'found 0'); P4.5 approved. Guard refactor COMPLETE. RTRACK-R4. |
 | C02c | `win_initialize_disk` — GPT-init the two data disks (FIRST mutation) | ✅ merged `a0fe69c [audited 1b96d8e]` 2026-07-16 | Convergence RAW→GPT (Get-Disk) + idempotency re-run changed=0; P4.5 approved. `online:true` scoped to RAW-online baseline (Codex P2). RTRACK-C02c. |
-| C02d | `win_partition` — 100% partition (`partition_size: -1`) + drive letter | ⛏️ NEXT | disk_number from `item.matches | first` `.number` (win_partition needs disk_number); drive_letter mandatory for idempotency. |
-| C02e | `win_format` — NTFS + label (WSUSDB/WSUSDATA); **MS-recommended allocation-unit** (Director): 64 KiB SQL/WID `SUSDB` (E:), MS-rec content (F:, research at P0) | ⛏️ | `force: false` + preserved labels = idempotent; adds label/fs/alloc to defaults. |
+| C02d | `win_partition` — 100% partition (`partition_size: -1`) + drive letter | ✅ merged `92b3d6f [audited edd5c24]` 2026-07-16 | disk_number from `item.matches \| first` `.number`; drive_letter for idempotency; gpt_type basic_data. Convergence changed=2 + idempotency re-run changed=0; SSH-verified E:20GB/F:30GB RAW partitions; P4.5 approved. RTRACK-C02d. |
+| C02e | `win_format` — NTFS + label (WSUSDB/WSUSDATA); **MS-recommended allocation-unit** (Director): 64 KiB SQL/WID `SUSDB` (E:), MS-rec content (F:, research at P0) | ⛏️ NEXT | `force: false` + preserved labels = idempotent; adds label/fs/alloc to defaults. Formats the RAW E:/F: partitions C02d created. |
 | C03 | Role-owned staging dir via `ansible.windows.win_tempfile` (TD-001 stand-in) | ⛏️ | |
 | C04 | Install `UpdateServices` + `UpdateServices-WidDB` + `UpdateServices-Services` | ⛏️ | |
 | C05 | WSUS postinstall (`wsusutil.exe postinstall CONTENT_DIR=F:\WSUS…`) — idempotent guard | ⛏️ | `win_shell` escape-hatch policy (style §8) gets decided here at the latest. |
@@ -148,15 +155,17 @@ _empty_
 
 ---
 
-## ⏱️ SESSION HANDOFF — 2026-07-15 — for the next fresh session
+## ⏱️ SESSION HANDOFF — 2026-07-16 — for the next fresh session
 
-**STATE: C02c merged — first mutation LIVE (disks GPT-initialized).** `main` @ the C02c
-codification commit. `present_windows.yml`: the read-only guards (block-var resolution → one
-`win_disk_facts` gather → fail-closed Attached → the C02b safety guard) + the first mutation
-(`win_initialize_disk`, GPT-init, idempotent). Config-contract (distinctness) in `validate.yml`
-(loader **v3.1.0**, TD-003). A composed run now GPT-inits the two data disks (green recap ≠ "WSUS
-deployed"). ⚠️ **The dev VM is DIRTY** (disks left GPT by the C02c proofs) — the next run reverts
-to the RAW baseline as always. Worktrees/branches removed; tree clean. **C02d next.**
+**STATE: C02d merged — data disks GPT-initialized AND partitioned (E:/F:, RAW).** `main` @ the
+C02d codification commit (`92b3d6f [audited edd5c24]`). `present_windows.yml`: the read-only guards
+(block-var resolution → one `win_disk_facts` gather → fail-closed Attached → the C02b safety guard) +
+two mutations (`win_initialize_disk` GPT-init → `win_partition` 100% + drive letter). Config-contract
+(distinctness) in `validate.yml` (loader **v3.1.0**, TD-003). A composed run now GPT-inits AND
+partitions the two data disks into RAW E: (20 GB) / F: (30 GB) basic_data partitions (green recap ≠
+"WSUS deployed"; volumes still UNFORMATTED — that is C02e). ⚠️ **The dev VM is DIRTY** (disks left
+GPT+partitioned by the C02d proofs) — the next run reverts to the RAW baseline as always.
+Worktrees/branches removed; tree clean. **C02e next.**
 
 **Contract now:** disk ids are declared in the `wsus:` override dict and read as
 `config.wid_disk_id` (DB→E:WSUSDB) / `config.wsus_disk_id` (content→F:WSUSDATA), each the
@@ -184,9 +193,10 @@ composed-tree lint + fixtures + VM proofs in P4 · plain-gate ansible-lint exits
 so a `-e '{"wsus":{…}}'` proof override REPLACES the dict and MUST re-state
 `temp_dir: false`** (presence proof needs no `-e`; footgun confined to `-e` overrides).
 
-**Next action:** BUILD **C02d** — no pre-approval stop (refined loop, Director 2026-07-16: build the
-change, surface it at P4.5). `win_partition`: create a 100% partition (`partition_size: -1`) + assign
-the drive letter (E:/F:) on each initialized disk; `disk_number` from `item.matches | first` `.number`
-(win_partition requires disk_number); drive_letter is mandatory for idempotency. Surface the diff at
-P4.5. Then C02e `win_format` (NTFS+label; **MS-recommended allocation unit** — 64 KiB SQL/WID DB,
-MS-rec content, research at C02e P0). Ground each in the MS WSUS-on-WID procedure; revert before every run.
+**Next action:** BUILD **C02e** — no pre-approval stop (refined loop, Director 2026-07-16: build the
+change, surface it at P4.5 in the LOCKED presentation format). `win_format`: NTFS-format the RAW E:/F:
+partitions C02d created + set volume labels (WSUSDB / WSUSDATA), with the **MS-recommended allocation
+unit** — 64 KiB for the SQL/WID `SUSDB` DB volume (E:), and the MS-recommended size for the WSUS
+content volume (F:, to RESEARCH at C02e P0). `force: false` + preserved labels = idempotent; adds
+label/fs/allocation to defaults. Ground it in the MS WSUS-on-WID procedure; revert before every run.
+This closes the C02 disk-provisioning arc; C03 (staging dir) follows.
