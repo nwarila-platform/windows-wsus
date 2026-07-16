@@ -13,10 +13,15 @@
 wsus_defaults:
   data_disks:
     # Drive letters consumed by the C02b state-aware safety guard (recognize an already-managed
-    # disk by its target letter). Labels / filesystem / allocation unit land in C02e (win_format).
+    # disk by its target letter). These labels + allocation units are now consumed by C02e
+    # win_format (64 KiB = SUSDB/SQL best practice; 4 KiB = NTFS default for WSUS content).
     db:
       drive_letter: 'E'
+      label: 'WSUSDB'
+      allocation_unit: 65536
     content:
       drive_letter: 'F'
+      label: 'WSUSDATA'
+      allocation_unit: 4096
 # Disk identity (wid_disk_id / wsus_disk_id) is declared in the 'wsus:' override dict and read as
 # config.wid_disk_id / config.wsus_disk_id (see README); this file holds role-default conventions.
