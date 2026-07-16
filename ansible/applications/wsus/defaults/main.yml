@@ -15,6 +15,10 @@ wsus_defaults:
   # form the content root (e.g. F:\WSUS). wsusutil postinstall (C05) creates WSUSContent inside
   # it. Name-only keeps the content drive in ONE place so it cannot drift.
   content_subdir: 'WSUS'
+  # SUSDB target dir name only; joined with data_disks.db.drive_letter to form the relocation
+  # target (e.g. E:\WID\Data — mirrors the C:\Windows\WID\Data source layout). Name-only so the
+  # DB drive lives in ONE place (data_disks.db.drive_letter) — no drift. Consumed by C06.
+  db_subdir: 'WID\Data'
   data_disks:
     # Drive letters consumed by the C02b state-aware safety guard (recognize an already-managed
     # disk by its target letter). These labels + allocation units are now consumed by C02e
