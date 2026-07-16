@@ -77,3 +77,20 @@
   `tasks/validate.yml` before release; then bump `.framework-pin`, re-copy, and re-verify sha256
   equality → close TD-003 (restores the byte-identical invariant).
 - **Evidence:** the V change record + the both independent reviewers verdicts (loader-change gate).
+
+## TD-004 — WsusPool tuning uses the deprecated `community.windows.win_iis_webapppool`
+
+- **What:** C08 tunes the WsusPool IIS app pool with `community.windows.win_iis_webapppool`. That
+  module is **deprecated for removal in `community.windows` 4.0.0**, superseded by
+  `microsoft.iis.web_app_pool`.
+- **Why not switched now (C08 P2 r1 decision):** `microsoft.iis` is **NOT installed** in this
+  controller's collection set (only `community.windows 3.3.0` + `ansible.windows`). Switching would
+  add a new collection dependency (a framework/galaxy change) for a module that works today; the
+  removal is a future 4.0.0 event, not present in 3.3.0.
+- **Debt:** the role depends on a module slated for removal; a future `community.windows` 4.x bump
+  would break C08.
+- **Rollout:** when the collection set is next bumped (or `microsoft.iis` is added as a dependency),
+  migrate the `MAIN | Tune WsusPool Application Pool` task from `community.windows.win_iis_webapppool`
+  to `microsoft.iis.web_app_pool` (verify the `attributes` mapping / parameter shape), add
+  `microsoft.iis` to the composition's collection requirements, and re-run the C08 proofs → close TD-004.
+- **Evidence:** C08 packet `moduleChoice.moduleDeprecationNote` + the C08. change record
