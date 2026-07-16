@@ -27,13 +27,11 @@ Two standing rules from the Director shape everything:
 
 Sequence:
 
-1. **C02 disk-provisioning arc — COMPLETE** (✅ C02a–e all merged). The two data volumes are
-   GPT-initialized (C02c) → 100% partitioned + lettered E:/F: (C02d) → NTFS-formatted + labelled
-   WSUSDB/WSUSDATA at MS allocation units (C02e: E:64 KiB SUSDB/SQL, F:4 KiB NTFS-default). The C02b
-   safety guard gates every mutation; the full chain is proven idempotent (C02c+C02d+C02e re-runs
-   changed=0). **Next lane = the WSUS install spine, starting C03.**
-2. **C03–C07 — the WSUS install spine** (⛏️ NEXT: C03 staging dir → features → postinstall →
-   SUSDB relocation → END verify), strictly in queue order.
+1. **C02 disk-provisioning arc — COMPLETE** (✅ C02a–e all merged; idempotent E:/F: volumes at MS
+   allocation units, safety-guard-gated).
+2. **WSUS install spine — C03/C04/C05 ✅ merged (WSUS IS ALIVE: Get-WsusServer OK :8530), C06 🔄
+   in-flight** (SUSDB relocation C:→E:, decomposed C06a–i; C06a merged, C06b `win_acl` NEXT) →
+   C07 END verify.
 3. **§3 Director decisions** — can land any time; none block C02, but style §4b/§5
    ratification is cheapest before more pieces cite them.
 4. **C08+ — sync config, products/classifications, GPO-facing settings** (💤 scoped later).
