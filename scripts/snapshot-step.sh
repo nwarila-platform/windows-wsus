@@ -28,7 +28,9 @@ NAME="pre-$1"
 [ "${NAME}" != "${BASELINE}" ] || { echo "!! refusing to touch the baseline name" >&2; exit 1; }
 
 # Delete any existing rolling snapshot (everything except the baseline).
-"${VMRUN}" -T ws listSnapshots "${VMX}" | tail -n +2 | while IFS= read -r snap; do
+# vmrun.exe emits CRLF — strip \r BEFORE comparing, or the baseline-skip test fails
+# and the delete targets a '\r'-mangled name (worst case: the baseline itself).
+"${VMRUN}" -T ws listSnapshots "${VMX}" | tr -d '\r' | tail -n +2 | while IFS= read -r snap; do
     [ -n "${snap}" ] || continue
     [ "${snap}" = "${BASELINE}" ] && continue
     echo ">> Deleting previous rolling snapshot '${snap}' ..."
