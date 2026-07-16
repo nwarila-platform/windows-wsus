@@ -93,6 +93,20 @@
           not clobber existing data — clear the disk or correct the identifier.
         quiet: true
 
+    # This first mutation is gated by the safety assert above. force:false is idempotent
+    # (a no-op on an already-GPT disk); online:true defensively onlines an offline RAW disk
+    # (the handed RAW-Online-writable disks need no change here), but is not a general
+    # read-only fix for non-RAW disks. uniqueid targets the disk directly without disk_number.
+    - name: 'MAIN | Initialize Data Disk (GPT, online, writable)'
+      loop: "{{ __data_disks__ }}"
+      loop_control:
+        label: "{{ item.purpose }}"
+      community.windows.win_initialize_disk:
+        uniqueid: "{{ item.id }}"
+        style: gpt
+        online: true
+        force: false
+
     #endregion --- [ Main: Data Volume Provisioning ] --------------------------------------- #
 
 #endregion --- [ Script ] -------------------------------------------------------------------- #
