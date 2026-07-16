@@ -145,8 +145,8 @@ Sequence:
 | ~~C03~~ | ~~Role-owned staging dir via `win_tempfile`~~ | ❌ DROPPED 2026-07-16 | MS install spine needs no staging/temp dir (research). |
 | C03 | Create the WSUS content dir on F: (derived `F:\WSUS`) via `ansible.windows.win_file` (state: directory); opens the 'Main: WSUS Installation' region | ✅ merged `c9ef489 [audited ef4ac89]` 2026-07-16 | `__content_dir__` derived from `data_disks.content.drive_letter` + `content_subdir` (no drift, no set_fact). Convergence changed=4 + idempotency changed=0; SSH-verified `F:\WSUS`; P4.5 approved. P3 unblocked by the isolated Codex session. RTRACK-C03. |
 | C04 | Install the WSUS role (WID): `win_feature` explicit `UpdateServices`+`-WidDB`+`-Services` + mgmt tools; `include_sub_features` UNSET (would pull `-DB`/SQL); NO reboot machinery | ✅ merged `31ecee7 [audited 655706c]` 2026-07-16 | 33 features resolved; SSH-verified incl. the `UpdateServices-DB` NOT-installed negative; **reboot measured UNNECESSARY (all 3 signals)**; idempotency `NoChangeNeeded` changed=0; P4.5 approved. RTRACK-C04. |
-| C05 | WSUS postinstall: `wsusutil.exe postinstall CONTENT_DIR="F:\WSUS"` (from `C:\Program Files\Update Services\Tools`) — idempotent guard | ⛏️ NEXT | Creates SUSDB (in WID, on C:), WSUSContent, IIS 8530; activates `WsusService` (currently Stopped/Disabled — C04 baseline data). `win_shell`/`win_command` escape-hatch policy (§8) decided here. Proof must settle whether postinstall needs CONTENT_DIR pre-existing. |
-| C06 | Relocate SUSDB `C:\Windows\WID\Data` → `E:` (community, MS-unsupported per Director 2026-07-16): stop WsusService → detach via `\\.\pipe\Microsoft##WID\tsql\query` → move `.mdf`/`.ldf` → reattach → start | ⛏️ | Move-before-first-sync. Will sub-decompose C06a–e. |
+| C05 | WSUS postinstall via `win_command` argv, gated by a read-only `Get-WsusServer` probe (FIRST §8 escape hatch — 0/118 modules cover WSUS server ops) | ✅ merged `28cee42 [audited 1a76964]` 2026-07-16 | WSUS ALIVE: SUSDB (10.2 MB) in WID on C:, WSUSContent on F:, IIS :8530/:8531 Started, WsusService Running/Automatic. Probe replaced the community `creates:` marker (P2: silent false convergence). Setup-key ground truth dumped (ContentDir=F:\WSUS, SqlServerName=MICROSOFT##WID, IRS flags all =2). Idempotency changed=0. §8 PROPOSED. RTRACK-C05. |
+| C06 | Relocate SUSDB `C:\Windows\WID\Data` → `E:` (community, MS-unsupported per Director 2026-07-16): stop WsusService → detach via `\\.\pipe\Microsoft##WID\tsql\query` → move `.mdf`/`.ldf` → reattach → start | ⛏️ NEXT | Move-before-first-sync. Sub-decompose C06a–e at P0. Ground truth in hand (C05 dump): SqlServerName=MICROSOFT##WID, SUSDB.mdf 10.2 MB + log 1.1 MB at C:\Windows\WID\Data; orphaned-SUSDB failure mode noted (research). sqlcmd availability on the box = first P0 check. |
 | C07 | END verify: `WsusService` running + `Get-WsusServer` + console port 8530 + DB on E: / content on F: | ⛏️ | Retry-loop idiom (style §4). |
 | C08+ | Sync config, products/classifications, GPO-facing settings | 💤 | Scoped later, after C07 proves the spine. |
 
@@ -172,18 +172,18 @@ _empty_
 
 ## ⏱️ SESSION HANDOFF — 2026-07-16 — for the next fresh session
 
-**STATE: C04 merged — WSUS software is INSTALLED (not yet configured).** `main` @ the C04
-codification commit. `present_windows.yml`: the read-only guards (block-var resolution → one
-`win_disk_facts` gather → fail-closed Attached → the C02b safety guard) + THREE disk mutations
-(`win_initialize_disk` → `win_partition` → `win_format`) + the **`Main: WSUS Installation`** region
-(C03 `win_file` content root `F:\WSUS` → C04 `win_feature` WSUS role on WID). A composed run now:
-provisions E:/F:, creates `F:\WSUS`, and installs 33 features (WSUS + WID + IIS/WAS + mgmt tools).
-**`WsusService` is Stopped/Disabled and SUSDB does not exist yet — postinstall (C05) is what
-activates WSUS.** Reboot after the feature install: **measured UNNECESSARY** (reboot_required=false,
-exitcode=Success, guest registry clear) — no reboot piece will be built (§4b). `UpdateServices-DB`
-(SQL) confirmed NOT installed (WID guarantee). ⚠️ **The dev VM is DIRTY** (C04 proofs — WSUS
-installed) — the next run reverts to the RAW baseline as always. Worktrees/branches removed; tree
-clean. **C05 next (wsusutil postinstall).**
+**STATE: C05 merged — WSUS is ALIVE (installed AND configured).** `main` @ the C05 codification
+commit. `present_windows.yml`: the read-only guards (block-var resolution → one `win_disk_facts`
+gather → fail-closed Attached → the C02b safety guard) + THREE disk mutations (`win_initialize_disk`
+→ `win_partition` → `win_format`) + the **`Main: WSUS Installation`** region (C03 content root →
+C04 `win_feature` WSUS role → C05 probe-gated `wsusutil postinstall`). A composed run now delivers a
+WORKING WSUS: `Get-WsusServer` OK on :8530, WsusService Running/Automatic, WSUSContent on F:,
+**SUSDB (10.2 MB) in WID at `C:\Windows\WID\Data` — the C06 relocation source**. Registry ground
+truth captured (RTRACK-C05): `ContentDir=F:\WSUS`, `SqlServerName=MICROSOFT##WID`,
+`Installed Role Services` flags all =2. §8 escape-hatch policy PROPOSED in the style guide (pending
+Director ratification — G-track). ⚠️ **The dev VM is DIRTY** (C05 proofs — live WSUS) — the next run
+reverts to the RAW baseline as always. Worktrees/branches removed; tree clean. **C06 next (SUSDB
+relocation C:→E:, the Director-approved MS-unsupported community operation — sub-decompose at P0).**
 
 **Codex tooling (2026-07-16):** this repo now has an ISOLATED per-project Codex session —
 `export CODEX_HOME=/root/.codex-homes/windows-wsus`, drive it as `codex exec -p wsus ...` (profile
@@ -217,16 +217,15 @@ composed-tree lint + fixtures + VM proofs in P4 · plain-gate ansible-lint exits
 so a `-e '{"wsus":{…}}'` proof override REPLACES the dict and MUST re-state
 `temp_dir: false`** (presence proof needs no `-e`; footgun confined to `-e` overrides).
 
-**Next action:** BUILD **C05** — no pre-approval stop (refined loop: build, surface at P4.5 in the
-LOCKED format). C05 = `wsusutil.exe postinstall CONTENT_DIR="F:\WSUS"` run from
-`C:\Program Files\Update Services\Tools` — creates SUSDB in WID (on C:, relocated at C06), creates
-`WSUSContent` inside `F:\WSUS`, configures the IIS 'WSUS Administration' site (8530), activates
-`WsusService` (Stopped/Disabled after C04 — measured baseline). **P0 decisions:** module choice —
-no native module exists, so this is the §8 escape-hatch piece (`win_command` preferred over
-`win_shell`; decide + ratify the policy); the IDEMPOTENCY GUARD (wsusutil postinstall is NOT
-idempotent by itself — guard on SUSDB existing / WSUSContent / the IIS site / a registry marker;
-research which signal is authoritative); use `config.content_dir`-equivalent = the derived
-`__content_dir__` block-var (C03). NOTE: postinstall is LONG (minutes, creates the DB). Proof must
-also settle whether postinstall needs CONTENT_DIR pre-existing (C03's softened claim). Reboot: NOT
-needed (C04 measured all-clear). Then C06 (community SUSDB relocation C:→E:, Director-approved
-MS-unsupported; sub-decompose C06a–e) → C07 (verify). Revert before every run.
+**Next action:** P0 for **C06** — the SUSDB relocation `C:\Windows\WID\Data` → `E:` (community
+detach/move/attach, Director-approved MS-unsupported; move-before-first-sync). **SUB-DECOMPOSE at
+P0 into the smallest per-module steps (C06a–e-ish):** stop `WsusService` (+ W3SVC?) →
+detach SUSDB via the WID named pipe `\\.\pipe\Microsoft##WID\tsql\query` (sqlcmd — FIRST P0 CHECK:
+is sqlcmd even on the box? Server 2025 ships no SQL tools by default — research the invoke path:
+sqlcmd install? Invoke-Sqlcmd? .NET SqlClient via PowerShell?) → move `.mdf`/`.ldf` to E: →
+re-attach from E: → start services. Ground truth in hand (RTRACK-C05): `SqlServerName=MICROSOFT##WID`,
+SUSDB.mdf 10.2 MB + log 1.1 MB. Known failure mode to design against: ORPHANED SUSDB files
+(present-but-not-attached → postinstall/attach errors). Idempotency: skip if SUSDB already lives on
+E: (probe the WID catalog, not the filesystem). Each piece through the full cycle; P4.5 in the
+LOCKED format; revert before every run. Then C07 (END verify: WsusService + Get-WsusServer + :8530 +
+DB on E: / content on F:). Open G-track item: Director ratification of the PROPOSED §8 policy.
