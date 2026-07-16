@@ -144,8 +144,8 @@ Sequence:
 | C02e | `win_format` — NTFS + label (WSUSDB/WSUSDATA) at **MS allocation units**: 64 KiB SQL/WID `SUSDB` (E:), 4 KiB NTFS-default content (F:, researched — MS silent) | ✅ merged `954c538 [audited 274c9d0]` 2026-07-16 | `force:false` idempotent (verified vs module source + live RAW probe). Convergence changed=3 (format ran, no force error) + idempotency re-run changed=0; SSH-verified E:NTFS/WSUSDB/65536, F:NTFS/WSUSDATA/4096; P4.5 approved. Closes the C02 arc. RTRACK-C02e. |
 | ~~C03~~ | ~~Role-owned staging dir via `win_tempfile`~~ | ❌ DROPPED 2026-07-16 | MS install spine needs no staging/temp dir (research). |
 | C03 | Create the WSUS content dir on F: (derived `F:\WSUS`) via `ansible.windows.win_file` (state: directory); opens the 'Main: WSUS Installation' region | ✅ merged `c9ef489 [audited ef4ac89]` 2026-07-16 | `__content_dir__` derived from `data_disks.content.drive_letter` + `content_subdir` (no drift, no set_fact). Convergence changed=4 + idempotency changed=0; SSH-verified `F:\WSUS`; P4.5 approved. P3 unblocked by the isolated Codex session. RTRACK-C03. |
-| C04 | Install the WSUS role (WID): `win_feature` `UpdateServices` + `UpdateServices-WidDB` + `UpdateServices-Services` (+ mgmt-tools decision); handle pending reboot | ⛏️ NEXT | WID is the default backend (no SQL sub-feature). MS Step 1: `Install-WindowsFeature -Name UpdateServices -IncludeManagementTools`. |
-| C05 | WSUS postinstall: `wsusutil.exe postinstall CONTENT_DIR="F:\WSUS"` (from `C:\Program Files\Update Services\Tools`) — idempotent guard | ⛏️ | Creates SUSDB (in WID, on C:), WSUSContent, IIS 8530. `win_shell`/`win_command` escape-hatch policy (§8) decided here at the latest. |
+| C04 | Install the WSUS role (WID): `win_feature` explicit `UpdateServices`+`-WidDB`+`-Services` + mgmt tools; `include_sub_features` UNSET (would pull `-DB`/SQL); NO reboot machinery | ✅ merged `31ecee7 [audited 655706c]` 2026-07-16 | 33 features resolved; SSH-verified incl. the `UpdateServices-DB` NOT-installed negative; **reboot measured UNNECESSARY (all 3 signals)**; idempotency `NoChangeNeeded` changed=0; P4.5 approved. RTRACK-C04. |
+| C05 | WSUS postinstall: `wsusutil.exe postinstall CONTENT_DIR="F:\WSUS"` (from `C:\Program Files\Update Services\Tools`) — idempotent guard | ⛏️ NEXT | Creates SUSDB (in WID, on C:), WSUSContent, IIS 8530; activates `WsusService` (currently Stopped/Disabled — C04 baseline data). `win_shell`/`win_command` escape-hatch policy (§8) decided here. Proof must settle whether postinstall needs CONTENT_DIR pre-existing. |
 | C06 | Relocate SUSDB `C:\Windows\WID\Data` → `E:` (community, MS-unsupported per Director 2026-07-16): stop WsusService → detach via `\\.\pipe\Microsoft##WID\tsql\query` → move `.mdf`/`.ldf` → reattach → start | ⛏️ | Move-before-first-sync. Will sub-decompose C06a–e. |
 | C07 | END verify: `WsusService` running + `Get-WsusServer` + console port 8530 + DB on E: / content on F: | ⛏️ | Retry-loop idiom (style §4). |
 | C08+ | Sync config, products/classifications, GPO-facing settings | 💤 | Scoped later, after C07 proves the spine. |
@@ -172,16 +172,18 @@ _empty_
 
 ## ⏱️ SESSION HANDOFF — 2026-07-16 — for the next fresh session
 
-**STATE: C03 merged — disks fully provisioned AND the WSUS install spine has opened.** `main` @ the
-C03 codification commit. `present_windows.yml`: the read-only guards (block-var resolution → one
+**STATE: C04 merged — WSUS software is INSTALLED (not yet configured).** `main` @ the C04
+codification commit. `present_windows.yml`: the read-only guards (block-var resolution → one
 `win_disk_facts` gather → fail-closed Attached → the C02b safety guard) + THREE disk mutations
-(`win_initialize_disk` → `win_partition` → `win_format`) + the new **`Main: WSUS Installation`**
-region whose first task creates the derived content root **`F:\WSUS`** (`win_file`). Config-contract
-(distinctness) in `validate.yml` (loader **v3.1.0**, TD-003). A composed run now takes the two RAW
-data disks to **NTFS volumes (E: WSUSDB 20 GB @ 64 KiB, F: WSUSDATA 30 GB @ 4 KiB)** and creates
-`F:\WSUS` (green recap ≠ "WSUS deployed" — **no WSUS software is installed yet; that is C04+**).
-⚠️ **The dev VM is DIRTY** (C03 proofs) — the next run reverts to the RAW baseline as always.
-Worktrees/branches removed; tree clean. **C04 next (install the UpdateServices features).**
+(`win_initialize_disk` → `win_partition` → `win_format`) + the **`Main: WSUS Installation`** region
+(C03 `win_file` content root `F:\WSUS` → C04 `win_feature` WSUS role on WID). A composed run now:
+provisions E:/F:, creates `F:\WSUS`, and installs 33 features (WSUS + WID + IIS/WAS + mgmt tools).
+**`WsusService` is Stopped/Disabled and SUSDB does not exist yet — postinstall (C05) is what
+activates WSUS.** Reboot after the feature install: **measured UNNECESSARY** (reboot_required=false,
+exitcode=Success, guest registry clear) — no reboot piece will be built (§4b). `UpdateServices-DB`
+(SQL) confirmed NOT installed (WID guarantee). ⚠️ **The dev VM is DIRTY** (C04 proofs — WSUS
+installed) — the next run reverts to the RAW baseline as always. Worktrees/branches removed; tree
+clean. **C05 next (wsusutil postinstall).**
 
 **Codex tooling (2026-07-16):** this repo now has an ISOLATED per-project Codex session —
 `export CODEX_HOME=/root/.codex-homes/windows-wsus`, drive it as `codex exec -p wsus ...` (profile
@@ -215,14 +217,16 @@ composed-tree lint + fixtures + VM proofs in P4 · plain-gate ansible-lint exits
 so a `-e '{"wsus":{…}}'` proof override REPLACES the dict and MUST re-state
 `temp_dir: false`** (presence proof needs no `-e`; footgun confined to `-e` overrides).
 
-**Next action:** BUILD **C04** — no pre-approval stop (refined loop: build, surface at P4.5 in the
-LOCKED format). C04 = install the WSUS role on WID via `ansible.windows.win_feature`: MS Step 1 is
-`Install-WindowsFeature -Name UpdateServices -IncludeManagementTools` (bare `UpdateServices` defaults
-to WID — no SQL sub-feature); the explicit granular set is `UpdateServices` + `UpdateServices-WidDB`
-+ `UpdateServices-Services`. **P0 decisions to make:** bare-parent vs explicit sub-features;
-`include_management_tools` (console/RSAT — needed for `Get-WsusServer` at C07?); reboot handling
-(`win_feature` reports `reboot_required` — do we reboot in-role via `win_reboot`, or fail-closed?).
-This is the first LONG-RUNNING task (feature install) — watch the SSH timeout. Then C05
-(`wsusutil postinstall CONTENT_DIR="F:\WSUS"` — its proof must also settle whether postinstall needs
-CONTENT_DIR pre-existing) → C06 (community SUSDB relocation C:→E:, Director-approved MS-unsupported;
-sub-decompose C06a–e) → C07 (verify). Revert before every run.
+**Next action:** BUILD **C05** — no pre-approval stop (refined loop: build, surface at P4.5 in the
+LOCKED format). C05 = `wsusutil.exe postinstall CONTENT_DIR="F:\WSUS"` run from
+`C:\Program Files\Update Services\Tools` — creates SUSDB in WID (on C:, relocated at C06), creates
+`WSUSContent` inside `F:\WSUS`, configures the IIS 'WSUS Administration' site (8530), activates
+`WsusService` (Stopped/Disabled after C04 — measured baseline). **P0 decisions:** module choice —
+no native module exists, so this is the §8 escape-hatch piece (`win_command` preferred over
+`win_shell`; decide + ratify the policy); the IDEMPOTENCY GUARD (wsusutil postinstall is NOT
+idempotent by itself — guard on SUSDB existing / WSUSContent / the IIS site / a registry marker;
+research which signal is authoritative); use `config.content_dir`-equivalent = the derived
+`__content_dir__` block-var (C03). NOTE: postinstall is LONG (minutes, creates the DB). Proof must
+also settle whether postinstall needs CONTENT_DIR pre-existing (C03's softened claim). Reboot: NOT
+needed (C04 measured all-clear). Then C06 (community SUSDB relocation C:→E:, Director-approved
+MS-unsupported; sub-decompose C06a–e) → C07 (verify). Revert before every run.
