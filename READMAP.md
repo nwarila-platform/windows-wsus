@@ -38,10 +38,10 @@ Sequence:
 3. **§3 Director decisions** — can land any time; none block C02, but style §4b/§5
    ratification is cheapest before more pieces cite them.
 4. **C08+ optimization/maintenance arc** (research-scoped this session, deprecation-capped): C08
-   WsusPool IIS tuning ✅ + **C09a reindex tooling ✅** (MS `SUSDBMaint.sql` + a SqlClient/WID-pipe
-   runner, proven to reindex SUSDB); **C09b (schedule the reindex) NEXT** (`win_scheduled_task`
-   off-hours); then C10 scheduled monthly cleanup (`CleanupScope`); C11+ sync scope / HTTPS 8531 /
-   client GPO (optional, operator-policy-heavy).
+   WsusPool IIS tuning ✅ + C09a reindex tooling ✅ + **C09b scheduled reindex ✅** (weekly off-hours,
+   as SYSTEM/credential-free, proven to reindex SUSDB) — **the C09 reindex arc is COMPLETE**; **C10
+   (scheduled monthly `CleanupScope`) NEXT** (reuse the C09b SYSTEM/credential-free pattern); C11+ sync
+   scope / HTTPS 8531 / client GPO (optional, operator-policy-heavy).
 5. **Upstream debt retirement** — TD-001 loader v3.1 proposal (gated by
    `loader-change-protocol.md`) + TD-002 chassis lint warn_list PR (normal PR, no
    gate). Deferred by Director decision until the local role is the priority no more.
@@ -184,19 +184,22 @@ _empty_
 
 ## ⏱️ SESSION HANDOFF — 2026-07-16 — for the next fresh session
 
-**STATE: core role COMPLETE (mission #1) + C08–C09a of the optimization/maintenance arc merged.**
-`main` @ the C09a codification commit. **C08** — WsusPool IIS tuning (overridable `wsus_defaults.wsuspool`
-defaults). **C09a** (`a92295b [audited cf1a446]`) — deploy the SUSDB reindex tooling: MS `SUSDBMaint.sql`
-verbatim + `Invoke-SusdbReindex.ps1` (runs it via `System.Data.SqlClient` over the WID named pipe —
-Server 2025 has NO `sqlcmd` — GO-splitting the script; the C06 idiom) into `wsus_defaults.maintenance.dir`.
-PROVEN: a manual run reindexed SUSDB (3 batches, 5 indexes, SUSDB ONLINE). **NEXT: C09b** — schedule the
-runner via `win_scheduled_task`: OFF-HOURS (weekly), `MultipleInstances=IgnoreNew` (no overlap — the
-reindex is offline-rebuild holding table locks), an execution-time-limit, a WID-sysadmin principal
-(see C09a packet `c09bDesignInputs`). Then C10 scheduled cleanup (`CleanupScope`). **TD-004** recorded
-(win_iis_webapppool → microsoft.iis.web_app_pool on the next collection bump). **Ops note:** the
-ssh-agent emptied mid-session → git SSH-signing hung (`docs/KEY-RELOAD.md`); also `%G?`/`--show-signature`
-report "No signature" here (no `allowedSignersFile`) but commits ARE signed (check the `gpgsig` header).
-`pre-C09b` rolling snapshot from the C09a-deployed state. Historical detail below.
+**STATE: core role COMPLETE (mission #1) + C08–C09b of the optimization/maintenance arc merged (the
+C09 scheduled-reindex arc is DONE).** `main` @ the C09b codification commit. **C09b**
+(`79a71a8 [audited ab7899a]`) — a weekly off-hours `win_scheduled_task` runs the C09a reindex runner
+as `NT AUTHORITY\SYSTEM` (credential-free: SYSTEM granted WID sysadmin via a SID-verified idempotent
+SqlClient grant, no stored password), `IgnoreNew` + time-limited; PROVEN by running the task on-demand
+(reindexed SUSDB, `sp_updatestats` ran, `LastTaskResult=0`, SUSDB ONLINE). Director approved the
+SYSTEM→sysadmin grant over a vaulted password. **NEXT: C10** — scheduled monthly WSUS cleanup
+(`CleanupScope`: decline superseded/expired + obsolete updates/computers + compress + unneeded
+content) via a `win_scheduled_task`, reusing the C09b SYSTEM/credential-free pattern. `pre-C10` rolling
+snapshot from the C09b state.
+**Standing notes:** **TD-004** recorded (win_iis_webapppool → microsoft.iis.web_app_pool on the next
+collection bump). **Ops:** the ssh-agent emptied mid-session → git SSH-signing hung (`docs/KEY-RELOAD.md`,
+the Director reloads the keys); also `%G?`/`--show-signature` report "No signature" here (no
+`allowedSignersFile`) but commits ARE signed (check the `gpgsig` header, not `%G?`). **Standing rule:**
+"lean toward defaults" — expose configurable values in `wsus_defaults` (memory `lean-toward-defaults`).
+Historical detail below.
 C07 (END verify) was DESIGNED + built + P4-green, then **DROPPED by Director decision** as engineering
 theater (every check is guaranteed by an upstream fail-closed gate: C06h service-start, C06g/C06i DB
 health, C05 ContentDir; conflicts with ratified §4b "don't assert what fails anyway"). The role is
