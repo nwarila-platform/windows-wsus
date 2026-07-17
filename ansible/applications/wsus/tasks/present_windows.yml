@@ -506,14 +506,14 @@
         path: '{{ config.maintenance.dir }}'
         state: directory
 
-    # Deploy MS's verbatim reindex script + the SqlClient/WID-pipe runner: Server 2025 has no
-    # sqlcmd, so the runner GO-splits the script using the C06 idiom. win_copy is checksum-
-    # idempotent; C09b schedules the runner.
-    - name: 'MAIN | Deploy SUSDB Reindex Tooling'
+    # Deploy MS's verbatim reindex script + the SqlClient/WID-pipe runner and the UpdateServices
+    # cleanup runner. Server 2025 has no sqlcmd, so the reindex runner GO-splits the script using
+    # the C06 idiom. win_copy is checksum-idempotent; C09b/C10b schedule the runners.
+    - name: 'MAIN | Deploy WSUS Maintenance Tooling'
       ansible.windows.win_copy:
         src: '{{ item }}'
         dest: '{{ config.maintenance.dir }}\{{ item }}'
-      loop: ['SUSDBMaint.sql', 'Invoke-SusdbReindex.ps1']
+      loop: ['SUSDBMaint.sql', 'Invoke-SusdbReindex.ps1', 'Invoke-WsusCleanup.ps1']
       loop_control:
         label: '{{ item }}'
 
