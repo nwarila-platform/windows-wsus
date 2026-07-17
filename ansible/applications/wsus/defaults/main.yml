@@ -51,5 +51,14 @@ wsus_defaults:
       day: 'sunday'
       time: '03:00'
       time_limit: 'PT2H'
+    # WSUS Server Cleanup operations run by the scheduled cleanup; MS's full set — override to a
+    # subset if needed.
+    cleanup_operations:
+      - 'DeclineSupersededUpdates'
+      - 'DeclineExpiredUpdates'
+      - 'CleanupObsoleteComputers'
+      - 'CleanupObsoleteUpdates'
+      - 'CleanupUnneededContentFiles'
+      - 'CompressUpdates'
 # Disk identity (wid_disk_id / wsus_disk_id) is declared in the 'wsus:' override dict and read as
 # config.wid_disk_id / config.wsus_disk_id (see README); this file holds role-default conventions.
