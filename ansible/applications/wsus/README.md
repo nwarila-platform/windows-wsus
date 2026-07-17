@@ -53,6 +53,9 @@ consumed configuration one cycle piece at a time.
 | `wsuspool.idle_timeout` | `00:00:00` | WsusPool idle timeout (`hh:mm:ss`); `00:00:00` disables idle shutdown. C08 |
 | `wsuspool.pinging_enabled` | `false` | WsusPool worker-process pinging; `false` stops IIS killing a busy worker. C08 |
 | `maintenance.dir` | `C:\ProgramData\wsus-maintenance` | Role-managed directory holding the SUSDB maintenance scripts (`SUSDBMaint.sql`, `Invoke-SusdbReindex.ps1`) + their timestamped run logs. C09 |
+| `maintenance.reindex_schedule.day` | `sunday` | Day of the week the scheduled SUSDB reindex runs. C09b |
+| `maintenance.reindex_schedule.time` | `03:00` | Target-local `HH:MM` for the reindex (off-hours). C09b |
+| `maintenance.reindex_schedule.time_limit` | `PT2H` | ISO-8601 duration bounding a hung/lock-blocked reindex run (the scheduled task's execution time limit). C09b |
 
 The role provisions a declared disk only when it is RAW or already carries its target
 drive letter. It refuses an initialized disk carrying a foreign drive letter, which
