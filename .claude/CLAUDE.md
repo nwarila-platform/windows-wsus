@@ -21,9 +21,13 @@ checklist + position derivation before doing anything else.
    name tells you which piece the VM is staged for).
 4. **Codex session authed?** This repo uses an ISOLATED per-project Codex home
    (Director, 2026-07-16): `export CODEX_HOME=/root/.codex-homes/windows-wsus` and drive
-   Codex as `codex exec -p wsus ...` (the `wsus` profile pins model `gpt-5.6-sol`, a
+   Codex as `codex exec -p wsus ...` (the `wsus` profile pins model `gpt-5.5` @ xhigh
+   [Director 2026-07-17, off `gpt-5.6-sol` "ultra" to save quota; the loader-gate still
+   wants a Codex 5.6 **Sol** validator specifically — see `loader-change-protocol.md`], a
    read-only default sandbox, and the `/root/.cache` + `/root/.ansible` writable roots —
-   no more hand-typed `--add-dir`). Check with `CODEX_HOME=... codex doctor` → expect
+   no more hand-typed `--add-dir`). NOTE: CLI 0.144.3 reads the `-p wsus` pin from the
+   SEPARATE file `/root/.codex-homes/windows-wsus/wsus.config.toml` (NOT a `[profiles.wsus]`
+   table in `config.toml`, which now errors). Check with `CODEX_HOME=... codex doctor` → expect
    `✓ auth`. **A hanging `codex exec` is almost always a REVOKED token, not infra** —
    `codex login status` lies ("Logged in") because it only reads the local file. Probe ONCE
    (`timeout 180 codex exec -s read-only "Reply READY"` → 401 = revoked); do NOT retry-storm.

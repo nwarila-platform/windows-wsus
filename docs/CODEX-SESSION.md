@@ -71,12 +71,17 @@ CODEX_HOME=/root/.codex-homes/windows-wsus codex doctor    # expect: ✓ auth (n
 ## How the strict-cycle invokes it
 
 The `wsus` profile pins what every call must use, so the cycle is reproducible instead of
-hand-typed flags. Validated against Codex 0.144.3's schema with `--strict-config`:
+hand-typed flags. Validated against Codex 0.144.3's schema with `--strict-config`.
+
+**File layout (CLI 0.144.3):** the `-p wsus` pin lives in the SEPARATE file
+`/root/.codex-homes/windows-wsus/wsus.config.toml` (named `<profile>.config.toml`), NOT in a
+`[profiles.wsus]` table inside `config.toml` — that legacy form now hard-errors
+(`--profile wsus cannot be used while … contains legacy [profiles.wsus]`). Edit `wsus.config.toml`.
 
 | Key | Value | Why |
 |-----|-------|-----|
-| `model` | `gpt-5.6-sol` | the "Codex 5.6 (Sol)" named in `AGENTS.md` + `_handoff/loop/loader-change-protocol.md` |
-| `model_reasoning_effort` | `xhigh` | Director-pinned 2026-07-16 — real P2/P3 run at full depth (gpt-5.6-sol auto-picks `low` on short prompts). Confirm via otel `reasoning_effort=`, NOT the model's self-report. |
+| `model` | `gpt-5.5` | Director 2026-07-17: moved OFF `gpt-5.6-sol` @ xhigh ("sol ultra" — burning quota fast). Head-to-head vs `gpt-5.6-luna`@xhigh on a subtle durability-flaw catch: both correct; 5.5 more thorough. **The loader-change gate still wants a Codex 5.6 (Sol) validator specifically** (`AGENTS.md` + `loader-change-protocol.md`) — that is a separate, rare governance role, not this general P2/P3 pin. |
+| `model_reasoning_effort` | `xhigh` | Director-pinned — real P2/P3 run at full depth (short prompts otherwise auto-pick `low`). Confirm via otel `reasoning_effort=`, NOT the model's self-report. |
 | `sandbox_mode` | `read-only` | safe default (P2 review); P3 overrides with `-s workspace-write` |
 | `sandbox_workspace_write.writable_roots` | `/root/.cache`, `/root/.ansible` | `ansible-lint`/`ansible` exit before doing any work without these (was `--add-dir` by hand) |
 
