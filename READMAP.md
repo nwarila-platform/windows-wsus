@@ -190,9 +190,31 @@ Sequence:
 | T1 | Backport repo → `*-template` | 💤 | Only when the role is fully operational. |
 | T2 | Import to GitHub (`nwarila-platform` org) | 💤 | Follows T1. |
 
-## 4. Parking Lot (Director drops new items here)
+## 4. Parking Lot / active roadmap (Director, 2026-07-17)
 
-_empty_
+**Post-feature-complete roadmap — Director granted AUTONOMY on items 1–4** (drive the strict-cycle with
+Codex gpt-5.5 P2 as the gate; checkpoint at arc boundaries, no per-piece P4.5 block). Theme: **get ALL
+stateful data off the OS disk so the OS disk becomes disposable** (item 1 IIS-disk enables item 5 OS-swap).
+
+1. ✅ **C11e — from-baseline Save-conflict fix** (`d2814cd`). The from-baseline E2E verify caught that C11d's
+   config `Save()` fails while the C11b prove-started MU sync is running; C11d now stops the sync first.
+   **`main` is GREEN from baseline** (ok=44 changed=25 failed=0). Done.
+2. ⛏️ **Re-baseline the dev VM to 3 RAW disks** — add a blank `nvme0:3` IIS disk (`vmware-vdiskmanager` +
+   VMX edit; VM powered off + baseline snapshot deleted/retaken per VM-LIFECYCLE §3). Capture its `eui.*`
+   for the future `iis_disk_id`. Baseline v5→v6. (Adding an undeclared disk does NOT break the current
+   guards — they assert only the DECLARED disks; item 3 declares + provisions it.)
+3. ⛏️ **Whole WSUS IIS site → dedicated disk (G:)** — decompose (like C02/C06): provision G:, then relocate
+   the full IIS site (`inetpub` / the `WsusAdministration` site + `WsusContent` vdir + logs) off C:. IIS
+   config is riddled with `%SystemDrive%` — decompose-heavy. Adds `iis_disk_id` (required, like the others).
+4. ⛏️ **Industry best-practices logging** — research-grounded: IIS W3C fields + ETW, WSUS
+   `SoftwareDistribution.log`, the WsusService/WID event channels, sane sizes/retention, and meaningful
+   Event Viewer views. Independent; can overlap item 3's tail.
+5. 💤 **PARKED — AWS OS-disk replacement / adopt-existing-volumes.** PROD is **AWS** (AMI + EBS, NOT the
+   proxmox path in AGENTS.md — a divergence to resolve): swap the AMI for a fresh fully-patched OS + re-attach
+   the existing WSUS EBS volumes. The role goes **bi-modal** — detect populated data volumes (by `unique_id`)
+   and take an "adopt existing" path: bring online (no format), reinstall the WSUS feature, **attach the
+   existing SUSDB** (not relocate), re-point content + IIS. Dev-simulate via a VMX OS-vmdk swap keeping the
+   data vmdks. Needs the Director's AWS-vs-proxmox deploy-direction call + an OS-swap test scenario.
 
 ---
 
