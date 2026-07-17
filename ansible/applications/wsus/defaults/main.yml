@@ -21,8 +21,9 @@ wsus_defaults:
   db_subdir: 'WID\Data'
   data_disks:
     # Drive letters consumed by the C02b state-aware safety guard (recognize an already-managed
-    # disk by its target letter). These labels + allocation units are now consumed by C02e
-    # win_format (64 KiB = SUSDB/SQL best practice; 4 KiB = NTFS default for WSUS content).
+    # disk by its target letter). These labels + allocation units are consumed by C02e win_format:
+    # E: WSUSDB 64 KiB (SUSDB/SQL), F: WSUSDATA 4 KiB (WSUS content), and G: WSUSIIS 4 KiB
+    # (IIS working-dir disk; inetpub relocated here in C12b/c).
     db:
       drive_letter: 'E'
       label: 'WSUSDB'
@@ -30,6 +31,10 @@ wsus_defaults:
     content:
       drive_letter: 'F'
       label: 'WSUSDATA'
+      allocation_unit: 4096
+    iis:
+      drive_letter: 'G'
+      label: 'WSUSIIS'
       allocation_unit: 4096
   # MS WSUS best practices, "Disable recycling and configure memory limits". These are MS's
   # dedicated-host defaults; shared/co-located hosts should override private_memory_kb with a
