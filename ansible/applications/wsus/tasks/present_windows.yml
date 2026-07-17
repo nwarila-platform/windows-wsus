@@ -497,4 +497,26 @@
 
     #endregion --- [ Main: WSUS Tuning ] -------------------------------------------------- #
 
+    #region ------ [ Main: WSUS Maintenance ] --------------------------------------------- #
+
+    # Role-managed home for the SUSDB maintenance scripts and their timestamped run logs.
+    # win_file state:directory is idempotent (creates if absent, no-op if present).
+    - name: 'MAIN | Ensure WSUS Maintenance Directory'
+      ansible.windows.win_file:
+        path: '{{ config.maintenance.dir }}'
+        state: directory
+
+    # Deploy MS's verbatim reindex script + the SqlClient/WID-pipe runner: Server 2025 has no
+    # sqlcmd, so the runner GO-splits the script using the C06 idiom. win_copy is checksum-
+    # idempotent; C09b schedules the runner.
+    - name: 'MAIN | Deploy SUSDB Reindex Tooling'
+      ansible.windows.win_copy:
+        src: '{{ item }}'
+        dest: '{{ config.maintenance.dir }}\{{ item }}'
+      loop: ['SUSDBMaint.sql', 'Invoke-SusdbReindex.ps1']
+      loop_control:
+        label: '{{ item }}'
+
+    #endregion --- [ Main: WSUS Maintenance ] --------------------------------------------- #
+
 #endregion --- [ Script ] -------------------------------------------------------------------- #
