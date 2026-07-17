@@ -37,17 +37,18 @@ Sequence:
    **THE ROLE IS COMPLETE** — mission #1 done; next is the T-track endgame (backport → GitHub import).
 3. **§3 Director decisions** — can land any time; none block C02, but style §4b/§5
    ratification is cheapest before more pieces cite them.
-4. **C08+ optimization/maintenance arc** (research-scoped this session, deprecation-capped): C08
-   WsusPool IIS tuning ✅ + C09a reindex tooling ✅ + **C09b scheduled reindex ✅** (weekly off-hours,
-   as SYSTEM/credential-free, proven to reindex SUSDB) — the C09 reindex arc is COMPLETE; **C10 cleanup
-   ✅** (C10a runner + C10b monthly SYSTEM schedule, proven end-to-end). **THE MAINTENANCE CORE (tuning +
-   reindex + cleanup) IS COMPLETE.** Remaining C11+ (sync scope / HTTPS 8531 / client GPO) are OPTIONAL,
-   operator-policy-heavy, and deprecation-capped — a Director scope decision; the T-track backport is
-   also now unblocked.
-5. **Upstream debt retirement** — TD-001 loader v3.1 proposal (gated by
+4. **C08+ optimization/maintenance arc — COMPLETE.** C08 WsusPool IIS tuning ✅ + C09a reindex tooling ✅
+   + C09b scheduled reindex ✅ + C10a cleanup runner ✅ + C10b monthly cleanup schedule ✅. **THE
+   MAINTENANCE CORE (tuning + reindex + cleanup) IS COMPLETE.**
+5. **C11 sync arc — IN FLIGHT** (Director-chosen "make WSUS a live update source", Bootstrap+schedule):
+   **C11a ✅** (restrict update languages before the first sync — scope bound). **NEXT: C11b** (gated
+   bootstrap categories sync) → C11c products → C11d classifications → C11e daily sync schedule → C11f
+   auto-approval (approve Critical/Security → downloads). Syncs are async/heavy, so the role
+   configures + gated-bootstraps + schedules; proofs verify config + that a sync STARTED.
+6. **Upstream debt retirement** — TD-001 loader v3.1 proposal (gated by
    `loader-change-protocol.md`) + TD-002 chassis lint warn_list PR (normal PR, no
    gate). Deferred by Director decision until the local role is the priority no more.
-6. **Endgame:** backport to a `*-template` repo → import to GitHub (`nwarila-platform`
+7. **Endgame:** backport to a `*-template` repo → import to GitHub (`nwarila-platform`
    org). Only after the role is fully operational (mission #3).
 
 ---
@@ -154,15 +155,21 @@ Sequence:
 | C04 | Install the WSUS role (WID): `win_feature` explicit `UpdateServices`+`-WidDB`+`-Services` + mgmt tools; `include_sub_features` UNSET (would pull `-DB`/SQL); NO reboot machinery | ✅ merged `31ecee7 [audited 655706c]` 2026-07-16 | 33 features resolved; SSH-verified incl. the `UpdateServices-DB` NOT-installed negative; **reboot measured UNNECESSARY (all 3 signals)**; idempotency `NoChangeNeeded` changed=0; P4.5 approved. RTRACK-C04. |
 | C05 | WSUS postinstall via `win_command` argv, gated by a read-only `Get-WsusServer` probe (FIRST §8 escape hatch — 0/118 modules cover WSUS server ops) | ✅ merged `28cee42 [audited 1a76964]` 2026-07-16 | WSUS ALIVE: SUSDB (10.2 MB) in WID on C:, WSUSContent on F:, IIS :8530/:8531 Started, WsusService Running/Automatic. Probe replaced the community `creates:` marker (P2: silent false convergence). Setup-key ground truth dumped (ContentDir=F:\WSUS, SqlServerName=MICROSOFT##WID, IRS flags all =2). Idempotency changed=0. §8 PROPOSED. RTRACK-C05. |
 | C05r | Reshape the postinstall guard: `win_reg_stat` on the four 'Installed Role Services' completion flags replaces the `Get-WsusServer` win_shell — the C06 arc stops services mid-flight and Get-WsusServer FAILS then (flap, C06d P2 catch) | ✅ merged `e04c2e9 [audited 5799fc6]` 2026-07-16 | P2 REVISE r1→SOUND (atomicity via real postinstall-log forensics); P3 close-out via 3 bounded xhigh Codex audits (all PASS); P4 green incl. flap regression (services down → postinstall still skips, SCM forensics); P4.5 approved. Process this session: codex-exec stdin-drain hang root-caused+fixed (`</dev/null`), reasoning pinned xhigh, per-step rolling snapshot discipline added. RTRACK-C05r. |
-| C06 | SUSDB relocation C:→E: — DECOMPOSED C06a–i (QUEUE.md; research + live probe 2026-07-16: zero-install SqlClient over the WID pipe, administrator=sysadmin, sys.master_files three-state gate, COPY-don't-move, ACL-before-attach) | 🔄 in-flight | C06a-c ✅ + U1 ✅ + C05r ✅ + C06d ✅ + **C06e ✅** (detach: sys.master_files 0 rows, files still on C:, idempotency orphaned-skip). **NEXT: C06f** — `win_copy remote_src` copy `.mdf`+`.ldf` C:→E: (gated pending\|orphaned). Then C06g attach → C06h start → C06i delete C: originals. |
+| C06 | SUSDB relocation C:→E: — DECOMPOSED C06a–i (QUEUE.md; research + live probe 2026-07-16: zero-install SqlClient over the WID pipe, administrator=sysadmin, sys.master_files three-state gate, COPY-don't-move, ACL-before-attach) | ✅ COMPLETE | C06a-c + U1 + C05r + C06d-i all merged. **SUSDB fully on `E:\WID\Data`** (ONLINE, read-write), C: originals deleted (health-gated), WSUS operational. From-baseline E2E green. |
 | C06d | `win_service` — stop `WsusService` + `W3SVC` (gated pending\|orphaned); WID engine STAYS running for the C06e detach | ✅ merged `ec9a0cb [audited 5bca897]` 2026-07-16 | P2 AGREE (7-point review); P3 5bca897; P4 green: converge both stop + WID Running + failed=0, idempotency changed=0, C05r cross-check (postinstall skips with services down). First cycle under per-step snapshot proof (`pre-C06d`). RTRACK-C06d. |
 | C06e | `win_shell` (SqlClient/WID pipe) — `SET SINGLE_USER WITH ROLLBACK IMMEDIATE` + `sp_detach_db 'SUSDB'` (gated ==pending); leaves files on C: (copy-don't-move) | ✅ merged `f961735 [audited 50b0079]` 2026-07-16 | P2 AGREE (8-point MS-cited); P3 50b0079; P4 green: converge detached (sys.master_files 0 rows) + .mdf/.ldf still on C: + failed=0, idempotency orphaned→skip changed=0. RTRACK-C06e. |
 | C06f | `win_copy remote_src` — copy SUSDB `.mdf`/`.ldf` `%SystemDrive%\Windows\WID\Data` → `E:\WID\Data` (gated pending\|orphaned; copy-don't-move) | ✅ merged `00696a1 [audited 0b9d2fe]` 2026-07-16 | P2 REVISE r1 (SystemDrive-derived source + MS 'copies') → AGREE r2; P3 0b9d2fe; P4 green: converge E: sizes match C: + C: intact + WID-svc ACE inherited=True on E: files + failed=0, idempotency changed=0 (checksum). RTRACK-C06f. |
 | C06g | `win_shell` (SqlClient/WID pipe) — `CREATE DATABASE SUSDB ... FOR ATTACH` from E: + fail-closed health gate (ONLINE + is_read_only=0 + all files on E:) + DROP-on-failure revert. The relocation pivot | ✅ merged `f4b39ae [audited 036d635]` 2026-07-16 | P2 REVISE r1→r2→r3 → AGREE r4 (4-round hardening: registered-but-unhealthy restart hole, DROP vs sp_detach_db, env-path injection, reader-close); P3 036d635; P4 green: converge SUSDB ONLINE+rw on E: + C: intact, idempotency relocated → all d/e/f/g SKIP changed=0. RTRACK-C06g. |
 | C06h | `win_service` state:started loop [W3SVC, WsusService], UNGATED terminal desired-state — returns WSUS to operational on the E: SUSDB | ✅ merged `afd14d6 [audited 4400687]` 2026-07-16 | P2 AGREE (7-point); P3 4400687; P4 green: converge both start + Get-WsusServer OK :8530 + SUSDB ONLINE on E:, idempotency changed=0. RTRACK-C06h. |
 | C06i | Independent health probe + `win_file state:absent` — delete the C: SUSDB originals ONLY when SUSDB is verified ONLINE+read_write+all-on-E. **Closes the C06 arc** | ✅ merged `5e240ad [audited 2bb17fe]` 2026-07-16 | P2 AGREE (predicate covers every unsafe state); P3 2bb17fe; P4 green: fixture 6/6, converge C: deleted + E: intact + WID system DBs untouched + Get-WsusServer OK :8530 + SUSDB ONLINE, idempotency changed=0. RTRACK-C06i. |
-| C07 | END verify: `WsusService` running + `Get-WsusServer` + console port 8530 + DB on E: / content on F: | ⛏️ | Retry-loop idiom (style §4). |
-| C08+ | Sync config, products/classifications, GPO-facing settings | 💤 | Scoped later, after C07 proves the spine. |
+| ~~C07~~ | ~~END verify: WsusService + Get-WsusServer + :8530 + DB on E: / content on F:~~ | ❌ DROPPED (Director 2026-07-16) | Engineering theater — every check is guaranteed by an upstream fail-closed gate (C06h/C06g/C06i/C05); conflicts with §4b. Role is self-verifying. RTRACK-C07. |
+| C08 | Tune the WsusPool IIS app pool to MS best-practices (`win_iis_webapppool`: queueLength 2000, memory 0, periodicRestart/idleTimeout 0, ping false), fail-closed guard, overridable `wsus_defaults.wsuspool` | ✅ merged `1058e03 [audited 1ef3e8e]` 2026-07-16 | P2 REVISE r1 (guard, deprecation, defaults, atomicity) → AGREE r2; convergence 6 attrs + idempotency changed=0 (proves `\|int`/`\|bool`). TD-004 recorded. "Lean toward defaults" ratified. RTRACK-C08. |
+| C09a | Deploy the SUSDB reindex tooling — MS `SUSDBMaint.sql` (verbatim) + `Invoke-SusdbReindex.ps1` (SqlClient/WID-pipe, GO-split) into `maintenance.dir`. First role `files/` | ✅ merged `a92295b [audited cf1a446]` 2026-07-16 | P2 REVISE r1 (InfoMessage capture + off-hours/no-overlap) → AGREE r2; RUNNER PROOF — reindexed SUSDB (3 batches, 5 indexes, ONLINE). RTRACK-C09a. |
+| C09b | Schedule the reindex credential-free — grant `NT AUTHORITY\SYSTEM` a WID sysadmin login (SID-verified) + a weekly off-hours `win_scheduled_task` running the C09a runner as SYSTEM (no password), IgnoreNew, time-limited. Closes C09 | ✅ merged `79a71a8 [audited ab7899a]` 2026-07-16 | P2 REVISE r1 (s4u fatal → SYSTEM pivot) → r2 (db_owner insufficient → sysadmin) → AGREE; PRINCIPAL PROOF — task ran as SYSTEM, reindexed SUSDB, `sp_updatestats` ran, result 0. Credential-free SYSTEM-scheduled-maintenance pattern. RTRACK-C09b. |
+| C10a | Deploy the WSUS Server Cleanup runner — `Invoke-WsusCleanup.ps1` (`Invoke-WsusServerCleanup`, ops splatted from an allowlist-validated comma-scalar) + `maintenance.cleanup_operations` default | ✅ merged `571d4da [audited ed7c984]` 2026-07-17 | P2 REVISE r1 (`-File` no arrays → scalar-split + allowlist blocks `-WhatIf` injection) → AGREE; RUNNER PROOF — positive all-6 + negative WhatIf-reject. RTRACK-C10a. |
+| C10b | Schedule the cleanup MONTHLY (first-Sunday 00:00) as SYSTEM (credential-free; NO grant — pre-tested). Closes C10 + the maintenance core | ✅ merged `89c822b [audited d7bae97]` 2026-07-17 | P2 REVISE r1 (00:00 buffer before 03:00 reindex; assert real first-Sunday) → AGREE r2; PRINCIPAL PROOF — ran as SYSTEM → cleanup completed, NextRunTime 2027-01-03. **CLOSES the maintenance core.** RTRACK-C10b. |
+| C11a | Restrict WSUS update languages before the first sync — `win_shell` on `Get-WsusServer.GetConfiguration()`: `AllUpdateLanguagesEnabled=false` + `SetEnabledUpdateLanguages(StringCollection of `sync.update_languages`, default `['en']`); opens 'Main: WSUS Sync Configuration' | ✅ merged `1c211bd [audited a25b136]` 2026-07-17 | P2 REVISE r1 (drop half-wired source/proxy; StringCollection + normalized compare + re-acquire-verify) → AGREE r2; convergence changed=1, SSH `AllUpdateLanguagesEnabled=False`/`[en]`, idempotency changed=0. Opens the C11 sync arc. RTRACK-C11a. |
+| C11b–f | Bootstrap categories sync (gated) → select products → classifications → daily sync schedule → auto-approval rule (approve Critical/Security → downloads) | ⛏️ next (C11b) | Director-chosen Bootstrap+schedule arc: make WSUS a live update source. Config + gated-bootstrap + schedule; proofs verify config + sync-STARTED (syncs are async/heavy). QUEUE.md C11b–f. |
 
 ### Track G — governance / Director decisions
 | ID | Item | Status | Notes |
@@ -184,56 +191,39 @@ _empty_
 
 ---
 
-## ⏱️ SESSION HANDOFF — 2026-07-16 — for the next fresh session
+## ⏱️ SESSION HANDOFF — 2026-07-17 — for the next fresh session
 
-**STATE: core role COMPLETE (mission #1) + C08–C09b of the optimization/maintenance arc merged (the
-C09 scheduled-reindex arc is DONE).** `main` @ the C09b codification commit. **C09b**
-(`79a71a8 [audited ab7899a]`) — a weekly off-hours `win_scheduled_task` runs the C09a reindex runner
-as `NT AUTHORITY\SYSTEM` (credential-free: SYSTEM granted WID sysadmin via a SID-verified idempotent
-SqlClient grant, no stored password), `IgnoreNew` + time-limited; PROVEN by running the task on-demand
-(reindexed SUSDB, `sp_updatestats` ran, `LastTaskResult=0`, SUSDB ONLINE). Director approved the
-SYSTEM→sysadmin grant over a vaulted password. **C10a** (`571d4da [audited ed7c984]`) — deploy the WSUS
-Server Cleanup runner `Invoke-WsusCleanup.ps1` (`Invoke-WsusServerCleanup`, ops splatted from an
-allowlist-validated comma-scalar `-Operations` — `-File` can't pass arrays) + a
-`maintenance.cleanup_operations` default; PROVEN (positive all-6 run + negative WhatIf-reject). **NEXT:
-C10b** — schedule the cleanup MONTHLY off-hours as SYSTEM via `win_scheduled_task` (reuse the C09b
-credential-free pattern; RESOLVED — pre-tested that SYSTEM already runs the cleanup
-via the C09b WID-sysadmin grant, so NO new grant). **C10b** (`89c822b [audited d7bae97]`) — monthly
-(first-Sunday 00:00) `win_scheduled_task` runs the cleanup as SYSTEM, credential-free; proven end-to-end
-(NextRunTime 2027-01-03, ran on-demand → cleanup completed as SYSTEM). **THE MAINTENANCE CORE IS
-COMPLETE** (C08 tuning + C09 reindex + C10 cleanup). **NEXT: a Director scope decision** — C11+ (sync
-scope, HTTPS on 8531, client GPO) are optional/operator-policy-heavy/deprecation-capped, OR the T-track
-endgame (backport to `*-template` → GitHub import) is now unblocked. `pre-C11` rolling snapshot from the
-C10b state.
+**STATE: core role COMPLETE (mission #1) + the maintenance core COMPLETE + the C11 sync arc IN FLIGHT
+(C11a merged).** `main` @ the C11a codification commit. The build spine (C01–C06i) delivers a working
+WSUS-on-WID: disk init (E:/F:) → `win_feature` install → `wsusutil postinstall` → SUSDB relocated to
+`E:\WID\Data` (ONLINE, read-write; C: originals health-gated-deleted) → content on `F:\WSUS`. The
+maintenance core is done: **C08** WsusPool IIS tuning, **C09** weekly SUSDB reindex (SYSTEM,
+credential-free), **C10** monthly WSUS Server Cleanup (SYSTEM, credential-free). **C07 (END verify)
+DROPPED** (theater; §4b — role is self-verifying, green converge is the proof).
+
+**C11 sync arc (Director-chosen "make WSUS a live update source", Bootstrap+schedule).** **C11a merged**
+(`1c211bd [audited a25b136]`) — a `win_shell` on `Get-WsusServer.GetConfiguration()` sets
+`AllUpdateLanguagesEnabled=false` + `SetEnabledUpdateLanguages(StringCollection of
+wsus_defaults.sync.update_languages, default ['en'])`, only on a normalized set-diff, re-acquire+verify
+after Save (no perpetual-change). Bounds the download scope BEFORE the first sync. Source stays Microsoft
+Update (postinstall default; the source/proxy knobs were dropped in P2 r1 — `Save()` rejects them
+half-wired, out of scope). Opens the **Main: WSUS Sync Configuration** region. Proven: converge changed=1,
+SSH `AllUpdateLanguagesEnabled=False`/`GetEnabledUpdateLanguages()==[en]`, idempotency `SKIP_REVERT=1`
+changed=0. `pre-C11b` rolling snapshot from the C11a-converged state (staged for C11b).
+
+**NEXT: C11b** — gated bootstrap categories sync: trigger `Get-WsusServer.GetSubscription().
+StartSynchronization()` (+ a bounded wait, proofs verify sync STARTED not full completion — syncs are
+async/heavy) ONLY when `GetLastSynchronizationInfo()`==NeverRun; this populates the products +
+classifications catalog for C11c (select products) / C11d (select classifications). Then C11e daily sync
+schedule + C11f auto-approval (approve Critical/Security → downloads). QUEUE.md C11b–f.
+
 **Standing notes:** **TD-004** recorded (win_iis_webapppool → microsoft.iis.web_app_pool on the next
 collection bump). **Ops:** the ssh-agent emptied mid-session → git SSH-signing hung (`docs/KEY-RELOAD.md`,
 the Director reloads the keys); also `%G?`/`--show-signature` report "No signature" here (no
 `allowedSignersFile`) but commits ARE signed (check the `gpgsig` header, not `%G?`). **Standing rule:**
 "lean toward defaults" — expose configurable values in `wsus_defaults` (memory `lean-toward-defaults`).
-Historical detail below.
-C07 (END verify) was DESIGNED + built + P4-green, then **DROPPED by Director decision** as engineering
-theater (every check is guaranteed by an upstream fail-closed gate: C06h service-start, C06g/C06i DB
-health, C05 ContentDir; conflicts with ratified §4b "don't assert what fails anyway"). The role is
-SELF-VERIFYING — a green converge is the proof. **Definitive proof: a full from-baseline E2E converge**
-(revert to RAW `pre-ansible-clean-ssh-ready` → one composed pass) went `ok=34 changed=16 failed=0`:
-disk init (GPT/partition/format E:+F:) → WSUS install (win_feature) → postinstall → the FULL relocation
-arc (stop→detach→copy→attach→start→delete C:) → a working WSUS with **SUSDB on `E:\WID\Data`** (ONLINE,
-read-write), **content on `F:\WSUS`**, services running, `Get-WsusServer OK :8530`. Per-piece
-idempotency proven (each C06x re-run `changed=0`, probe `relocated`). **NEXT: the T-track endgame** —
-backport this repo to a `*-template`, then GitHub import (`nwarila-platform` org); optionally C08+
-(sync config/products/classifications) if the Director scopes it. The rolling `pre-C07` snapshot is now
-just a converged-operational checkpoint (role done; no next build piece). Older detail below is historical. `present_windows.yml`: read-only
-guards (block-var resolution → one `win_disk_facts` gather → fail-closed Attached → C02b safety
-guard) + THREE disk mutations (`win_initialize_disk` → `win_partition` → `win_format`) + the
-**`Main: WSUS Installation`** region (C03 content root → C04 `win_feature` WSUS role → **C05r**
-`win_reg_stat` completion-flags probe → probe-gated `wsusutil postinstall`) + the opening of the
-**`Main: SUSDB Relocation`** region (C06a dir → C06b WID-svc ACL → U1 Users ACL → C06c three-state
-gate probe). A composed run delivers a WORKING WSUS: `Get-WsusServer` OK :8530, WsusService
-Running/Automatic, WSUSContent on F:, **SUSDB (10.2 MB) in WID at `C:\Windows\WID\Data` — the C06
-relocation source**, IRS completion flags all =2. §8 escape-hatch policy PROPOSED (G-track).
-⚠️ **The dev VM is DIRTY** (C05r proofs — live WSUS, converged, services Running, gate 'pending').
-**NEXT: C06d** (`win_service` stop WsusService+W3SVC, gated pending|orphaned; WID stays running).
-Actor contract (C06c binding): `stdout|trim`; d/f/g fire on pending|orphaned, e on pending only.
+**WSUS-config-object idiom (C11a):** normalized set-compare + Save-on-change + RE-ACQUIRE-and-verify +
+`changed_when` — reuse for C11c/d/e (products/classifications/schedule are the same config-object shape).
 
 **⛔ CODEX INVOCATION — the #1 gotcha (root-caused 2026-07-16, cost ~1h):** `codex exec` drains
 stdin after the prompt arg (`Reading additional input from stdin...`); in any backgrounded/piped
@@ -250,8 +240,8 @@ bounded audits (adherence/scope/gate-logic), each `< /dev/null` — each converg
 the sacred fresh-OS anchor; ONE rolling `pre-<piece>` snapshot (`scripts/snapshot-step.sh <piece>`,
 taken post-merge only) is the usual revert target — `REVERT_TO=pre-<piece> scripts/compose-and-run.sh`
 so merged pieces no-op fast instead of re-converging. At most TWO snapshots ever (`docs/VM-LIFECYCLE.md`
-§4). From-baseline E2E re-proven once at C07. **`pre-C06d` snapshot taken at this P5 from the verified
-post-C05r converged state.**
+§4). From-baseline E2E re-proven once at the sync-arc END. **`pre-C11b` snapshot taken at this P5 from the
+verified post-C11a converged state (WSUS operational, maintenance scheduled, languages restricted to en).**
 
 **Contract now:** disk ids are declared in the `wsus:` override dict and read as
 `config.wid_disk_id` (DB→E:WSUSDB) / `config.wsus_disk_id` (content→F:WSUSDATA), each the
@@ -279,14 +269,12 @@ composed-tree lint + fixtures + VM proofs in P4 · plain-gate ansible-lint exits
 so a `-e '{"wsus":{…}}'` proof override REPLACES the dict and MUST re-state
 `temp_dir: false`** (presence proof needs no `-e`; footgun confined to `-e` overrides).
 
-**Next action:** **C06d re-enters P2** (its packet `_handoff/steps/C06d.plan.json` is P0-refreshed
-with the per-step-snapshot proofs + a p2History entry recording the flap catch that spawned C05r).
-`win_service` stop WsusService+W3SVC, loop, gated `__susdb_probe__.stdout | trim in ['pending',
-'orphaned']`; WID service (`MSSQL$MICROSOFT##WID`) STAYS RUNNING (executes the later detach). Drive it
-FAST with the fixed Codex pattern (bounded audits, `< /dev/null`, xhigh); P4 via `REVERT_TO=pre-C06d`;
-P4.5 LOCKED format. Then C06e detach → C06f copy → C06g attach → C06h start → C06i delete C: originals
-→ C07 (END verify: WsusService + Get-WsusServer + :8530 + DB on E: / content on F:). Ground truth
-(RTRACK-C05): `SqlServerName=MICROSOFT##WID`, SUSDB.mdf 10.2 MB + log 1.1 MB; C06 relocation uses
-zero-install `System.Data.SqlClient` over the WID pipe (administrator = WID sysadmin), COPY-don't-move,
-`sys.master_files` three-state gate (C06c LIVE). Open G-track: Director ratification of the PROPOSED §8
-policy.
+**Next action:** **C11b enters P0** — gated bootstrap categories sync. Probe first
+(`Get-WsusServer.GetSubscription()` — `GetLastSynchronizationInfo()`/`GetSynchronizationStatus()`), then
+plan a `win_shell` that triggers `StartSynchronization()` ONLY when the last sync == NeverRun, with a
+BOUNDED wait that proves the sync STARTED (status → Running / a LastSyncTime advance) rather than blocking
+on full completion (categories ≈ 18746 items; async/heavy). It populates the products + classifications
+catalog consumed by C11c/d. Drive it FAST with the fixed Codex pattern (bounded audits, `< /dev/null`,
+xhigh); P4 via `REVERT_TO=pre-C11b`; P4.5 LOCKED format. Then C11c products → C11d classifications →
+C11e daily sync schedule → C11f auto-approval (approve Critical/Security → downloads). Reuse the C11a
+WSUS-config-object idiom. Open G-track: Director ratification of the PROPOSED §8 escape-hatch policy.
