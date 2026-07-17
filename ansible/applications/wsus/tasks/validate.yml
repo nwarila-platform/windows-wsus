@@ -26,4 +26,14 @@
       unique; declare the correct id for each volume.
     quiet: true
 
+- name: 'BEGIN | Assert Upstream WSUS Server Provided'
+  when: (state | default('present') | string | lower | trim) == 'present'
+  ansible.builtin.assert:
+    that:
+      - (config.upstream_server | default('') | string | trim) | length > 0
+    fail_msg: >-
+      wsus.upstream_server is REQUIRED for the downstream topology but is empty/undefined. Each WSUS
+      downstream points at its upstream by name; declare upstream_server in the wsus: override dict.
+    quiet: true
+
 #endregion --- [ Script ] -------------------------------------------------------------------- #
