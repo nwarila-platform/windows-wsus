@@ -52,6 +52,7 @@ consumed configuration one cycle piece at a time.
 | `wsuspool.periodic_restart` | `00:00:00` | WsusPool periodic-restart interval (`hh:mm:ss`); `00:00:00` disables the default 29-hour recycle. C08 |
 | `wsuspool.idle_timeout` | `00:00:00` | WsusPool idle timeout (`hh:mm:ss`); `00:00:00` disables idle shutdown. C08 |
 | `wsuspool.pinging_enabled` | `false` | WsusPool worker-process pinging; `false` stops IIS killing a busy worker. C08 |
+| `maintenance.dir` | `C:\ProgramData\wsus-maintenance` | Role-managed directory holding the SUSDB maintenance scripts (`SUSDBMaint.sql`, `Invoke-SusdbReindex.ps1`) + their timestamped run logs. C09 |
 
 The role provisions a declared disk only when it is RAW or already carries its target
 drive letter. It refuses an initialized disk carrying a foreign drive letter, which
