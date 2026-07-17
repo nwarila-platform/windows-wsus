@@ -30,11 +30,13 @@
       # ansible.windows.win_tempfile (queue piece C02).
       temp_dir: false
       # Data-disk identity (Windows Get-Disk UniqueId). Declared in this wsus override dict so the
-      # loader folds them into config (config.wid_disk_id / config.wsus_disk_id). Dev-VM-specific —
+      # loader folds them into config (config.wid_disk_id / config.wsus_disk_id / config.iis_disk_id).
+      # Dev-VM-specific —
       # parameterize (templated vars) on backport to *-template. NOTE: a `-e '{"wsus":{...}}'` override
       # REPLACES this whole mapping, so a proof override must re-state temp_dir: false.
       wid_disk_id: 'eui.6C7076230CC23C55000C2968C7AE5760'  # 20 GiB -> E: WSUSDB (WID database)
       wsus_disk_id: 'eui.CF4AE05CEB88F43B000C29656D55634B'  # 30 GiB -> F: WSUSDATA (update content)
+      iis_disk_id: 'eui.BC9F0ECE9FBC4B9A000C296303722FC1'  # 20 GiB -> G: WSUSIIS (IIS working-dir disk); dev-VM eui, parameterize on backport
       # Upstream WSUS server (C11d): this server is a DOWNSTREAM of the named upstream WSUS
       # (SyncFromMicrosoftUpdate=false). REQUIRED input (validate.yml asserts it) — no default.
       # DEV PLACEHOLDER below (the dev VM has no real upstream; Save() persists it without a
