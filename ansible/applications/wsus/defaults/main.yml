@@ -78,5 +78,13 @@ wsus_defaults:
     # 2026-07-17): C11b does NOT wait for the ~1-2hr full category sync to complete; it confirms acceptance
     # and marks, and the sync (with the early-loaded product/classification catalog) continues async.
     bootstrap_accept_timeout_sec: 120
+    # C11d downstream source policy. The upstream WSUS server itself is REQUIRED input
+    # (config.upstream_server in the 'wsus:' override dict) with NO default.
+    # upstream_port: 8530 HTTP / 8531 HTTPS; upstream_use_ssl: sync over SSL.
+    # replica true = REPLICA downstream mirroring the upstream's product/classification selections
+    # AND approvals [inherit-everything]; false = autonomous downstream managing its own approvals.
+    upstream_port: 8530
+    upstream_use_ssl: false
+    replica: true
 # Disk identity (wid_disk_id / wsus_disk_id) is declared in the 'wsus:' override dict and read as
 # config.wid_disk_id / config.wsus_disk_id (see README); this file holds role-default conventions.
