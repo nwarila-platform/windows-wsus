@@ -62,6 +62,7 @@ consumed configuration one cycle piece at a time.
 | `maintenance.cleanup_schedule.time` | `00:00` | Target-local `HH:MM` for the cleanup; defaults to 00:00 to finish (within `time_limit`) before the 03:00 weekly reindex. C10b |
 | `maintenance.cleanup_schedule.time_limit` | `PT2H` | ISO-8601 duration bounding a hung cleanup run. C10b |
 | `sync.update_languages` | `['en']` | Languages (lowercase codes) whose updates WSUS syncs/downloads. The postinstall default is ALL languages (a large, wasteful scope); the role sets `AllUpdateLanguagesEnabled=false` and restricts to this set before the first sync. Override to add languages (e.g. `['en','fr']`). The update SOURCE stays Microsoft Update (postinstall default). C11a |
+| `sync.bootstrap_accept_timeout_sec` | `120` | Max seconds to confirm the one-time category bootstrap sync was **accepted** (`StartSynchronizationForCategoryOnly` — status left `NotProcessing`, or a new sync-history entry appeared). Prove-started: the role confirms the sync started and writes a durable per-server marker, then does **not** block on the (~1–2hr, WAN-bound) full category sync — the usable product/classification catalog loads early and populates asynchronously. C11b |
 
 The role provisions a declared disk only when it is RAW or already carries its target
 drive letter. It refuses an initialized disk carrying a foreign drive letter, which
