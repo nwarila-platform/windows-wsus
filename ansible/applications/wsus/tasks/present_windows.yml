@@ -639,6 +639,48 @@
       register: __wsus_lang_cfg__
       changed_when: "__wsus_lang_cfg__.stdout | trim == 'changed'"
 
+    # Gated one-time category-only bootstrap loads catalog metadata (no update files) early for the
+    # C11c/d product/classification tree. PROVE-STARTED (Director): confirm acceptance, then write the
+    # durable ServerId marker without waiting ~1-2hr; it survives history expiry/failed syncs and a
+    # re-created SUSDB self-heals. 'inflight' resumes an already-running sync; §8 WSUS-cmdlet win_shell.
+    - name: 'MAIN | Bootstrap WSUS Category Sync (trigger + mark)'
+      ansible.windows.win_shell: |
+        $ErrorActionPreference = 'Stop'
+        $w = Get-WsusServer
+        $s = $w.GetSubscription()
+        $serverId = [string]$w.GetConfiguration().ServerId
+        $key = 'HKLM:\SOFTWARE\nwarila-platform\wsus'
+        $marked = (Get-ItemProperty -Path $key -Name 'category_bootstrap_server_id' -ErrorAction SilentlyContinue).category_bootstrap_server_id
+        if ($marked -and $marked -eq $serverId) {
+            Write-Output 'nochange'
+            return
+        }
+        $status = [string]$s.GetSynchronizationStatus()
+        if ($status -eq 'NotProcessing') {
+            $preHist = @($s.GetSynchronizationHistory()).Count
+            $s.StartSynchronizationForCategoryOnly()
+            $deadline = (Get-Date).AddSeconds([int]$env:ACCEPT_TIMEOUT)
+            do {
+                Start-Sleep -Seconds 3
+                $accepted = ([string]$s.GetSynchronizationStatus() -ne 'NotProcessing') -or (@($s.GetSynchronizationHistory()).Count -gt $preHist)
+            } while (-not $accepted -and (Get-Date) -lt $deadline)
+            if (-not $accepted) {
+                throw 'category sync not accepted within bootstrap_accept_timeout_sec of StartSynchronizationForCategoryOnly'
+            }
+            $result = 'started'
+        } else {
+            $result = 'inflight'
+        }
+        if (-not (Test-Path $key)) {
+            New-Item -Path $key -Force | Out-Null
+        }
+        New-ItemProperty -Path $key -Name 'category_bootstrap_server_id' -Value $serverId -PropertyType String -Force | Out-Null
+        Write-Output $result
+      environment:
+        ACCEPT_TIMEOUT: '{{ config.sync.bootstrap_accept_timeout_sec }}'
+      register: __wsus_bootstrap__
+      changed_when: "__wsus_bootstrap__.stdout | trim in ['started', 'inflight']"
+
     #endregion --- [ Main: WSUS Sync Configuration ] -------------------------------------- #
 
 #endregion --- [ Script ] -------------------------------------------------------------------- #

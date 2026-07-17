@@ -73,5 +73,10 @@ wsus_defaults:
   sync:
     update_languages:
       - 'en'
+    # Max SECONDS to confirm the category bootstrap sync was ACCEPTED (status left NotProcessing, or a new
+    # sync-history entry appeared) after StartSynchronizationForCategoryOnly(). Prove-started (Director
+    # 2026-07-17): C11b does NOT wait for the ~1-2hr full category sync to complete; it confirms acceptance
+    # and marks, and the sync (with the early-loaded product/classification catalog) continues async.
+    bootstrap_accept_timeout_sec: 120
 # Disk identity (wid_disk_id / wsus_disk_id) is declared in the 'wsus:' override dict and read as
 # config.wid_disk_id / config.wsus_disk_id (see README); this file holds role-default conventions.
