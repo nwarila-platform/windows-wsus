@@ -56,6 +56,7 @@ consumed configuration one cycle piece at a time.
 | `maintenance.reindex_schedule.day` | `sunday` | Day of the week the scheduled SUSDB reindex runs. C09b |
 | `maintenance.reindex_schedule.time` | `03:00` | Target-local `HH:MM` for the reindex (off-hours). C09b |
 | `maintenance.reindex_schedule.time_limit` | `PT2H` | ISO-8601 duration bounding a hung/lock-blocked reindex run (the scheduled task's execution time limit). C09b |
+| `maintenance.cleanup_operations` | the 6 MS ops | WSUS Server Cleanup operations the scheduled cleanup runs (`DeclineSupersededUpdates`, `DeclineExpiredUpdates`, `CleanupObsoleteComputers`, `CleanupObsoleteUpdates`, `CleanupUnneededContentFiles`, `CompressUpdates`); each is validated against this allowlist. Override to a subset. C10 |
 
 The role provisions a declared disk only when it is RAW or already carries its target
 drive letter. It refuses an initialized disk carrying a foreign drive letter, which
