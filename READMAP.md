@@ -41,10 +41,13 @@ Sequence:
    + C09b scheduled reindex ✅ + C10a cleanup runner ✅ + C10b monthly cleanup schedule ✅. **THE
    MAINTENANCE CORE (tuning + reindex + cleanup) IS COMPLETE.**
 5. **C11 sync arc — IN FLIGHT** (Director-chosen "make WSUS a live update source", Bootstrap+schedule):
-   **C11a ✅** (restrict update languages before the first sync — scope bound). **NEXT: C11b** (gated
-   bootstrap categories sync) → C11c products → C11d classifications → C11e daily sync schedule → C11f
+   **C11a ✅** (restrict update languages) + **C11b ✅** (gated bootstrap category-only sync, PROVE-STARTED —
+   trigger + confirm-accepted + durable ServerId registry marker, does NOT block on the ~1-2hr sync; catalog
+   loads early). **NEXT: C11c** products → C11d classifications → C11e daily sync schedule → C11f
    auto-approval (approve Critical/Security → downloads). Syncs are async/heavy, so the role
-   configures + gated-bootstraps + schedules; proofs verify config + that a sync STARTED.
+   configures + gated-bootstraps + schedules; **proofs verify config + that a sync STARTED, not completion**
+   (Director 2026-07-17, measured: the first category sync is ~1-2hr on the dev VM but the usable catalog
+   — 220 products + all classifications — loads in ~10 min).
 6. **Upstream debt retirement** — TD-001 loader v3.1 proposal (gated by
    `loader-change-protocol.md`) + TD-002 chassis lint warn_list PR (normal PR, no
    gate). Deferred by Director decision until the local role is the priority no more.
@@ -169,7 +172,8 @@ Sequence:
 | C10a | Deploy the WSUS Server Cleanup runner — `Invoke-WsusCleanup.ps1` (`Invoke-WsusServerCleanup`, ops splatted from an allowlist-validated comma-scalar) + `maintenance.cleanup_operations` default | ✅ merged `571d4da [audited ed7c984]` 2026-07-17 | P2 REVISE r1 (`-File` no arrays → scalar-split + allowlist blocks `-WhatIf` injection) → AGREE; RUNNER PROOF — positive all-6 + negative WhatIf-reject. RTRACK-C10a. |
 | C10b | Schedule the cleanup MONTHLY (first-Sunday 00:00) as SYSTEM (credential-free; NO grant — pre-tested). Closes C10 + the maintenance core | ✅ merged `89c822b [audited d7bae97]` 2026-07-17 | P2 REVISE r1 (00:00 buffer before 03:00 reindex; assert real first-Sunday) → AGREE r2; PRINCIPAL PROOF — ran as SYSTEM → cleanup completed, NextRunTime 2027-01-03. **CLOSES the maintenance core.** RTRACK-C10b. |
 | C11a | Restrict WSUS update languages before the first sync — `win_shell` on `Get-WsusServer.GetConfiguration()`: `AllUpdateLanguagesEnabled=false` + `SetEnabledUpdateLanguages(StringCollection of `sync.update_languages`, default `['en']`); opens 'Main: WSUS Sync Configuration' | ✅ merged `1c211bd [audited a25b136]` 2026-07-17 | P2 REVISE r1 (drop half-wired source/proxy; StringCollection + normalized compare + re-acquire-verify) → AGREE r2; convergence changed=1, SSH `AllUpdateLanguagesEnabled=False`/`[en]`, idempotency changed=0. Opens the C11 sync arc. RTRACK-C11a. |
-| C11b–f | Bootstrap categories sync (gated) → select products → classifications → daily sync schedule → auto-approval rule (approve Critical/Security → downloads) | ⛏️ next (C11b) | Director-chosen Bootstrap+schedule arc: make WSUS a live update source. Config + gated-bootstrap + schedule; proofs verify config + sync-STARTED (syncs are async/heavy). QUEUE.md C11b–f. |
+| C11b | Gated bootstrap category-only sync (PROVE-STARTED) — `win_shell` gated on a durable role-owned registry marker (`HKLM:\SOFTWARE\nwarila-platform\wsus\category_bootstrap_server_id` == `GetConfiguration().ServerId`); if unmarked, `StartSynchronizationForCategoryOnly()` + confirm ACCEPTED (bounded `sync.bootstrap_accept_timeout_sec`=120s) + write marker. Does NOT block on the ~1-2hr completion | ✅ merged `5003474 [audited fb87098]` 2026-07-17 | P2 r1→r4 hardened wait-for-completion (durable ServerId marker over Result/history gates) → AGREE r4; **Director prove-started decision** (sync ~1-2hr, catalog loads early) → r5 REDESIGN (single trigger+confirm+mark) → AGREE r5; converge changed=1, SSH marker==ServerId/sync Running/catalog 17→77, idempotency changed=0. Establishes the role-owned registry-marker convention. RTRACK-C11b. |
+| C11c–f | Select products → classifications → daily sync schedule → auto-approval rule (approve Critical/Security → downloads) | ⛏️ next (C11c) | Select from the early-loaded catalog (220 products + 11 classifications available). Config + schedule; proofs verify config + sync-STARTED (async/heavy). QUEUE.md C11c–f. |
 
 ### Track G — governance / Director decisions
 | ID | Item | Status | Notes |
@@ -194,7 +198,7 @@ _empty_
 ## ⏱️ SESSION HANDOFF — 2026-07-17 — for the next fresh session
 
 **STATE: core role COMPLETE (mission #1) + the maintenance core COMPLETE + the C11 sync arc IN FLIGHT
-(C11a merged).** `main` @ the C11a codification commit. The build spine (C01–C06i) delivers a working
+(C11a + C11b merged).** `main` @ the C11b codification commit. The build spine (C01–C06i) delivers a working
 WSUS-on-WID: disk init (E:/F:) → `win_feature` install → `wsusutil postinstall` → SUSDB relocated to
 `E:\WID\Data` (ONLINE, read-write; C: originals health-gated-deleted) → content on `F:\WSUS`. The
 maintenance core is done: **C08** WsusPool IIS tuning, **C09** weekly SUSDB reindex (SYSTEM,
@@ -202,20 +206,26 @@ credential-free), **C10** monthly WSUS Server Cleanup (SYSTEM, credential-free).
 DROPPED** (theater; §4b — role is self-verifying, green converge is the proof).
 
 **C11 sync arc (Director-chosen "make WSUS a live update source", Bootstrap+schedule).** **C11a merged**
-(`1c211bd [audited a25b136]`) — a `win_shell` on `Get-WsusServer.GetConfiguration()` sets
-`AllUpdateLanguagesEnabled=false` + `SetEnabledUpdateLanguages(StringCollection of
-wsus_defaults.sync.update_languages, default ['en'])`, only on a normalized set-diff, re-acquire+verify
-after Save (no perpetual-change). Bounds the download scope BEFORE the first sync. Source stays Microsoft
-Update (postinstall default; the source/proxy knobs were dropped in P2 r1 — `Save()` rejects them
-half-wired, out of scope). Opens the **Main: WSUS Sync Configuration** region. Proven: converge changed=1,
-SSH `AllUpdateLanguagesEnabled=False`/`GetEnabledUpdateLanguages()==[en]`, idempotency `SKIP_REVERT=1`
-changed=0. `pre-C11b` rolling snapshot from the C11a-converged state (staged for C11b).
+(`1c211bd`) — restrict update languages to `['en']` before the first sync (config-object idiom). **C11b
+merged** (`5003474 [audited fb87098]`) — gated bootstrap **category-only** sync, PROVE-STARTED: `win_shell`
+gates on a **durable role-owned registry marker** (`HKLM:\SOFTWARE\nwarila-platform\wsus\category_bootstrap_server_id`
+== `GetConfiguration().ServerId`); if unmarked, `StartSynchronizationForCategoryOnly()` + confirm ACCEPTED
+(status left NotProcessing OR a new history entry, bounded `sync.bootstrap_accept_timeout_sec`=120s) + write
+the marker; it does **not** block on the ~1-2hr completion. **KEY MEASURED FINDING (2026-07-17):** the first
+category sync is ~1-2hr on this dev VM (WAN-bound, 18745 items), BUT the usable catalog — **220 products +
+51 product-families + all 11 classifications** — loads in ~10 min, so the Director chose prove-started over
+wait-for-completion (matches the standing "proofs verify sync STARTED not completion" rule). The durable
+marker beats the two weaker gates Codex killed: `Result` (flips on a later failed sync) and
+`GetSynchronizationHistory()` (WSUS expires it ~90d); the `ServerId` tie (stable across reboot/restart/C06
+detach-attach) self-heals a re-created SUSDB. Proven: converge changed=1 (fast return), SSH marker==ServerId
++ sync Running + catalog growing, idempotency `SKIP_REVERT` changed=0.
 
-**NEXT: C11b** — gated bootstrap categories sync: trigger `Get-WsusServer.GetSubscription().
-StartSynchronization()` (+ a bounded wait, proofs verify sync STARTED not full completion — syncs are
-async/heavy) ONLY when `GetLastSynchronizationInfo()`==NeverRun; this populates the products +
-classifications catalog for C11c (select products) / C11d (select classifications). Then C11e daily sync
-schedule + C11f auto-approval (approve Critical/Security → downloads). QUEUE.md C11b–f.
+**NEXT: C11c** — select products from the early-loaded catalog: `Get-WsusServer.GetSubscription()` +
+`SetUpdateCategories(...)` from a new `sync.products` default (fail-closed if a configured product is not
+yet in the catalog). Then C11d classifications (`SetUpdateClassifications`), C11e daily sync schedule
+(`SynchronizeAutomatically` + `SynchronizeAutomaticallyTimeOfDay`), C11f auto-approval (approve
+Critical/Security → downloads). QUEUE.md C11c–f. **pre-C11c** rolling snapshot is taken from a CLEAN idle
+state — AFTER the async category sync settles to a fully-populated catalog (do NOT snapshot mid-sync).
 
 **Standing notes:** **TD-004** recorded (win_iis_webapppool → microsoft.iis.web_app_pool on the next
 collection bump). **Ops:** the ssh-agent emptied mid-session → git SSH-signing hung (`docs/KEY-RELOAD.md`,
@@ -240,8 +250,10 @@ bounded audits (adherence/scope/gate-logic), each `< /dev/null` — each converg
 the sacred fresh-OS anchor; ONE rolling `pre-<piece>` snapshot (`scripts/snapshot-step.sh <piece>`,
 taken post-merge only) is the usual revert target — `REVERT_TO=pre-<piece> scripts/compose-and-run.sh`
 so merged pieces no-op fast instead of re-converging. At most TWO snapshots ever (`docs/VM-LIFECYCLE.md`
-§4). From-baseline E2E re-proven once at the sync-arc END. **`pre-C11b` snapshot taken at this P5 from the
-verified post-C11a converged state (WSUS operational, maintenance scheduled, languages restricted to en).**
+§4). From-baseline E2E re-proven once at the sync-arc END. **`pre-C11c` snapshot taken at this P5 from a
+CLEAN idle post-C11b state — AFTER the async category sync settles to a fully-populated catalog (WSUS
+operational, maintenance scheduled, languages=en, category catalog bootstrapped + role-marked). Do NOT
+snapshot mid-sync (frozen-running-sync VM).**
 
 **Contract now:** disk ids are declared in the `wsus:` override dict and read as
 `config.wid_disk_id` (DB→E:WSUSDB) / `config.wsus_disk_id` (content→F:WSUSDATA), each the
@@ -269,12 +281,14 @@ composed-tree lint + fixtures + VM proofs in P4 · plain-gate ansible-lint exits
 so a `-e '{"wsus":{…}}'` proof override REPLACES the dict and MUST re-state
 `temp_dir: false`** (presence proof needs no `-e`; footgun confined to `-e` overrides).
 
-**Next action:** **C11b enters P0** — gated bootstrap categories sync. Probe first
-(`Get-WsusServer.GetSubscription()` — `GetLastSynchronizationInfo()`/`GetSynchronizationStatus()`), then
-plan a `win_shell` that triggers `StartSynchronization()` ONLY when the last sync == NeverRun, with a
-BOUNDED wait that proves the sync STARTED (status → Running / a LastSyncTime advance) rather than blocking
-on full completion (categories ≈ 18746 items; async/heavy). It populates the products + classifications
-catalog consumed by C11c/d. Drive it FAST with the fixed Codex pattern (bounded audits, `< /dev/null`,
-xhigh); P4 via `REVERT_TO=pre-C11b`; P4.5 LOCKED format. Then C11c products → C11d classifications →
-C11e daily sync schedule → C11f auto-approval (approve Critical/Security → downloads). Reuse the C11a
-WSUS-config-object idiom. Open G-track: Director ratification of the PROPOSED §8 escape-hatch policy.
+**Next action:** **C11c enters P0** — select products from the early-loaded catalog. Probe
+`Get-WsusServer.GetSubscription().GetUpdateCategories()` (the SELECTED set; the AVAILABLE catalog is
+`Get-WsusServer.GetUpdateCategories()` — 220 products + 51 families live) and the `SetUpdateCategories(...)`
+API; plan a `win_shell` that sets the subscription's product selection from a new `sync.products` default
+(fail-closed if a configured product is not yet in the catalog — the C11b prove-started tradeoff), with a
+normalized order-insensitive compare + `Save()` (the C11a config-object idiom). Drive it FAST with the fixed
+Codex pattern (bounded audits, `< /dev/null`, xhigh); P4 via `REVERT_TO=pre-C11c`; P4.5 LOCKED format. Then
+C11d classifications (`SetUpdateClassifications`) → C11e daily sync schedule (`SynchronizeAutomatically` +
+`SynchronizeAutomaticallyTimeOfDay`) → C11f auto-approval (approve Critical/Security → downloads). Reuse the
+C11a config-object idiom + the C11b durable-marker/prove-started idiom where an async op is involved. Open
+G-track: Director ratification of the PROPOSED §8 escape-hatch policy.
