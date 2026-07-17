@@ -681,6 +681,44 @@
       register: __wsus_bootstrap__
       changed_when: "__wsus_bootstrap__.stdout | trim in ['started', 'inflight']"
 
+    # Point this WSUS at the required upstream WSUS for the downstream topology; validate.yml
+    # owns the primary input contract, and this shell guard is defense-in-depth. Save only on
+    # a five-field diff, then re-acquire and verify because Save() does not validate reachability.
+    # Booleans arrive as lower env strings and are parsed with ToBoolean.
+    - name: 'MAIN | Configure Upstream WSUS Source'
+      ansible.windows.win_shell: |
+        $ErrorActionPreference = 'Stop'
+        if ([string]::IsNullOrWhiteSpace($env:UPSTREAM_SERVER)) {
+            throw 'upstream_server is required for a downstream topology: declare it in the wsus: override dict (config.upstream_server)'
+        }
+        $wantPort = [int]$env:UPSTREAM_PORT
+        $wantSsl = [System.Convert]::ToBoolean($env:UPSTREAM_SSL)
+        $wantReplica = [System.Convert]::ToBoolean($env:REPLICA)
+        $c = (Get-WsusServer).GetConfiguration()
+        $needChange = $c.SyncFromMicrosoftUpdate -or ($c.UpstreamWsusServerName -ne $env:UPSTREAM_SERVER) -or ($c.UpstreamWsusServerPortNumber -ne $wantPort) -or ($c.UpstreamWsusServerUseSsl -ne $wantSsl) -or ($c.IsReplicaServer -ne $wantReplica)
+        if ($needChange) {
+            $c.SyncFromMicrosoftUpdate = $false
+            $c.UpstreamWsusServerName = $env:UPSTREAM_SERVER
+            $c.UpstreamWsusServerPortNumber = $wantPort
+            $c.UpstreamWsusServerUseSsl = $wantSsl
+            $c.IsReplicaServer = $wantReplica
+            $c.Save()
+            $c2 = (Get-WsusServer).GetConfiguration()
+            if ($c2.SyncFromMicrosoftUpdate -or ($c2.UpstreamWsusServerName -ne $env:UPSTREAM_SERVER) -or ($c2.UpstreamWsusServerPortNumber -ne $wantPort) -or ($c2.UpstreamWsusServerUseSsl -ne $wantSsl) -or ($c2.IsReplicaServer -ne $wantReplica)) {
+                throw ('upstream source did not persist: SyncFromMU=' + $c2.SyncFromMicrosoftUpdate + ' upstream=[' + $c2.UpstreamWsusServerName + '] port=' + $c2.UpstreamWsusServerPortNumber + ' ssl=' + $c2.UpstreamWsusServerUseSsl + ' replica=' + $c2.IsReplicaServer)
+            }
+            Write-Output 'changed'
+        } else {
+            Write-Output 'nochange'
+        }
+      environment:
+        UPSTREAM_SERVER: '{{ config.upstream_server | default("") | string | trim }}'
+        UPSTREAM_PORT: '{{ config.sync.upstream_port }}'
+        UPSTREAM_SSL: '{{ config.sync.upstream_use_ssl | bool | lower }}'
+        REPLICA: '{{ config.sync.replica | bool | lower }}'
+      register: __wsus_source__
+      changed_when: "__wsus_source__.stdout | trim == 'changed'"
+
     #endregion --- [ Main: WSUS Sync Configuration ] -------------------------------------- #
 
 #endregion --- [ Script ] -------------------------------------------------------------------- #
