@@ -26,6 +26,7 @@ are **not** top-level vars and are **not** nested under `wsus.data_disks.*`.
 |----------------------|-------------|--------------|
 | `wid_disk_id` | `config.wid_disk_id` | WID/database disk, mapped to `E:` with label `WSUSDB` |
 | `wsus_disk_id` | `config.wsus_disk_id` | WSUS content disk, mapped to `F:` with label `WSUSDATA` |
+| `upstream_server` | `config.upstream_server` | Upstream WSUS server this host syncs from (downstream/replica topology; `SyncFromMicrosoftUpdate=false`). **Required** (C11d) — `validate.yml` fails the play if empty/undefined. Hostname of the upstream WSUS; connection policy (port/SSL/replica) is in `sync.*` defaults below. |
 
 Each value is the case-sensitive Windows disk `unique_id` (for example,
 `eui.<hex>`). Read it with PowerShell's `Get-Disk` `UniqueId` property or from
@@ -63,6 +64,9 @@ consumed configuration one strict-cycle piece at a time.
 | `maintenance.cleanup_schedule.time_limit` | `PT2H` | ISO-8601 duration bounding a hung cleanup run. C10b |
 | `sync.update_languages` | `['en']` | Languages (lowercase codes) whose updates WSUS syncs/downloads. The postinstall default is ALL languages (a large, wasteful scope); the role sets `AllUpdateLanguagesEnabled=false` and restricts to this set before the first sync. Override to add languages (e.g. `['en','fr']`). The update SOURCE stays Microsoft Update (postinstall default). C11a |
 | `sync.bootstrap_accept_timeout_sec` | `120` | Max seconds to confirm the one-time category bootstrap sync was **accepted** (`StartSynchronizationForCategoryOnly` — status left `NotProcessing`, or a new sync-history entry appeared). Prove-started: the role confirms the sync started and writes a durable per-server marker, then does **not** block on the (~1–2hr, WAN-bound) full category sync — the usable product/classification catalog loads early and populates asynchronously. C11b |
+| `sync.upstream_port` | `8530` | Port of the upstream WSUS server (`8530` HTTP / `8531` HTTPS). Connection policy for the required `upstream_server` input. C11d |
+| `sync.upstream_use_ssl` | `false` | Sync from the upstream WSUS over SSL. C11d |
+| `sync.replica` | `true` | `IsReplicaServer`: `true` = **replica** downstream mirroring the upstream's product/classification selections **and** approvals (inherit-everything, no local management); `false` = autonomous downstream that syncs metadata from the upstream but manages its own approvals. C11d |
 
 The role provisions a declared disk only when it is RAW or already carries its target
 drive letter. It refuses an initialized disk carrying a foreign drive letter, which
