@@ -68,5 +68,10 @@ wsus_defaults:
       day: 'sunday'
       time: '00:00'
       time_limit: 'PT2H'
+  # Which languages' updates WSUS syncs/downloads (lowercase codes). The postinstall default is
+  # ALL languages (a large, wasteful scope), so the role restricts it. Override to add languages.
+  sync:
+    update_languages:
+      - 'en'
 # Disk identity (wid_disk_id / wsus_disk_id) is declared in the 'wsus:' override dict and read as
 # config.wid_disk_id / config.wsus_disk_id (see README); this file holds role-default conventions.
