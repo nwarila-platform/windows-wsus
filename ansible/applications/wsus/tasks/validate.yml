@@ -12,18 +12,29 @@
 ---
 #region ------ [ Script ] -------------------------------------------------------------------- #
 
-# Load-bearing config invariant: the two data-disk identifiers must be DISTINCT. No module and no
-# arg-spec expresses wid != wsus; if equal, both resolve to the SAME physical disk and provisioning
-# silently targets one disk twice (half-provisioned) — a silent-wrong no Ansible action catches.
-- name: 'BEGIN | Assert Data Disk Identifiers Are Distinct'
+# Load-bearing config invariant: data-disk identifiers and drive letters must be DISTINCT. No
+# module and no arg-spec expresses wid/wsus/iis or E:/F:/G uniqueness; if duplicated, logical disks
+# can resolve to the SAME physical disk/partition (silent-wrong).
+- name: 'BEGIN | Assert Data Disk Identifiers And Drive Letters Are Distinct'
   when: (state | default('present') | string | lower | trim) == 'present'
+  vars:
+    __disk_ids__:
+      - "{{ config.wid_disk_id | default('') | string | trim }}"
+      - "{{ config.wsus_disk_id | default('') | string | trim }}"
+      - "{{ config.iis_disk_id | default('') | string | trim }}"
+    __disk_letters__:
+      - "{{ config.data_disks.db.drive_letter | default('') | string | trim | upper }}"
+      - "{{ config.data_disks.content.drive_letter | default('') | string | trim | upper }}"
+      - "{{ config.data_disks.iis.drive_letter | default('') | string | trim | upper }}"
   ansible.builtin.assert:
     that:
-      - (config.wid_disk_id | default('') | string | trim) != (config.wsus_disk_id | default('') | string | trim)
+      - (__disk_ids__ | select | list | unique | length) == (__disk_ids__ | select | list | length)
+      - (__disk_letters__ | select | list | unique | length) == (__disk_letters__ | select | list | length)
     fail_msg: >-
-      wsus.wid_disk_id and wsus.wsus_disk_id must identify two DIFFERENT disks but both resolve to
-      '{{ config.wid_disk_id | default('') | string | trim }}'. Each disk's unique_id is globally
-      unique; declare the correct id for each volume.
+      wsus.wid_disk_id/wsus_disk_id/iis_disk_id must each identify a DIFFERENT disk, and
+      data_disks.db/content/iis.drive_letter must each be a DIFFERENT letter. A collision makes two
+      logical disks resolve to the same physical disk/partition (silent-wrong). ids={{ __disk_ids__ }}
+      letters={{ __disk_letters__ }}.
     quiet: true
 
 - name: 'BEGIN | Assert Upstream WSUS Server Provided'
