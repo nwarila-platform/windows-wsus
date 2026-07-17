@@ -517,6 +517,64 @@
       loop_control:
         label: '{{ item }}'
 
+    # The credential-free scheduled reindex runs as SYSTEM, which is not a WID sysadmin by
+    # default. Grant it the same WID sysadmin the local admin already holds: sysadmin is required
+    # because db_owner cannot run sp_updatestats. SID-verified IF-NOT-EXISTS checks keep the
+    # SqlClient/WID-pipe C06/C09a idiom idempotent.
+    - name: 'MAIN | Grant SYSTEM WID sysadmin For Scheduled Reindex'
+      ansible.windows.win_shell: |
+        $ErrorActionPreference = 'Stop'
+        $changed = $false
+        $conn = $null
+        try {
+            $conn = New-Object System.Data.SqlClient.SqlConnection('server=\\.\pipe\MICROSOFT##WID\tsql\query;database=master;trusted_connection=true;')
+            $conn.Open()
+            $check = $conn.CreateCommand()
+            $check.CommandText = "SELECT COUNT(*) FROM sys.server_principals WHERE name = 'NT AUTHORITY\SYSTEM' AND type = 'U' AND sid = SUSER_SID('NT AUTHORITY\SYSTEM')"
+            if ([int]$check.ExecuteScalar() -eq 0) {
+                $make = $conn.CreateCommand()
+                $make.CommandText = "CREATE LOGIN [NT AUTHORITY\SYSTEM] FROM WINDOWS"
+                [void]$make.ExecuteNonQuery()
+                $changed = $true
+            }
+            $role = $conn.CreateCommand()
+            $role.CommandText = "SELECT COUNT(*) FROM sys.server_role_members rm JOIN sys.server_principals r ON rm.role_principal_id = r.principal_id JOIN sys.server_principals p ON rm.member_principal_id = p.principal_id WHERE r.name = 'sysadmin' AND p.name = 'NT AUTHORITY\SYSTEM'"
+            if ([int]$role.ExecuteScalar() -eq 0) {
+                $add = $conn.CreateCommand()
+                $add.CommandText = "ALTER SERVER ROLE sysadmin ADD MEMBER [NT AUTHORITY\SYSTEM]"
+                [void]$add.ExecuteNonQuery()
+                $changed = $true
+            }
+        } finally {
+            if ($conn -and $conn.State -eq 'Open') { $conn.Close() }
+        }
+        if ($changed) { Write-Output 'changed' } else { Write-Output 'nochange' }
+      register: __susdb_grant_system__
+      changed_when: "__susdb_grant_system__.stdout | trim == 'changed'"
+
+    # Schedule the C09a runner weekly off-hours as SYSTEM: service_account stores no password,
+    # and SYSTEM has the required WID sysadmin grant above. IgnoreNew (2) prevents overlapping
+    # offline-lock reindexes; the time limit bounds a hung run. The fixed past start-boundary
+    # date anchors recurrence while day_of_week + target-local time drive the weekly schedule.
+    - name: 'MAIN | Schedule The SUSDB Reindex'
+      community.windows.win_scheduled_task:
+        name: 'WSUS SUSDB Reindex'
+        description: 'Weekly off-hours SUSDB reindex/defragment (MS SUSDBMaint.sql via SqlClient over the WID pipe). wsus role C09b.'
+        actions:
+          - path: 'powershell.exe'
+            arguments: '-NoProfile -ExecutionPolicy Bypass -File "{{ config.maintenance.dir }}\Invoke-SusdbReindex.ps1" -ScriptPath "{{ config.maintenance.dir }}\SUSDBMaint.sql" -LogDir "{{ config.maintenance.dir }}"'
+        triggers:
+          - type: weekly
+            days_of_week: '{{ config.maintenance.reindex_schedule.day }}'
+            start_boundary: '2020-01-01T{{ config.maintenance.reindex_schedule.time }}:00'
+        username: 'NT AUTHORITY\SYSTEM'
+        logon_type: service_account
+        run_level: highest
+        multiple_instances: 2
+        execution_time_limit: '{{ config.maintenance.reindex_schedule.time_limit }}'
+        state: present
+        enabled: true
+
     #endregion --- [ Main: WSUS Maintenance ] --------------------------------------------- #
 
 #endregion --- [ Script ] -------------------------------------------------------------------- #
