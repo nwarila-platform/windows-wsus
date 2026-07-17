@@ -45,5 +45,11 @@ wsus_defaults:
   # overridable for hosts with a different maintenance layout.
   maintenance:
     dir: 'C:\ProgramData\wsus-maintenance'
+    # Weekly off-hours reindex window (time is target-local HH:MM); the ISO 8601 time limit
+    # bounds a hung or lock-blocked run.
+    reindex_schedule:
+      day: 'sunday'
+      time: '03:00'
+      time_limit: 'PT2H'
 # Disk identity (wid_disk_id / wsus_disk_id) is declared in the 'wsus:' override dict and read as
 # config.wid_disk_id / config.wsus_disk_id (see README); this file holds role-default conventions.
