@@ -62,10 +62,11 @@ Ansible portion is developed and executed today.
   guest `WIN-2FA90PRKORT` at `192.168.0.181`, user `administrator`, SSH key auth
   (key `~/.ssh/hellbomb-ssh-key` via the persistent agent socket `~/.ssh/agent.sock`;
   the key is in the guest's `administrators_authorized_keys`).
-- Baseline snapshot: **`pre-ansible-clean-ssh-ready`** (v5, 2026-07-15, running VM,
+- Baseline snapshot: **`pre-ansible-clean-ssh-ready`** (v6, 2026-07-17, running VM,
   memory included; VMware Tools, OpenSSH DefaultShell=PowerShell, **static IP
-  192.168.0.181/24**, **2 vCPU / 4 GB RAM**, **two attached BLANK/RAW data disks
-  20 GB + 30 GB**, fresh OS, no WSUS). The role is handed this exact machine and
+  192.168.0.181/24**, **2 vCPU / 4 GB RAM**, **THREE attached BLANK/RAW data disks
+  20 GB WSUSDB + 30 GB WSUSDATA + 20 GB WSUSIIS** (`nvme0:1/2/3`), fresh OS, no WSUS;
+  3rd disk added 2026-07-17 for the whole-WSUS-IIS-site relocation arc). The role is handed this exact machine and
   configures it end-to-end incl. disk init (style guide §4a). **Revert before EVERY
   playbook execution** — `scripts/revert-vm.sh`, never against a dirty VM. Per-step
   discipline (Director, 2026-07-16): one rolling `pre-<piece>` snapshot

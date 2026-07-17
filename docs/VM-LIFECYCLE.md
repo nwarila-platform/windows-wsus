@@ -10,18 +10,25 @@ known-clean state.*
 - Contents (what "clean" means): fresh Windows Server 2025, VMware Tools installed,
   OpenSSH server with key auth for `administrator`
   (`administrators_authorized_keys`), `DefaultShell` = PowerShell, **static IP
-  192.168.0.181/24** (gw/dns 192.168.0.1), **2 vCPU / 4 GB RAM**, **two attached but
-  BLANK/RAW data disks** (Disk 1 = 20 GB, Disk 2 = 30 GB — un-initialized, no
-  partitions, no letters), **no WSUS bits, no role side-effects, no staged files**.
+  192.168.0.181/24** (gw/dns 192.168.0.1), **2 vCPU / 4 GB RAM**, **THREE attached but
+  BLANK/RAW data disks** (Disk 1 = 20 GB WSUSDB, Disk 2 = 30 GB WSUSDATA, Disk 3 = 20 GB
+  WSUSIIS — all un-initialized, no partitions, no letters; NVMe on `nvme0:1/2/3`),
+  **no WSUS bits, no role side-effects, no staged files**.
   Taken RUNNING with memory (revert resumes in seconds; capture ~5 min at 4 GB).
-  Current baseline: **v5**, 2026-07-15.
+  Current baseline: **v6**, 2026-07-17 (added the 3rd disk for the IIS-relocation arc).
+  Disk `unique_id`s (stable `eui.*`, populated on RAW): WSUSDB `eui.6C7076230CC23C55000C2968C7AE5760`,
+  WSUSDATA `eui.CF4AE05CEB88F43B000C29656D55634B`, WSUSIIS `eui.BC9F0ECE9FBC4B9A000C296303722FC1`;
+  OS (DO NOT touch) `eui.D71C311D211B6731000C296D8345C5CC`.
 - **The data disks are RAW on purpose.** Guest-side disk init (GPT/format/label/
   letter) is the `wsus` role's job (style guide §4a — the role configures the handed
   machine end-to-end). The baseline provides only the *hardware*; a formatted disk in
   the baseline would be a forbidden un-diffable artifact. Every clean revert therefore
   hands the role blank disks, exercising its init path each run.
 - Baseline history: v1 clean+SSH → v2 +static IP → v3 +2 vCPU/4 GB → v4 +2 disks
-  (formatted; superseded) → **v5 disks wiped RAW** (the E2E-role decision).
+  (formatted; superseded) → v5 disks wiped RAW (the E2E-role decision) → **v6 +3rd RAW
+  disk (20 GB WSUSIIS, `nvme0:3`)** for the whole-WSUS-IIS-site relocation arc (Director
+  roadmap 2026-07-17; created via `vmware-vdiskmanager -c -s 20GB -a lsilogic -t 0` +
+  a `nvme0:3` VMX entry, per §3).
 - A baseline must NEVER be taken from a VM that has had a playbook run against it
   since the last revert. Clean chain only: revert → (baseline-level change) → snapshot.
 
