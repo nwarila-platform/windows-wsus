@@ -575,6 +575,31 @@
         state: present
         enabled: true
 
+    # Schedule the C10a cleanup runner monthly (first Sunday 00:00, before the 03:00 weekly
+    # reindex) as SYSTEM: service_account stores no password, and SYSTEM has the C09b WID
+    # sysadmin grant (pre-tested). Operations come from the cleanup_operations default joined
+    # to the runner's comma-scalar, which its allowlist re-validates. IgnoreNew never overlaps;
+    # the time limit bounds a hung run.
+    - name: 'MAIN | Schedule The WSUS Server Cleanup'
+      community.windows.win_scheduled_task:
+        name: 'WSUS Server Cleanup'
+        description: 'Monthly (first Sunday, off-hours) WSUS Server Cleanup (Invoke-WsusServerCleanup). wsus role C10b.'
+        actions:
+          - path: 'powershell.exe'
+            arguments: '-NoProfile -ExecutionPolicy Bypass -File "{{ config.maintenance.dir }}\Invoke-WsusCleanup.ps1" -LogDir "{{ config.maintenance.dir }}" -Operations "{{ config.maintenance.cleanup_operations | join(",") }}"'
+        triggers:
+          - type: monthlydow
+            weeks_of_month: '{{ config.maintenance.cleanup_schedule.week }}'
+            days_of_week: '{{ config.maintenance.cleanup_schedule.day }}'
+            start_boundary: '2020-01-01T{{ config.maintenance.cleanup_schedule.time }}:00'
+        username: 'NT AUTHORITY\SYSTEM'
+        logon_type: service_account
+        run_level: highest
+        multiple_instances: 2
+        execution_time_limit: '{{ config.maintenance.cleanup_schedule.time_limit }}'
+        state: present
+        enabled: true
+
     #endregion --- [ Main: WSUS Maintenance ] --------------------------------------------- #
 
 #endregion --- [ Script ] -------------------------------------------------------------------- #
