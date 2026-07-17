@@ -39,10 +39,11 @@ Sequence:
    ratification is cheapest before more pieces cite them.
 4. **C08+ optimization/maintenance arc** (research-scoped this session, deprecation-capped): C08
    WsusPool IIS tuning ✅ + C09a reindex tooling ✅ + **C09b scheduled reindex ✅** (weekly off-hours,
-   as SYSTEM/credential-free, proven to reindex SUSDB) — the C09 reindex arc is COMPLETE; **C10a cleanup
-   runner ✅** (`Invoke-WsusServerCleanup`, proven: positive all-6 + negative WhatIf-reject); **C10b
-   (schedule the cleanup as SYSTEM monthly) NEXT**; then C11+ sync scope / HTTPS 8531 / client GPO
-   (optional, operator-policy-heavy).
+   as SYSTEM/credential-free, proven to reindex SUSDB) — the C09 reindex arc is COMPLETE; **C10 cleanup
+   ✅** (C10a runner + C10b monthly SYSTEM schedule, proven end-to-end). **THE MAINTENANCE CORE (tuning +
+   reindex + cleanup) IS COMPLETE.** Remaining C11+ (sync scope / HTTPS 8531 / client GPO) are OPTIONAL,
+   operator-policy-heavy, and deprecation-capped — a Director scope decision; the T-track backport is
+   also now unblocked.
 5. **Upstream debt retirement** — TD-001 loader v3.1 proposal (gated by
    `loader-change-protocol.md`) + TD-002 chassis lint warn_list PR (normal PR, no
    gate). Deferred by Director decision until the local role is the priority no more.
@@ -196,9 +197,14 @@ Server Cleanup runner `Invoke-WsusCleanup.ps1` (`Invoke-WsusServerCleanup`, ops 
 allowlist-validated comma-scalar `-Operations` — `-File` can't pass arrays) + a
 `maintenance.cleanup_operations` default; PROVEN (positive all-6 run + negative WhatIf-reject). **NEXT:
 C10b** — schedule the cleanup MONTHLY off-hours as SYSTEM via `win_scheduled_task` (reuse the C09b
-credential-free pattern; C10b's open question mirrors C09b's — does SYSTEM need extra WSUS-API/console
-access beyond the C09b WID-sysadmin grant to run `Get-WsusServer | Invoke-WsusServerCleanup`? prove it
-by running the task as SYSTEM). `pre-C10b` rolling snapshot from the C10a state.
+credential-free pattern; RESOLVED — pre-tested that SYSTEM already runs the cleanup
+via the C09b WID-sysadmin grant, so NO new grant). **C10b** (`89c822b [audited d7bae97]`) — monthly
+(first-Sunday 00:00) `win_scheduled_task` runs the cleanup as SYSTEM, credential-free; proven end-to-end
+(NextRunTime 2027-01-03, ran on-demand → cleanup completed as SYSTEM). **THE MAINTENANCE CORE IS
+COMPLETE** (C08 tuning + C09 reindex + C10 cleanup). **NEXT: a Director scope decision** — C11+ (sync
+scope, HTTPS on 8531, client GPO) are optional/operator-policy-heavy/deprecation-capped, OR the T-track
+endgame (backport to `*-template` → GitHub import) is now unblocked. `pre-C11` rolling snapshot from the
+C10b state.
 **Standing notes:** **TD-004** recorded (win_iis_webapppool → microsoft.iis.web_app_pool on the next
 collection bump). **Ops:** the ssh-agent emptied mid-session → git SSH-signing hung (`docs/KEY-RELOAD.md`,
 the Director reloads the keys); also `%G?`/`--show-signature` report "No signature" here (no

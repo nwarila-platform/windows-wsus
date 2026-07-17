@@ -57,6 +57,10 @@ consumed configuration one strict-cycle piece at a time.
 | `maintenance.reindex_schedule.time` | `03:00` | Target-local `HH:MM` for the reindex (off-hours). C09b |
 | `maintenance.reindex_schedule.time_limit` | `PT2H` | ISO-8601 duration bounding a hung/lock-blocked reindex run (the scheduled task's execution time limit). C09b |
 | `maintenance.cleanup_operations` | the 6 MS ops | WSUS Server Cleanup operations the scheduled cleanup runs (`DeclineSupersededUpdates`, `DeclineExpiredUpdates`, `CleanupObsoleteComputers`, `CleanupObsoleteUpdates`, `CleanupUnneededContentFiles`, `CompressUpdates`); each is validated against this allowlist. Override to a subset. C10 |
+| `maintenance.cleanup_schedule.week` | `1` | Week-of-month for the monthly cleanup (`monthlydow` `weeks_of_month`; 1 = first). C10b |
+| `maintenance.cleanup_schedule.day` | `sunday` | Day of the week the monthly cleanup runs (first `<day>` of the month). C10b |
+| `maintenance.cleanup_schedule.time` | `00:00` | Target-local `HH:MM` for the cleanup; defaults to 00:00 to finish (within `time_limit`) before the 03:00 weekly reindex. C10b |
+| `maintenance.cleanup_schedule.time_limit` | `PT2H` | ISO-8601 duration bounding a hung cleanup run. C10b |
 
 The role provisions a declared disk only when it is RAW or already carries its target
 drive letter. It refuses an initialized disk carrying a foreign drive letter, which
