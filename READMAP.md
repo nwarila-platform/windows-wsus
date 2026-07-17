@@ -39,9 +39,10 @@ Sequence:
    ratification is cheapest before more pieces cite them.
 4. **C08+ optimization/maintenance arc** (research-scoped this session, deprecation-capped): C08
    WsusPool IIS tuning ✅ + C09a reindex tooling ✅ + **C09b scheduled reindex ✅** (weekly off-hours,
-   as SYSTEM/credential-free, proven to reindex SUSDB) — **the C09 reindex arc is COMPLETE**; **C10
-   (scheduled monthly `CleanupScope`) NEXT** (reuse the C09b SYSTEM/credential-free pattern); C11+ sync
-   scope / HTTPS 8531 / client GPO (optional, operator-policy-heavy).
+   as SYSTEM/credential-free, proven to reindex SUSDB) — the C09 reindex arc is COMPLETE; **C10a cleanup
+   runner ✅** (`Invoke-WsusServerCleanup`, proven: positive all-6 + negative WhatIf-reject); **C10b
+   (schedule the cleanup as SYSTEM monthly) NEXT**; then C11+ sync scope / HTTPS 8531 / client GPO
+   (optional, operator-policy-heavy).
 5. **Upstream debt retirement** — TD-001 loader v3.1 proposal (gated by
    `loader-change-protocol.md`) + TD-002 chassis lint warn_list PR (normal PR, no
    gate). Deferred by Director decision until the local role is the priority no more.
@@ -190,10 +191,14 @@ C09 scheduled-reindex arc is DONE).** `main` @ the C09b codification commit. **C
 as `NT AUTHORITY\SYSTEM` (credential-free: SYSTEM granted WID sysadmin via a SID-verified idempotent
 SqlClient grant, no stored password), `IgnoreNew` + time-limited; PROVEN by running the task on-demand
 (reindexed SUSDB, `sp_updatestats` ran, `LastTaskResult=0`, SUSDB ONLINE). Director approved the
-SYSTEM→sysadmin grant over a vaulted password. **NEXT: C10** — scheduled monthly WSUS cleanup
-(`CleanupScope`: decline superseded/expired + obsolete updates/computers + compress + unneeded
-content) via a `win_scheduled_task`, reusing the C09b SYSTEM/credential-free pattern. `pre-C10` rolling
-snapshot from the C09b state.
+SYSTEM→sysadmin grant over a vaulted password. **C10a** (`571d4da [audited ed7c984]`) — deploy the WSUS
+Server Cleanup runner `Invoke-WsusCleanup.ps1` (`Invoke-WsusServerCleanup`, ops splatted from an
+allowlist-validated comma-scalar `-Operations` — `-File` can't pass arrays) + a
+`maintenance.cleanup_operations` default; PROVEN (positive all-6 run + negative WhatIf-reject). **NEXT:
+C10b** — schedule the cleanup MONTHLY off-hours as SYSTEM via `win_scheduled_task` (reuse the C09b
+credential-free pattern; C10b's open question mirrors C09b's — does SYSTEM need extra WSUS-API/console
+access beyond the C09b WID-sysadmin grant to run `Get-WsusServer | Invoke-WsusServerCleanup`? prove it
+by running the task as SYSTEM). `pre-C10b` rolling snapshot from the C10a state.
 **Standing notes:** **TD-004** recorded (win_iis_webapppool → microsoft.iis.web_app_pool on the next
 collection bump). **Ops:** the ssh-agent emptied mid-session → git SSH-signing hung (`docs/KEY-RELOAD.md`,
 the Director reloads the keys); also `%G?`/`--show-signature` report "No signature" here (no
