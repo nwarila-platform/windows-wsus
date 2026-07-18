@@ -234,11 +234,12 @@ stateful data off the OS disk so the OS disk becomes disposable** (item 1 IIS-di
    is, just move the IIS (inetpub)"; EXPLICIT-REPOINT chosen. **C12a** (provision G:) + **C12b** (site logs)
    + **C12c** (wwwroot + `InetStp PathWWWRoot` + Default Web Site physicalPath). The WSUS Administration site
    stays in Program Files (untouched). Track I above.
-4. ⛏️ **Industry best-practices logging — NEXT (after the inline-PowerShell-maturity pass).** Research-grounded:
-   IIS W3C fields + ETW, WSUS `SoftwareDistribution.log`, the WsusService/WID event channels, sane
-   sizes/retention, meaningful Event Viewer views. **Includes making C12b's IIS log file actually materialize
-   + re-verifying the write lands on G:** (the C12b "merge then investigate" follow-up). **This is the NEXT
-   initiative** now that the maturity pass is done.
+4. ✅ **Industry best-practices logging — DONE (item-4 arc, Track L; CLOSED 2026-07-18).** Director-scoped to
+   IIS/WSUS-specific NON-GPO items (GPOs own ~99% of STIG). **C13a** install `Web-Http-Logging` (root-caused the
+   C12b gap → W3C logs write to G:); **C13c-e** log-dir ACL + STIG custom fields + `File,ETW`; **C13f-g** IIS
+   log-cleanup runner + weekly SYSTEM schedule (retention 90d); **C13h-i** 3 Event Viewer custom views + enable
+   `Microsoft-IIS-Configuration/Operational`. Dropped: event-log sizing (GPO), `SoftwareDistribution.log`
+   relocation (MS-unsupported). From-baseline E2E `ok=56 changed=35 failed=0` + full-role idempotency changed=0.
 
    **✅ Inline-PowerShell-maturity pass — COMPLETE (piece M, `f8b1d6a`, 2026-07-17).** Audited all 15 inline-PS
    surfaces; the role was already mostly mature (the C09b Grant-SYSTEM template onward). Hardened the 5 C06-era
@@ -257,10 +258,32 @@ stateful data off the OS disk so the OS disk becomes disposable** (item 1 IIS-di
 
 ---
 
-## ⏱️ SESSION HANDOFF — 2026-07-18 (item-4 logging in progress) — for the next fresh session
+## ⏱️ SESSION HANDOFF — 2026-07-18 (item 4 CLOSED — role feature+maintenance+sync+logging complete) — for the next fresh session
 
-**STATE: feature core + IIS-on-its-own-drive arc + inline-PowerShell maturity pass DONE; roadmap item 4
-(logging) IN PROGRESS — C13a merged (`f614e58`), C13b/c/d queued.** `main` @ the C13a codification commit. The build spine (C01–C06i) delivers a working WSUS-on-WID: disk init (E:/F:) → `win_feature`
+**STATE: the role is COMPLETE through roadmap item 4.** Feature core + IIS-on-its-own-drive arc + inline-PowerShell
+maturity pass + **roadmap item 4 (industry best-practices logging) ALL DONE.** `main` @ the C13h-i codification
+commit (`3d15b1d`). **The whole role is proven from a fresh OS: from-baseline E2E `ok=56 changed=35 failed=0`
++ full-role idempotency `changed=0`** (2026-07-18). Rolling snapshot refreshed to `pre-item5` (full role baked in).
+
+**Item 4 (logging) — CLOSED (Director-scoped to IIS/WSUS-specific NON-GPO items; GPOs own ~99% of STIG,
+[[role-vs-gpo-scope]]):** **C13a** (`f614e58`) install `Web-Http-Logging` — root-caused the C12b gap (config was
+correct; the HTTP Logging role service was never installed) → W3C logs write to G:. **C13c-e** (`6c0a3e4`)
+log-dir ACL (V-218790, SYSTEM/Admins FC + org Users R&X) + 4 STIG custom W3C fields (V-218788/9) +
+`logTargetW3C=File,ETW` (V-218786) — 2 Claude P4 repairs (ConvertFrom-Json `@()` jaggedness; logTargetW3C
+flags-enum `.Value`→`[string]`). **C13f-g** (`5f63d2b`) IIS log-cleanup runner (retention 90d) + weekly SYSTEM
+schedule — IIS has no built-in retention. **C13h-i** (`2b6fd4b`) 3 Event Viewer custom views (WSUS/IIS-WsusPool/
+WID-SUSDB, XPath queries proven to execute) + enable `Microsoft-IIS-Configuration/Operational` (native
+`EventLogConfiguration`). **DROPPED** (GPO or MS-unsupported): event-log sizing (GPO), `SoftwareDistribution.log`
+relocation (MS-unsupported). Event-log MaxSize + retention are GPO-owned; WSUS already logs to the Application
+channel out of the box.
+
+**NEXT — a Director scope decision** (the role is complete through item 4): (a) **item 5** (PARKED, §4) —
+AWS/proxmox OS-disk swap / adopt-existing-volumes (bi-modal role); needs the Director's AWS-vs-proxmox
+deploy-direction call + an OS-swap test scenario. (b) The **T-track endgame** — backport to a `*-template` repo
+(parameterize dev-VM disk ids + upstream_server) → GitHub import (`nwarila-platform` org). (c) Optional G-track:
+ratify the PROPOSED §8 escape-hatch policy (now exercised across C05/C06/C08–C13). The
+inline-PowerShell-maturity native-module template is RATIFIED (style §5); the split_args gate
+(`scripts/check-winshell-splitargs.py`) is part of the standard gate. The build spine (C01–C06i) delivers a working WSUS-on-WID: disk init (E:/F:) → `win_feature`
 install → `wsusutil postinstall` → SUSDB relocated to `E:\WID\Data` (ONLINE, read-write; C: originals
 health-gated-deleted) → content on `F:\WSUS`. Maintenance core: **C08** WsusPool IIS tuning, **C09** weekly
 SUSDB reindex (SYSTEM), **C10** monthly WSUS Server Cleanup (SYSTEM). Sync: **C11a** languages + **C11b**
@@ -338,11 +361,12 @@ bounded audits (adherence/scope/gate-logic), each `< /dev/null` — each converg
 the sacred fresh-OS anchor; ONE rolling `pre-<piece>` snapshot (`scripts/snapshot-step.sh <piece>`,
 taken post-merge only) is the usual revert target — `REVERT_TO=pre-<piece> scripts/compose-and-run.sh`
 so merged pieces no-op fast instead of re-converging. At most TWO snapshots ever (`docs/VM-LIFECYCLE.md`
-§4). **Rolling snapshot after the IIS arc = `pre-maturity`** — a CLEAN, FULLY-CONVERGED-through-C12c 3-disk
-state (E:/F:/G: provisioned, SUSDB on E:, content on F:, inetpub on G:, sync configured). The
-inline-PowerShell-maturity pass reverts there (`REVERT_TO=pre-maturity`) and each refactored win_shell task
-should converge to **changed=0** (behavior-preserving) — the exact proof a maturity refactor needs. An
-optional from-baseline E2E verify uses the BASELINE snapshot (`pre-ansible-clean-ssh-ready`, v6, 3 disks).
+§4). **Rolling snapshot = `pre-item5`** (refreshed 2026-07-18 after item 4) — a CLEAN, FULLY-CONVERGED
+**FULL-ROLE** 3-disk state (all of C01–C13 baked in: E:/F:/G:, SUSDB on E:, content on F:, inetpub+logs on G:,
+sync configured, all IIS logging + Event Viewer views + IIS-Config channel), sync idle, SUSDB ONLINE, :8530
+→ 200. Idempotency-proven (a full-role SKIP_REVERT re-run = changed=0). A future piece reverts there
+(`REVERT_TO=pre-item5`) and re-applies fast. The from-baseline E2E uses the BASELINE
+(`pre-ansible-clean-ssh-ready`, v6, 3 disks) — re-proven 2026-07-18: **ok=56 changed=35 failed=0**.
 
 **Contract now:** disk ids are declared in the `wsus:` override dict and read as
 `config.wid_disk_id` (DB→E:WSUSDB) / `config.wsus_disk_id` (content→F:WSUSDATA), each the
