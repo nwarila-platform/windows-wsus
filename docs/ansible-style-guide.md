@@ -186,19 +186,34 @@ clobber, verified at the module source). These stay `quiet: true` with an action
   between logical sections. Idiomatic one-line pipeline filter blocks
   (`Where-Object { ... }`) stay inline — OTBS governs control statements. First applied:
   the C06c relocation probe; binding on all later embedded scripts (C06e/C06g+).
-- **SEEDED (C12c, 2026-07-17) — win_shell free-form must not put a backslash immediately
-  before a closing quote (`\'` / `\"`).** Ansible parses the free-form module arg of
-  `win_shell`/`win_command` with `split_args`, which honors `\` as an escape **even inside
-  single quotes**. A literal backslash right before a closing quote — `Replace('/','\')`,
-  `'IIS:\Sites\'`, `'C:\'` — escapes the quote, unbalances the parser, and fails the task
-  at **LOAD time** (`failed at splitting arguments, either an unbalanced jinja2 block or
-  quotes`) before it ever runs. Interior backslashes are fine (`'IIS:\Sites\Default Web Site'`);
-  only backslash-adjacent-to-a-closing-quote breaks. **RULE:** build such strings with
-  `[char]92` (`('IIS:\Sites' + [char]92 + $s.Name)`) and never end a quoted literal with `\`.
-  VERIFY any embedded block:
-  `python -c "from ansible.parsing.splitter import split_args; split_args(open('block.txt').read())"`
-  (pipx venv: `/root/.local/share/pipx/venvs/ansible-core/bin/python`). Systemic — a headline
-  target of the inline-PowerShell-maturity pass (all `win_shell` §8 tasks audited for this).
+- **RATIFIED (M, 2026-07-17) — the native-module template for `win_shell` §8 escape hatches.**
+  Every mutating `win_shell` block that stands in for a missing native module MUST act like one:
+  1. `$ErrorActionPreference = 'Stop'` is the FIRST statement (a mid-script non-terminating error
+     must not pass silently).
+  2. Inputs arrive via `environment:` (env-passing), NEVER Jinja-interpolated into the PowerShell
+     source (`'{{ x }}'`) — env-passing removes an injection + `split_args` surface. Architectural
+     constants (e.g. the WID pipe connection string `__wid_conn_master__`) are defined ONCE in the
+     task file's `vars:` block and env-passed, not duplicated per block.
+  3. Any external resource (a `SqlConnection`) is opened inside `try { } finally { <close-only> }`
+     — the `finally` closes and does nothing else (no `catch`, no swallow); intentional
+     fail-closed `throw`s (e.g. Attach's DROP-on-unhealthy) stay inside `try` before the finally.
+  4. Idempotency by a normalized compare → mutate-on-diff → **re-acquire-and-verify** → deterministic
+     `changed`/`nochange` (or a read-only probe with `changed_when: false`), never blind mutation.
+  5. Embedded PowerShell follows OTBS (above). First applied wholesale across the C06 SqlClient
+     blocks; the C09b Grant-SYSTEM block is the reference implementation.
+- **RATIFIED (C12c seed → M, 2026-07-17) — never put a backslash immediately before a closing quote
+  (`\'` / `\"`) in `win_shell`/`win_command` free-form; enforced by an automated gate.** Ansible parses
+  the free-form module arg with `split_args`, which honors `\` as an escape **even inside single quotes**.
+  A literal backslash right before a closing quote — `Replace('/','\')`, `'IIS:\Sites\'`, `'C:\'` —
+  escapes the quote, unbalances the parser, and fails the task at **LOAD time**
+  (`failed at splitting arguments…`). Interior backslashes are fine (`'IIS:\Sites\Default Web Site'`);
+  only backslash-adjacent-to-a-closing-quote breaks. **RULE:** build such strings with `[char]92`
+  (`$dir.TrimEnd([char]92) + [char]92`) and never end a quoted literal with `\`. **GATE:**
+  `scripts/check-winshell-splitargs.py` (run with the ansible-core venv python) fails on any
+  `split_args` error OR any backslash-before-quote across every `win_shell`/`win_command` block — this
+  is the ONLY static check that catches the class: yamllint, ansible-lint, AND
+  `ansible-playbook --syntax-check` all pass an unbalanced-`\'` regression (proven M, 2026-07-17; it is
+  exactly how the C12c bug shipped). Part of the standard gate now.
 - **SEEDED (U1, 2026-07-16 — Director directive, P2-narrowed) — Users browse-access ACL
   hygiene.** Role-created directories INTENDED FOR INTERACTIVE ADMINISTRATION/BROWSING,
   under an explicitly documented trust model ("all interactive users are admins"), get an

@@ -50,10 +50,10 @@ Sequence:
 5b. **Post-feature roadmap (Director autonomy on items 1–4) — item 3 (IIS on its own drive) ✅ CLOSED.**
    (1) ✅ C11e from-baseline Save-conflict fix. (2) ✅ VM re-baselined to 3 disks (v6). (3) ✅ **IIS `inetpub`
    → G:** — C12a (provision G:) + C12b (site logs) + C12c (wwwroot + PathWWWRoot). (4) ⛏️ industry
-   best-practices logging (incl. making C12b's IIS log file materialize) — **after** the maturity pass.
-   **ACTIVE INITIATIVE: the inline-PowerShell-maturity pass** (Director 2026-07-17) — audit EVERY `win_shell`
-   §8 task for full idempotency + native-module-like behavior; headline finding = the `split_args` `\'`
-   escaping fragility (C12c). (5) 💤 PARKED — AWS/proxmox OS-disk swap.
+   best-practices logging (incl. making C12b's IIS log file materialize) — **NEXT** (after the maturity pass).
+   ✅ **Inline-PowerShell-maturity pass COMPLETE (piece M, `f8b1d6a`)** — hardened the 5 C06-era SqlClient
+   blocks to the native-module template + added the `scripts/check-winshell-splitargs.py` gate. (5) 💤 PARKED
+   — AWS/proxmox OS-disk swap.
 6. **Upstream debt retirement** — TD-001 loader v3.1 proposal (gated by
    `loader-change-protocol.md`) + TD-002 chassis lint warn_list PR (normal PR, no
    gate). Deferred by Director decision until the local role is the priority no more.
@@ -190,6 +190,11 @@ Sequence:
 | C12b | Repoint IIS site logs → G: — `win_shell` config-object on `siteDefaults` + every site's `logFile.directory` → `iis.log_dir` (`G:\inetpub\logs\LogFiles`); literal-path guard (`%SystemDrive%` = drift) | ✅ merged 2026-07-17 | Config is STIG-correct + idempotent; the log **file** does NOT materialize on an idle VM (w3wp=0, no real WSUS clients — never logs on C: either). NOT a defect. Functional logging = roadmap item 4 (Director "merge then investigate"). |
 | C12c | Relocate IIS wwwroot → G: (NATIVE-FIRST) — no-change validate+normalize preflight → `win_copy` content → `win_regedit` ×2 (`InetStp` `PathWWWRoot` native+Wow6432) → `win_shell` Default Web Site `physicalPath`; new `iis.wwwroot` default | ✅ merged `565b8d4 [audited 6069486]` 2026-07-17 | P2 REVISE r1 (native modules expand %VAR% in path params → no-change validate PREFLIGHT feeds all mutations) → AGREE r2. **Claude P4 repair: `\'` in win_shell free-form breaks Ansible `split_args` → `[char]92`** (also fixed the merged C12b task). Converge changed=3, SSH PathWWWRoot(both)+Default Web Site=G:, WSUS Admin site untouched, http 200; idempotency changed=0. **CLOSES item 3.** RTRACK-C12c. |
 
+### Track M — inline-PowerShell maturity (Director initiative, 2026-07-17)
+| ID | Piece | Status | Notes / gating |
+|----|-------|--------|----------------|
+| M | Behavior-preserving hardening of the 5 C06-era SqlClient `win_shell` blocks to the mature native-module template (M-1 `[char]92` kills the last latent split_args `\'`; M-2 `$EAP='Stop'`; M-3 try/finally close-only; M-4 env-pass the probe path; M-5 one env-passed `__wid_conn_master__`) + NEW `scripts/check-winshell-splitargs.py` gate | ✅ merged `f8b1d6a [audited 7013393]` 2026-07-17 | Audited all 15 inline-PS surfaces; role already mostly mature (C09b-onward). Codex P2 AGREE (gpt-5.5 xhigh); Claude reverted a win_copy scope-creep; **proved ansible-lint + `--syntax-check` both MISS the `\'` class — only the new gate catches it.** Converge `pre-maturity` ok=44 changed=0 failed=0 (behavior-preserving) + from-baseline E2E ok=49 changed=29 failed=0 (Detach/Attach exercised, delete-gate fired). **Native-module template RATIFIED (style §5).** RTRACK-M. |
+
 ### Track G — governance / Director decisions
 | ID | Item | Status | Notes |
 |----|------|--------|-------|
@@ -222,15 +227,17 @@ stateful data off the OS disk so the OS disk becomes disposable** (item 1 IIS-di
 4. ⛏️ **Industry best-practices logging — NEXT (after the inline-PowerShell-maturity pass).** Research-grounded:
    IIS W3C fields + ETW, WSUS `SoftwareDistribution.log`, the WsusService/WID event channels, sane
    sizes/retention, meaningful Event Viewer views. **Includes making C12b's IIS log file actually materialize
-   + re-verifying the write lands on G:** (the C12b "merge then investigate" follow-up).
+   + re-verifying the write lands on G:** (the C12b "merge then investigate" follow-up). **This is the NEXT
+   initiative** now that the maturity pass is done.
 
-   **★ ACTIVE INITIATIVE — inline-PowerShell-maturity pass (Director 2026-07-17):** before item 4, audit EVERY
-   `win_shell` §8 task (C05 postinstall probe was reshaped to win_reg_stat; C06 SUSDB relocation SqlClient
-   blocks; C08 tuning guard; C09/C10 maintenance runners; C11a–e sync config-objects; C12b/C12c IIS) for **full
-   idempotency + native-module-like behavior**. Headline finding from C12c: Ansible `split_args` treats `\` as
-   an escape **even inside single quotes**, so `\'` (backslash-before-quote) unbalances the free-form parser
-   and fails task-load — use `[char]92`, keep `\` off closing quotes. Test any win_shell block with
-   `from ansible.parsing.splitter import split_args` (pipx venv python).
+   **✅ Inline-PowerShell-maturity pass — COMPLETE (piece M, `f8b1d6a`, 2026-07-17).** Audited all 15 inline-PS
+   surfaces; the role was already mostly mature (the C09b Grant-SYSTEM template onward). Hardened the 5 C06-era
+   SqlClient blocks (M-1..M-5: `[char]92`, `$EAP='Stop'`, try/finally close-only, env-passed inputs, one
+   `__wid_conn_master__`) and added `scripts/check-winshell-splitargs.py` — the ONLY static check that catches
+   the `\'` class (ansible-lint + `--syntax-check` both MISS it; that is exactly how C12c shipped the bug). The
+   **native-module template is now RATIFIED (style guide §5)**: `$EAP='Stop'` + try/finally close-only +
+   env-passed inputs + normalized-compare/re-acquire-verify + `[char]92` (never `\'`). Verify with the gate:
+   `/root/.local/share/pipx/venvs/ansible-core/bin/python scripts/check-winshell-splitargs.py`.
 5. 💤 **PARKED — AWS OS-disk replacement / adopt-existing-volumes.** PROD is **AWS** (AMI + EBS, NOT the
    proxmox path in AGENTS.md — a divergence to resolve): swap the AMI for a fresh fully-patched OS + re-attach
    the existing WSUS EBS volumes. The role goes **bi-modal** — detect populated data volumes (by `unique_id`)
@@ -240,10 +247,10 @@ stateful data off the OS disk so the OS disk becomes disposable** (item 1 IIS-di
 
 ---
 
-## ⏱️ SESSION HANDOFF — 2026-07-17 (IIS-arc close) — for the next fresh session
+## ⏱️ SESSION HANDOFF — 2026-07-17 (maturity-pass close) — for the next fresh session
 
-**STATE: feature core + the IIS-on-its-own-drive arc are done. `main` @ the C12c codification commit
-(`565b8d4`).** The build spine (C01–C06i) delivers a working WSUS-on-WID: disk init (E:/F:) → `win_feature`
+**STATE: feature core + IIS-on-its-own-drive arc + inline-PowerShell maturity pass are done. `main` @ the
+M codification commit (maturity pass merged `f8b1d6a`).** The build spine (C01–C06i) delivers a working WSUS-on-WID: disk init (E:/F:) → `win_feature`
 install → `wsusutil postinstall` → SUSDB relocated to `E:\WID\Data` (ONLINE, read-write; C: originals
 health-gated-deleted) → content on `F:\WSUS`. Maintenance core: **C08** WsusPool IIS tuning, **C09** weekly
 SUSDB reindex (SYSTEM), **C10** monthly WSUS Server Cleanup (SYSTEM). Sync: **C11a** languages + **C11b**
@@ -252,14 +259,17 @@ from-baseline fix). **IIS on G: (roadmap item 3, CLOSED):** **C12a** provision G
 v6) + **C12b** site logs → G: + **C12c** wwwroot + `InetStp PathWWWRoot` → G:. **C07 (END verify) DROPPED**
 (theater; §4b).
 
-**★ NEXT: the inline-PowerShell-maturity pass** (Director 2026-07-17, ACTIVE) — audit EVERY `win_shell` §8
-task for full idempotency + native-module-like behavior. **Headline finding (C12c):** Ansible's `split_args`
-(free-form parser for win_shell/win_command) treats `\` as an escape **even inside single quotes**, so `\'`
-(a backslash immediately before a closing quote — e.g. `Replace('/','\')`, `'IIS:\Sites\'`) unbalances the
-parser → `failed at splitting arguments` at task-LOAD time (before any run). **Fix: use `[char]92` for
-backslashes and keep `\` off closing quotes.** Verify any block with
-`/root/.local/share/pipx/venvs/ansible-core/bin/python -c "from ansible.parsing.splitter import split_args; ..."`.
-Then roadmap item 4 (functional logging, incl. making C12b's IIS log file materialize on G:).
+**✅ Inline-PowerShell-maturity pass — DONE (piece M, `f8b1d6a [audited 7013393]`).** Hardened the 5 C06-era
+SqlClient `win_shell` blocks to the RATIFIED native-module template ($EAP=Stop + try/finally close-only +
+env-passed inputs + normalized-compare/re-acquire-verify + `[char]92`, never `\'`) and added
+`scripts/check-winshell-splitargs.py` — the ONLY static check that catches the C12c `\'` class (ansible-lint +
+`--syntax-check` both miss it). Behavior-preserving: converge `pre-maturity` ok=44 changed=0; from-baseline E2E
+ok=49 changed=29 failed=0 (Detach/Attach exercised through a real relocation).
+
+**★ NEXT: roadmap item 4 — industry best-practices logging.** Research-grounded IIS W3C + ETW, WSUS
+`SoftwareDistribution.log`, WsusService/WID event channels, sane sizes/retention, meaningful Event Viewer
+views — **including making C12b's IIS log file actually materialize + re-verifying the write lands on G:** (the
+C12b "merge then investigate" follow-up). Then item 5 (PARKED — AWS/proxmox OS-disk swap).
 
 **C11 sync arc — COMPLETE / "good enough" (Director pull-back 2026-07-17).** **C11a** (`1c211bd`) — restrict
 update languages to `['en']` (config-object idiom). **C11b** (`5003474 [audited fb87098]`) — gated

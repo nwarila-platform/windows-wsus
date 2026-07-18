@@ -112,4 +112,9 @@ yamllint -c .yamllint.yml ansible
 # syntax-check by design):
 (cd .compose/ansible-framework && ansible-lint applications/wsus)
 bash -n scripts/compose-and-run.sh scripts/revert-vm.sh
+# Inline-PowerShell gate (piece M): every win_shell/win_command free-form block must parse
+# through split_args AND contain no backslash-before-quote (\' / \"). This is the ONLY static
+# check that catches the class — ansible-lint AND `ansible-playbook --syntax-check` both MISS it
+# (proven 2026-07-17). Run with the ansible-core venv python (needs PyYAML + ansible.parsing):
+/root/.local/share/pipx/venvs/ansible-core/bin/python scripts/check-winshell-splitargs.py
 ```
