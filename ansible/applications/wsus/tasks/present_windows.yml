@@ -768,7 +768,19 @@
 
     #endregion --- [ Main: WSUS Sync Configuration ] -------------------------------------- #
 
-    #region ------ [ Main: IIS Relocation ] ----------------------------------------------- #
+    #region ------ [ Main: IIS Logging + Relocation ] ------------------------------------- #
+
+    # WSUS's UpdateServices install (C04) pulls in the Web-Server role but NOT the HTTP Logging role
+    # service, so the HttpLoggingModule that writes W3C logs is absent — the C12b logFile config (directory
+    # on G:) is correct but produces NO file until this module exists (root-caused live 2026-07-18: 0 logs on
+    # G: with correct config + traffic + flush; installing Web-Http-Logging => logs write to
+    # G:\inetpub\logs\LogFiles\W3SVC*\u_ex*.log on the next request). Native + idempotent (changed only on
+    # first install); no reboot (measured — the module hot-loads and IIS writes immediately). Enable logging
+    # here, then the next task points it at G:.
+    - name: 'MAIN | Install IIS HTTP Logging Role Service'
+      ansible.windows.win_feature:
+        name: Web-Http-Logging
+        state: present
 
     # IIS site-level log paths can override siteDefaults, so the role repoints both to the
     # literal G: path for STIG-auditable active logging off the system volume. Validate the
@@ -910,6 +922,6 @@
       register: __iis_wwwroot__
       changed_when: "__iis_wwwroot__.stdout | trim == 'changed'"
 
-    #endregion --- [ Main: IIS Relocation ] ----------------------------------------------- #
+    #endregion --- [ Main: IIS Logging + Relocation ] ------------------------------------- #
 
 #endregion --- [ Script ] -------------------------------------------------------------------- #
