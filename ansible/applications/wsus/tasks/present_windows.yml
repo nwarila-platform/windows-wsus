@@ -62,6 +62,31 @@
         | map('default', 0)
         | list
       }}
+    # Observed per-disk state (C14e) — the SINGLE input to the data-safety rule below. MODE-INDEPENDENT.
+    #   pristine    = partition_style RAW (nothing there yet)
+    #   unformatted = partitions may exist but NO volume carries a filesystem (a mid-flight greenfield RESUME:
+    #                 the run died after init and/or after partitioning). Verified live: an unformatted volume
+    #                 reports type "" (empty string), so the truthiness filter below excludes it.
+    #   ours        = a volume with filesystem NTFS AND our expected label (case-insensitive)
+    #   foreign     = ANY other filesystem-bearing state (foreign label, absent label, non-NTFS) -> fail closed
+    # Rendered to JSON then parsed so the result is a NATIVE dict (a bare {{ dict }} in a block scalar would
+    # stringify). Jinja has no comprehensions and set_fact is banned for role-internal data (ratified R3), so a
+    # set/update loop is used — mutating the outer dict escapes the loop scope.
+    __disk_observed_json__: >-
+      {%- set obs = {} -%}
+      {%- for d in __data_disks__ -%}
+      {%- set disk = d.matches | first -%}
+      {%- set parts = disk.partitions | default([]) | rejectattr('type', 'equalto', 'Reserved') | list -%}
+      {%- set vols = parts | selectattr('volumes', 'defined') | map(attribute='volumes') | flatten | list -%}
+      {%- set fsvols = vols | selectattr('type', 'defined') | selectattr('type') | list -%}
+      {%- set ourlabels = fsvols | selectattr('type', 'equalto', 'NTFS') | selectattr('label', 'defined') | map(attribute='label') | map('lower') | list -%}
+      {%- set is_ours = (d.label | lower) in ourlabels -%}
+      {%- set has_filesystem = fsvols | length > 0 -%}
+      {%- set state = 'pristine' if disk.partition_style == 'RAW' else ('ours' if is_ours else ('foreign' if has_filesystem else 'unformatted')) -%}
+      {%- set _ = obs.update({d.purpose: state}) -%}
+      {%- endfor -%}
+      {{ obs | to_json }}
+    __disk_observed__: "{{ __disk_observed_json__ | from_json }}"
   block:
 
     #region ------ [ Initialization ] -------------------------------------------------------- #
@@ -96,35 +121,81 @@
           {% endfor %}
         quiet: true
 
+    # A re-attached data volume (the OS-disk-replacement case) can arrive OFFLINE and/or read-only, and an OFFLINE
+    # disk enumerates NO partitions — it would therefore observe as 'unformatted' and be provisioned, destroying it.
+    # Clear read-only FIRST, then online (that order: you cannot online a read-only disk cleanly). No native module
+    # covers this for non-RAW disks. Idempotent: changed only when something actually had to change.
+    - name: 'BEGIN | Bring Declared Data Disks Online And Writable'
+      ansible.windows.win_shell: |
+        $ErrorActionPreference = 'Stop'
+        $changed = $false
+        foreach ($id in ($env:DISK_IDS -split ';' | Where-Object { $_ })) {
+            $d = Get-Disk | Where-Object { $_.UniqueId -eq $id }
+            if (-not $d) {
+                continue
+            }
+            if ($d.IsReadOnly) {
+                Set-Disk -Number $d.Number -IsReadOnly $false
+                $changed = $true
+            }
+            if ($d.IsOffline) {
+                Set-Disk -Number $d.Number -IsOffline $false
+                $changed = $true
+            }
+        }
+        if ($changed) {
+            Write-Output 'changed'
+        } else {
+            Write-Output 'nochange'
+        }
+      environment:
+        DISK_IDS: "{{ __data_disks__ | map(attribute='id') | select | join(';') }}"
+      register: __disk_online__
+      changed_when: "__disk_online__.stdout | trim == 'changed'"
+
+    # Re-read the facts so the observed-state classification sees the post-online snapshot.
+    - name: 'BEGIN | Re-load Disk Facts After Online/Writable Fixup'
+      community.windows.win_disk_facts:
+        filter:
+          - 'physical_disk'
+          - 'partitions'
+          - 'volumes'
+
     #endregion --- [ Initialization: Input Guards ] ------------------------------------------ #
 
     #endregion --- [ Initialization ] -------------------------------------------------------- #
 
     #region ------ [ Main: Data Volume Provisioning ] --------------------------------------- #
 
-    - name: 'MAIN | Assert Target Disk Is Safe To Provision'
+    # DATA-SAFETY GUARD (C14e), replacing the old drive-letter-based guard. Drive letters live in
+    # HKLM\SYSTEM\MountedDevices ON THE OS DISK, so they do NOT survive an OS-disk replacement and are the wrong
+    # recognizer; the NTFS label travels with the volume and is the same durability class as the disk selector.
+    # The declared unique_id SELECTS the disk; the label CONFIRMS it (a right-label-on-the-wrong-disk observes
+    # 'foreign' and refuses). Fail closed on anything we do not positively recognise.
+    - name: 'MAIN | Assert Each Data Disk Is Safe To Provision Or Adopt'
       loop: "{{ __data_disks__ }}"
       loop_control:
-        label: "{{ item.purpose }}"
-      vars:
-        __target_disk__: "{{ item.matches | first }}"
-        __foreign_lettered__: >-
-          {{
-            __target_disk__.partitions | default([])
-            | selectattr('drive_letter', 'defined')
-            | selectattr('drive_letter')
-            | rejectattr('drive_letter', 'equalto', item.drive_letter)
-            | list
-          }}
+        label: "{{ item.purpose }} ({{ __disk_observed__[item.purpose] }})"
       ansible.builtin.assert:
         that:
-          - __target_disk__.partition_style == 'RAW' or (__foreign_lettered__ | length == 0)
+          - __disk_observed__[item.purpose] in ['pristine', 'unformatted', 'ours']
         fail_msg: >-
-          Refusing to provision the '{{ item.purpose }}' disk (unique_id '{{ item.id }}'): it is
-          already initialized (partition_style {{ __target_disk__.partition_style }}) and carries
-          partition(s) with a foreign drive letter
-          ({{ __foreign_lettered__ | map(attribute='drive_letter') | join(', ') }}). The role will
-          not clobber existing data — clear the disk or correct the identifier.
+          Refusing to touch the '{{ item.purpose }}' disk (unique_id '{{ item.id }}'): it carries a filesystem
+          this role does not recognise (observed '{{ __disk_observed__[item.purpose] }}'; expected an NTFS volume
+          labelled '{{ item.label }}', or a pristine/unformatted disk). The role will not clobber existing data —
+          clear the disk or correct the identifier.
+        quiet: true
+
+    # Ambiguity is unsafe: the same expected label on two matched disks, or two purposes resolving to one disk,
+    # both make "which volume is ours" undecidable. Fail closed rather than guess.
+    - name: 'MAIN | Assert Data Disk Identity Is Unambiguous'
+      ansible.builtin.assert:
+        that:
+          - (__data_disks__ | map(attribute='matches') | map('first') | map(attribute='number') | list | unique | length) == (__data_disks__ | length)
+        fail_msg: >-
+          Two or more declared data disks resolve to the same physical disk
+          ({{ __data_disks__ | map(attribute='matches') | map('first') | map(attribute='number') | list }}).
+          Each purpose must resolve to a distinct disk.
         quiet: true
 
     # This first mutation is gated by the safety assert above. force:false is idempotent
@@ -132,6 +203,10 @@
     # (the handed RAW-Online-writable disks need no change here), but is not a general
     # read-only fix for non-RAW disks. uniqueid targets the disk directly without disk_number.
     - name: 'MAIN | Initialize Data Disk (GPT, online, writable)'
+      # Skipped when the volume already carries our filesystem ('ours') — this is what makes an idempotent re-run,
+      # and an adopted data volume, safe; win_format's label-mismatch reformat cannot be made safe by parameters,
+      # so the only safe control is not calling the module at all.
+      when: __disk_observed__[item.purpose] in ['pristine', 'unformatted']
       loop: "{{ __data_disks__ }}"
       loop_control:
         label: "{{ item.purpose }}"
@@ -146,6 +221,10 @@
     # win_partition idempotency; disk_number comes from the resolved disk
     # ((item.matches | first).number). The partition remains unformatted until C02e.
     - name: 'MAIN | Create 100% Data Partition With Drive Letter'
+      # Skipped when the volume already carries our filesystem ('ours') — this is what makes an idempotent re-run,
+      # and an adopted data volume, safe; win_format's label-mismatch reformat cannot be made safe by parameters,
+      # so the only safe control is not calling the module at all.
+      when: __disk_observed__[item.purpose] in ['pristine', 'unformatted']
       community.windows.win_partition:
         disk_number: "{{ (item.matches | first).number }}"
         partition_size: -1
@@ -162,6 +241,10 @@
     # disks). allocation_unit_size is in BYTES (65536=64 KiB E: / 4096=4 KiB F:). Closes the C02
     # disk-provisioning arc; volumes are ready for WSUS install (C04+).
     - name: 'MAIN | Format Data Volume (NTFS, labelled, MS allocation unit)'
+      # Skipped when the volume already carries our filesystem ('ours') — this is what makes an idempotent re-run,
+      # and an adopted data volume, safe; win_format's label-mismatch reformat cannot be made safe by parameters,
+      # so the only safe control is not calling the module at all.
+      when: __disk_observed__[item.purpose] in ['pristine', 'unformatted']
       community.windows.win_format:
         drive_letter: "{{ item.drive_letter }}"
         file_system: ntfs
