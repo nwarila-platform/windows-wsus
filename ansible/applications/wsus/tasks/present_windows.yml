@@ -740,4 +740,71 @@
 
     #endregion --- [ Main: WSUS Sync Configuration ] -------------------------------------- #
 
+    #region ------ [ Main: IIS Relocation ] ----------------------------------------------- #
+
+    # IIS site-level log paths can override siteDefaults, so the role repoints both to the
+    # literal G: path for STIG-auditable active logging off the system volume. Validate the
+    # path before any mutation and create the directory in-shell so a bad %VAR% override is
+    # never expanded by another module before rejection.
+    - name: 'MAIN | Relocate IIS Logs To G:'
+      ansible.windows.win_shell: |
+        $ErrorActionPreference = 'Stop'
+        Import-Module WebAdministration
+        function Normalize-IisConfiguredPath([string]$p) {
+            if ([string]::IsNullOrWhiteSpace($p)) {
+                return ''
+            }
+            return $p.Trim().Replace('/', '\').TrimEnd('\')
+        }
+        $want = Normalize-IisConfiguredPath $env:IIS_LOG_DIR
+        if ($want -match '%[^%]+%' -or $want -notmatch '^[A-Za-z]:\\') {
+            throw ('iis.log_dir must be a literal drive-qualified path (no %VAR%): ' + $env:IIS_LOG_DIR)
+        }
+        $changed = $false
+        if (-not (Test-Path -LiteralPath $want)) {
+            New-Item -ItemType Directory -Path $want -Force | Out-Null
+            $changed = $true
+        }
+        function Test-IisConfiguredPath([string]$cur) {
+            $c = Normalize-IisConfiguredPath $cur
+            if ($c -match '%[^%]+%') {
+                return $false
+            }
+            return [string]::Equals($c, $want, [System.StringComparison]::OrdinalIgnoreCase)
+        }
+        $globalCur = (Get-WebConfigurationProperty -filter 'system.applicationHost/sites/siteDefaults/logFile' -name directory).Value
+        $sites = @(Get-Website)
+        $needChange = (-not (Test-IisConfiguredPath $globalCur)) -or (@($sites | Where-Object { -not (Test-IisConfiguredPath $_.logFile.directory) }).Count -gt 0)
+        if ($needChange) {
+            Set-WebConfigurationProperty -filter 'system.applicationHost/sites/siteDefaults/logFile' -name directory -value $want
+            foreach ($s in $sites) {
+                Set-ItemProperty -LiteralPath ('IIS:\Sites\' + $s.Name) -name logFile.directory -value $want
+            }
+            $globalAfter = (Get-WebConfigurationProperty -filter 'system.applicationHost/sites/siteDefaults/logFile' -name directory).Value
+            $bad = @()
+            if (-not (Test-IisConfiguredPath $globalAfter)) {
+                $bad += 'siteDefaults'
+            }
+            foreach ($s in @(Get-Website)) {
+                if (-not (Test-IisConfiguredPath $s.logFile.directory)) {
+                    $bad += $s.Name
+                }
+            }
+            if ($bad.Count -gt 0) {
+                throw ('IIS log dir did not persist to ' + $want + ' for: ' + ($bad -join ','))
+            }
+            $changed = $true
+        }
+        if ($changed) {
+            Write-Output 'changed'
+        } else {
+            Write-Output 'nochange'
+        }
+      environment:
+        IIS_LOG_DIR: '{{ config.iis.log_dir }}'
+      register: __iis_logdir__
+      changed_when: "__iis_logdir__.stdout | trim == 'changed'"
+
+    #endregion --- [ Main: IIS Relocation ] ----------------------------------------------- #
+
 #endregion --- [ Script ] -------------------------------------------------------------------- #
