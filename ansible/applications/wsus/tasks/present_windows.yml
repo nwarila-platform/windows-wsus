@@ -301,69 +301,12 @@
         include_management_tools: true
         state: present
 
-    # Read-only completion-truth probe: the four Installed Role Services flags are written at
-    # the END of each postinstall component (measured =2 live, the C05 change record). Get-WsusServer is
-    # runtime-truth and failed when the C06 arc legitimately stopped the stack; a midway
-    # postinstall death leaves flags !=2, so the documented repair operation re-runs.
-    # Runtime verification belongs to C07.
-    - name: 'MAIN | Probe WSUS Post-Installation State'
-      ansible.windows.win_reg_stat:
-        path: 'HKLM:\SOFTWARE\Microsoft\Update Services\Server\Setup\Installed Role Services'
-      register: __wsus_postinstall_probe__
-
-    # C14a DATA-LOSS INTERLOCK (roadmap item 5 precursor). A populated SUSDB.mdf on the DB volume together with
-    # ABSENT postinstall completion flags means: this OS has never been post-installed, yet the data volume
-    # already carries a database — i.e. the data disks were adopted from a previous machine (an OS-disk swap).
-    # The role does NOT implement adopt yet, and continuing would DESTROY that database: postinstall would
-    # create an empty SUSDB on C:, the C06 probe would read 'pending', and the C06 win_copy would overwrite
-    # E:\WID\Data\SUSDB.mdf with the empty one (C06g's health gate cannot tell — an empty SUSDB is legitimately
-    # ONLINE + read-write), after which C06i deletes the C: originals. Nothing would survive. Fail closed.
-    # UNREACHABLE in greenfield (a fresh machine has no mdf on the DB volume) and in the converged state
-    # (flags are =2 once postinstall has run), so this guard is invisible outside the adopt scenario.
-    - name: 'MAIN | Assert No Adopted SUSDB Before Post-Installation'
-      ansible.windows.win_stat:
-        path: '{{ __wid_data_dir__ }}\SUSDB.mdf'
-        # get_checksum MUST be false: when SUSDB is attached, the WID engine holds an exclusive handle on the
-        # .mdf and win_stat's default checksum pass fails with "being used by another process" (measured on the
-        # converged VM, C14a P4). Only .stat.exists is needed here. (validation repair.)
-        get_checksum: false
-      register: __susdb_adopt_probe__
-
-    - name: 'MAIN | Refuse To Post-Install Over An Adopted SUSDB'
-      ansible.builtin.assert:
-        that:
-          - not (__susdb_adopt_probe__.stat.exists and __postinstall_flags__ != [2, 2, 2, 2])
-        fail_msg: >-
-          Refusing to run wsusutil postinstall: a SUSDB already exists at
-          {{ __wid_data_dir__ }}\SUSDB.mdf but this OS has never completed WSUS post-installation
-          (Installed Role Services flags = {{ __postinstall_flags__ }}, expected [2, 2, 2, 2]).
-          This is the adopt-existing-data-volumes case (an OS-disk replacement), which this role does
-          NOT implement yet — continuing would overwrite and destroy the existing database.
-          Restore the original OS disk, or wait for the roadmap item 5 adopt path.
-        quiet: true
-
-    # Runs the WSUS post-installation: creates SUSDB in WID (on C: — relocated at C06), creates
-    # WSUSContent inside the content root, configures the IIS 'WSUS Administration' site (8530),
-    # and enables+starts WsusService. WID is selected by the ABSENCE of SQL_INSTANCE_NAME. Gated
-    # by the completion flags above (all four =2 means configured -> skip). argv auto-quotes per
-    # Win32 rules (the exe path contains spaces). NO trailing backslash on CONTENT_DIR. wsusutil
-    # logs to a random .tmp in %TEMP% (stdout names it); the first run takes minutes.
-    - name: 'MAIN | Run WSUS Post-Installation (WID, content on F:)'
-      when: __postinstall_flags__ != [2, 2, 2, 2]
-      ansible.windows.win_command:
-        argv:
-          - 'C:\Program Files\Update Services\Tools\wsusutil.exe'
-          - 'postinstall'
-          - 'CONTENT_DIR={{ __content_dir__ }}'
-
-    #endregion --- [ Main: WSUS Installation ] ---------------------------------------------- #
-
-    #region ------ [ Main: SUSDB Relocation ] ----------------------------------------------- #
-
     # Target directory for the SUSDB relocation (C06 — community procedure, MS-unsupported,
     # Director-approved 2026-07-16) on the dedicated DB volume. Must exist before the WID
-    # service-account ACL grant (C06b) and the attach (C06g). win_file creates parents
-    # (E:\WID then E:\WID\Data) and no-ops when present.
+    # service-account ACL grant (C06b), the adopt attach (C14i), and the relocation attach (C06g).
+    # Hoisted above postinstall (C14i) so the adopt attach has its directory + ACLs in place:
+    # without the WID-service FullControl grant an attached SUSDB comes up READ-ONLY and WSUS
+    # silently stops syncing. win_file creates parents (E:\WID then E:\WID\Data) and no-ops when present.
     - name: 'MAIN | Ensure WID Data Directory Exists'
       ansible.windows.win_file:
         path: "{{ __wid_data_dir__ }}"
@@ -394,6 +337,138 @@
         type: allow
         inherit: 'ContainerInherit, ObjectInherit'
         state: present
+
+    # Read-only completion-truth probe: the four Installed Role Services flags are written at
+    # the END of each postinstall component (measured =2 live, the C05 change record). Get-WsusServer is
+    # runtime-truth and failed when the C06 arc legitimately stopped the stack; a midway
+    # postinstall death leaves flags !=2, so the documented repair operation re-runs.
+    # Runtime verification belongs to C07.
+    - name: 'MAIN | Probe WSUS Post-Installation State'
+      ansible.windows.win_reg_stat:
+        path: 'HKLM:\SOFTWARE\Microsoft\Update Services\Server\Setup\Installed Role Services'
+      register: __wsus_postinstall_probe__
+
+    # C14a DATA-LOSS INTERLOCK (roadmap item 5 precursor). A populated SUSDB.mdf on the DB volume together with
+    # ABSENT postinstall completion flags means: this OS has never been post-installed, yet the data volume
+    # already carries a database — i.e. the data disks were adopted from a previous machine (an OS-disk swap).
+    # Under the greenfield playbook, continuing would DESTROY that database: postinstall would create an empty
+    # SUSDB on C:, the C06 probe would read 'pending', and the C06 win_copy would overwrite E:\WID\Data\SUSDB.mdf
+    # with the empty one (C06g's health gate cannot tell — an empty SUSDB is legitimately ONLINE + read-write),
+    # after which C06i deletes the C: originals. Nothing would survive. Fail closed.
+    # In adopt mode this state is EXPECTED (the attach below handles it), so the interlock is greenfield-only; it
+    # still protects ansible/playbooks/wsus.yml unchanged.
+    # UNREACHABLE in true greenfield (a fresh machine has no mdf on the DB volume) and in the converged state
+    # (flags are =2 once postinstall has run), so this guard is invisible outside the wrong-playbook adopt scenario.
+    - name: 'MAIN | Assert No Adopted SUSDB Before Post-Installation'
+      ansible.windows.win_stat:
+        path: '{{ __wid_data_dir__ }}\SUSDB.mdf'
+        # get_checksum MUST be false: when SUSDB is attached, the WID engine holds an exclusive handle on the
+        # .mdf and win_stat's default checksum pass fails with "being used by another process" (measured on the
+        # converged VM, C14a P4). Only .stat.exists is needed here. (validation repair.)
+        get_checksum: false
+      register: __susdb_adopt_probe__
+
+    - name: 'MAIN | Refuse To Post-Install Over An Adopted SUSDB'
+      when: (config.mode | default('greenfield') | string | lower | trim) == 'greenfield'
+      ansible.builtin.assert:
+        that:
+          - not (__susdb_adopt_probe__.stat.exists and __postinstall_flags__ != [2, 2, 2, 2])
+        fail_msg: >-
+          Refusing to run wsusutil postinstall: a SUSDB already exists at
+          {{ __wid_data_dir__ }}\SUSDB.mdf but this OS has never completed WSUS post-installation
+          (Installed Role Services flags = {{ __postinstall_flags__ }}, expected [2, 2, 2, 2]).
+          This is the adopt-existing-data-volumes case (an OS-disk replacement); continuing under
+          the greenfield playbook would overwrite and destroy the existing database. Run
+          ansible/playbooks/wsus-adopt.yml (mode: adopt) instead of ansible/playbooks/wsus.yml.
+        quiet: true
+
+    # ADOPT (C14i): an OS-disk replacement leaves the DB volume holding the previous machine's SUSDB. Attach it
+    # into the fresh WID instance BEFORE postinstall — MS documents "database in place first, THEN postinstall",
+    # and postinstall then reuses + schema-upgrades it instead of creating a new empty database (hand-proven
+    # end-to-end, the C14b-c change record). Consequence: the C06c probe below then reads 'relocated', so C06d/e/f/g skip
+    # through their EXISTING gates and the C06f overwrite becomes structurally unreachable.
+    # FAILURE PATH IS NON-DESTRUCTIVE: unlike C06g (where E: is only a copy and C: is the fallback), here E: IS
+    # the original data — so on an unhealthy attach we sp_detach_db (leaves the files on disk) and throw. We NEVER
+    # DROP DATABASE, which would delete the adopted .mdf/.ldf.
+    - name: 'MAIN | Attach The Adopted SUSDB Before Post-Installation'
+      when:
+        - (config.mode | default('greenfield') | string | lower | trim) == 'adopt'
+        - __susdb_adopt_probe__.stat.exists
+      ansible.windows.win_shell: |
+        $ErrorActionPreference = 'Stop'
+        $dir = $env:WID_DATA_DIR
+        $attached = 0
+        $c = New-Object System.Data.SqlClient.SqlConnection($env:WID_CONN)
+        try {
+            $c.Open()
+            $q = $c.CreateCommand()
+            $q.CommandText = "SELECT COUNT(*) FROM sys.databases WHERE name = 'SUSDB'"
+            $attached = [int]$q.ExecuteScalar()
+        } finally {
+            if ($c -and $c.State -eq 'Open') { $c.Close() }
+        }
+        if ($attached -gt 0) {
+            Write-Output 'nochange'
+            exit 0
+        }
+        $dirSql = $dir.Replace("'", "''")
+        $c2 = New-Object System.Data.SqlClient.SqlConnection($env:WID_CONN)
+        try {
+            $c2.Open()
+            $a = $c2.CreateCommand()
+            $a.CommandText = "CREATE DATABASE SUSDB ON (FILENAME = N'$dirSql\SUSDB.mdf'), (FILENAME = N'$dirSql\SUSDB_log.ldf') FOR ATTACH;"
+            [void]$a.ExecuteNonQuery()
+            $h = $c2.CreateCommand()
+            $h.CommandText = "SELECT d.state_desc AS s, d.is_read_only AS ro, m.physical_name AS pn FROM sys.databases d JOIN sys.master_files m ON m.database_id = d.database_id WHERE d.name = 'SUSDB';"
+            $rd = $h.ExecuteReader()
+            $state = $null
+            $ro = $null
+            $files = @()
+            while ($rd.Read()) {
+                $state = [string]$rd['s']
+                $ro = [int]$rd['ro']
+                $files += [string]$rd['pn']
+            }
+            $rd.Close()
+            $prefix = $dir.TrimEnd([char]92) + [char]92
+            $offTarget = @($files | Where-Object { -not $_.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase) })
+            if ($state -ne 'ONLINE' -or $ro -ne 0 -or $files.Count -lt 2 -or $offTarget.Count -gt 0) {
+                try {
+                    $d = $c2.CreateCommand()
+                    $d.CommandText = 'ALTER DATABASE SUSDB SET SINGLE_USER WITH ROLLBACK IMMEDIATE; EXEC master.dbo.sp_detach_db @dbname = N''SUSDB'';'
+                    [void]$d.ExecuteNonQuery()
+                } catch {
+                    Write-Output 'detach-after-unhealthy-failed'
+                }
+                throw ("adopted SUSDB attached UNHEALTHY (state=$state ro=$ro files=$($files -join ';')) - detached, NOT dropped; the adopted database files are untouched on disk")
+            }
+            Write-Output 'changed'
+        } finally {
+            if ($c2 -and $c2.State -eq 'Open') { $c2.Close() }
+        }
+      environment:
+        WID_CONN: '{{ __wid_conn_master__ }}'
+        WID_DATA_DIR: '{{ __wid_data_dir__ }}'
+      register: __susdb_adopt_attach__
+      changed_when: "__susdb_adopt_attach__.stdout | trim == 'changed'"
+
+    # Runs the WSUS post-installation: creates SUSDB in WID (on C: — relocated at C06), creates
+    # WSUSContent inside the content root, configures the IIS 'WSUS Administration' site (8530),
+    # and enables+starts WsusService. WID is selected by the ABSENCE of SQL_INSTANCE_NAME. Gated
+    # by the completion flags above (all four =2 means configured -> skip). argv auto-quotes per
+    # Win32 rules (the exe path contains spaces). NO trailing backslash on CONTENT_DIR. wsusutil
+    # logs to a random .tmp in %TEMP% (stdout names it); the first run takes minutes.
+    - name: 'MAIN | Run WSUS Post-Installation (WID, content on F:)'
+      when: __postinstall_flags__ != [2, 2, 2, 2]
+      ansible.windows.win_command:
+        argv:
+          - 'C:\Program Files\Update Services\Tools\wsusutil.exe'
+          - 'postinstall'
+          - 'CONTENT_DIR={{ __content_dir__ }}'
+
+    #endregion --- [ Main: WSUS Installation ] ---------------------------------------------- #
+
+    #region ------ [ Main: SUSDB Relocation ] ----------------------------------------------- #
 
     # Server-truth relocation gate (sys.master_files — the filesystem lies: files can exist
     # detached or stale). Three states; BINDING contract for the C06 actors (ALWAYS compare
@@ -481,6 +556,27 @@
       register: __susdb_detach__
       changed_when: true
       when: __susdb_probe__.stdout | trim == 'pending'
+
+    # C14j belt-and-braces: C14i makes this copy structurally unreachable in adopt mode, but the copy below is a
+    # force:true checksum-differs Copy-Item with no backup: and a TOTAL, unrecoverable blast radius. A future
+    # ordering regression must hit an assert, not a Copy-Item.
+    - name: 'MAIN | Assert Relocation Target Is Empty Before Copy'
+      when: __susdb_probe__.stdout | trim in ['pending', 'orphaned']
+      ansible.windows.win_stat:
+        path: '{{ __wid_data_dir__ }}\SUSDB.mdf'
+        get_checksum: false
+      register: __susdb_dest_probe__
+
+    - name: 'MAIN | Refuse To Overwrite An Existing SUSDB At The Relocation Target'
+      when: __susdb_probe__.stdout | trim in ['pending', 'orphaned']
+      ansible.builtin.assert:
+        that:
+          - not __susdb_dest_probe__.stat.exists
+        fail_msg: >-
+          Refusing to copy SUSDB onto {{ __wid_data_dir__ }}: a database file already exists there. The
+          relocation copy would overwrite it irrecoverably. If this is an adopted data volume, run
+          ansible/playbooks/wsus-adopt.yml (mode: adopt) instead of the greenfield playbook.
+        quiet: true
 
     # MS wid-to-sql COPIES the detached DB files: copy-don't-move leaves the C: originals as the
     # fallback until C06g verifies attach-from-E:; C06i deletes them then. win_copy is native and

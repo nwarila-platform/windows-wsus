@@ -47,4 +47,15 @@
       downstream points at its upstream by name; declare upstream_server in the wsus: override dict.
     quiet: true
 
+- name: 'BEGIN | Assert Run Mode Is Valid'
+  ansible.builtin.assert:
+    that:
+      - (config.mode | default('greenfield') | string | lower | trim) in ['greenfield', 'adopt']
+    fail_msg: >-
+      wsus.mode must be 'greenfield' (fresh machine; postinstall creates SUSDB and C06 relocates it) or
+      'adopt' (OS-disk replacement; the existing SUSDB on the DB volume is attached before postinstall).
+      Got '{{ config.mode | default('greenfield') }}'. Use ansible/playbooks/wsus.yml for greenfield and
+      ansible/playbooks/wsus-adopt.yml for adopt.
+    quiet: true
+
 #endregion --- [ Script ] -------------------------------------------------------------------- #
