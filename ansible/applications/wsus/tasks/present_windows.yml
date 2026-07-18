@@ -922,6 +922,96 @@
       register: __iis_wwwroot__
       changed_when: "__iis_wwwroot__.stdout | trim == 'changed'"
 
+    # STIG V-218790 (IIST-SV-000115): the IIS log directory must grant SYSTEM + Administrators FullControl.
+    # Director (2026-07-18): org convention + STIG FC — keep the explicit BUILTIN\Users ReadAndExecute grant
+    # (ratified Users-ACL convention: everyone-is-admin, explicit not inherited) AND add SYSTEM/Administrators
+    # FullControl. Additive (state present) — does not strip other ACEs. Native win_acl, idempotent.
+    - name: 'MAIN | Set IIS Log Directory ACLs (SYSTEM/Admins FullControl, Users R&X)'
+      ansible.windows.win_acl:
+        path: '{{ config.iis.log_dir }}'
+        user: '{{ item.user }}'
+        rights: '{{ item.rights }}'
+        type: allow
+        inherit: 'ContainerInherit, ObjectInherit'
+        state: present
+      loop:
+        - { user: 'NT AUTHORITY\SYSTEM', rights: 'FullControl' }
+        - { user: 'BUILTIN\Administrators', rights: 'FullControl' }
+        - { user: 'BUILTIN\Users', rights: 'ReadAndExecute' }
+      loop_control:
+        label: '{{ item.user }}'
+
+    # Harden the IIS W3C log config to STIG: logTargetW3C=File,ETW (V-218786) on siteDefaults + every site, and
+    # the four required custom fields (V-218788/9) in the siteDefaults customFields collection (separate from the
+    # standard fields). Config-object idiom (native-module template): normalized compare + full-tuple guard +
+    # self-heal + re-acquire-verify + changed/nochange. §8 win_shell (no native module for IIS log config).
+    - name: 'MAIN | Harden IIS W3C Log Config (STIG custom fields + File,ETW target)'
+      ansible.windows.win_shell: |
+        $ErrorActionPreference = 'Stop'
+        Import-Module WebAdministration
+        $changed = $false
+        function Normalize-Target([string]$t) {
+            if ([string]::IsNullOrWhiteSpace($t)) {
+                return ''
+            }
+            return (($t -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }) -join ',').ToLowerInvariant()
+        }
+        $wantTarget = $env:LOG_TARGET
+        $wantNorm = Normalize-Target $wantTarget
+        # logTargetW3C (a flags enum) is returned as a plain String by Get-WebConfigurationProperty /
+        # Get-ItemProperty — NOT a wrapper with .Value (unlike 'directory'), so read it via [string](...)
+        # (a .Value read yields empty and would loop-set + false-fail the verify). (Claude P4 repair.)
+        $sdCur = [string](Get-WebConfigurationProperty -filter 'system.applicationHost/sites/siteDefaults/logFile' -name logTargetW3C)
+        if ((Normalize-Target $sdCur) -ne $wantNorm) {
+            Set-WebConfigurationProperty -filter 'system.applicationHost/sites/siteDefaults/logFile' -name logTargetW3C -value $wantTarget
+            $changed = $true
+        }
+        foreach ($s in @(Get-Website)) {
+            $cur = [string](Get-ItemProperty -LiteralPath ('IIS:\Sites' + [char]92 + $s.Name) -name logFile.logTargetW3C)
+            if ((Normalize-Target $cur) -ne $wantNorm) {
+                Set-ItemProperty -LiteralPath ('IIS:\Sites' + [char]92 + $s.Name) -name logFile.logTargetW3C -value $wantTarget
+                $changed = $true
+            }
+        }
+        $cfFilter = 'system.applicationHost/sites/siteDefaults/logFile/customFields'
+        # PS 5.1: `@(pipeline | ConvertFrom-Json)` wraps a JSON array as ONE jagged element (member
+        # enumeration then makes $f.field an array -> DISP_E_TYPEMISMATCH on Add). Assign the command
+        # result first, THEN @() it, so each $f is a scalar-valued object. (Claude P4 repair.)
+        $parsed = ConvertFrom-Json $env:CUSTOM_FIELDS
+        $want = @($parsed)
+        foreach ($f in $want) {
+            $existing = @(Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -filter ($cfFilter + '/add') -name '.' | Where-Object { $_.logFieldName -eq $f.field })
+            $exact = @($existing | Where-Object { $_.sourceName -eq $f.source -and $_.sourceType -eq $f.source_type })
+            if ($exact.Count -eq 0) {
+                if ($existing.Count -gt 0) {
+                    Remove-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -filter $cfFilter -name '.' -AtElement @{ logFieldName = $f.field }
+                }
+                Add-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -filter $cfFilter -name '.' -value @{ logFieldName = $f.field; sourceName = $f.source; sourceType = $f.source_type }
+                $changed = $true
+            }
+        }
+        $sdAfter = Normalize-Target ([string](Get-WebConfigurationProperty -filter 'system.applicationHost/sites/siteDefaults/logFile' -name logTargetW3C))
+        if ($sdAfter -ne $wantNorm) {
+            throw ('logTargetW3C did not persist on siteDefaults: got ' + $sdAfter)
+        }
+        $after = @(Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -filter ($cfFilter + '/add') -name '.')
+        foreach ($f in $want) {
+            $ok = @($after | Where-Object { $_.logFieldName -eq $f.field -and $_.sourceName -eq $f.source -and $_.sourceType -eq $f.source_type })
+            if ($ok.Count -eq 0) {
+                throw ('custom field did not persist: ' + $f.field)
+            }
+        }
+        if ($changed) {
+            Write-Output 'changed'
+        } else {
+            Write-Output 'nochange'
+        }
+      environment:
+        LOG_TARGET: '{{ config.iis.log_target_w3c }}'
+        CUSTOM_FIELDS: '{{ config.iis.custom_log_fields | to_json }}'
+      register: __iis_log_hardening__
+      changed_when: "__iis_log_hardening__.stdout | trim == 'changed'"
+
     #endregion --- [ Main: IIS Logging + Relocation ] ------------------------------------- #
 
 #endregion --- [ Script ] -------------------------------------------------------------------- #
