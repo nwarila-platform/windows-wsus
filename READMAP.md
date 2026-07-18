@@ -195,6 +195,14 @@ Sequence:
 |----|-------|--------|----------------|
 | M | Behavior-preserving hardening of the 5 C06-era SqlClient `win_shell` blocks to the mature native-module template (M-1 `[char]92` kills the last latent split_args `\'`; M-2 `$EAP='Stop'`; M-3 try/finally close-only; M-4 env-pass the probe path; M-5 one env-passed `__wid_conn_master__`) + NEW `scripts/check-winshell-splitargs.py` gate | ✅ merged `f8b1d6a [audited 7013393]` 2026-07-17 | Audited all 15 inline-PS surfaces; role already mostly mature (C09b-onward). Codex P2 AGREE (gpt-5.5 xhigh); Claude reverted a win_copy scope-creep; **proved ansible-lint + `--syntax-check` both MISS the `\'` class — only the new gate catches it.** Converge `pre-maturity` ok=44 changed=0 failed=0 (behavior-preserving) + from-baseline E2E ok=49 changed=29 failed=0 (Detach/Attach exercised, delete-gate fired). **Native-module template RATIFIED (style §5).** RTRACK-M. |
 
+### Track L — industry best-practices logging (roadmap item 4, Director initiative)
+| ID | Piece | Status | Notes / gating |
+|----|-------|--------|----------------|
+| C13a | Install the `Web-Http-Logging` IIS role service (native `win_feature`) so IIS W3C logging writes to G: | ✅ merged `f614e58 [audited 1409070]` 2026-07-18 | **Root-caused the C12b gap:** log config was correct but no file wrote because the HTTP Logging module was never installed (WSUS's C04 pulls the web server, not HTTP Logging). Codex P2 AGREE (MS-researched: correct + sufficient, no over-install, no reboot). Converge ok=45 changed=1; **W3C logs materialize on G:\inetpub\logs\LogFiles\W3SVC*** (0 leaked to C:); idempotency changed=0. **Closes the C12b "merge then investigate" loop.** RTRACK-C13a. |
+| C13b | Event-log sizing/retention to STIG minimums | ⛏️ queued | Application/System 20 MB Circular today; research in flight (`item4-logging-research`). |
+| C13c | Event Viewer custom views for WSUS/IIS/WID | ⛏️ queued | "Meaningful views into the services"; win_copy XML → `%ProgramData%\Microsoft\Event Viewer\Views`. |
+| C13d | (optional) relocate `SoftwareDistribution.log` to G: | ⛏️ queued | If MS-supported; else drop. |
+
 ### Track G — governance / Director decisions
 | ID | Item | Status | Notes |
 |----|------|--------|-------|
@@ -247,10 +255,10 @@ stateful data off the OS disk so the OS disk becomes disposable** (item 1 IIS-di
 
 ---
 
-## ⏱️ SESSION HANDOFF — 2026-07-17 (maturity-pass close) — for the next fresh session
+## ⏱️ SESSION HANDOFF — 2026-07-18 (item-4 logging in progress) — for the next fresh session
 
-**STATE: feature core + IIS-on-its-own-drive arc + inline-PowerShell maturity pass are done. `main` @ the
-M codification commit (maturity pass merged `f8b1d6a`).** The build spine (C01–C06i) delivers a working WSUS-on-WID: disk init (E:/F:) → `win_feature`
+**STATE: feature core + IIS-on-its-own-drive arc + inline-PowerShell maturity pass DONE; roadmap item 4
+(logging) IN PROGRESS — C13a merged (`f614e58`), C13b/c/d queued.** `main` @ the C13a codification commit. The build spine (C01–C06i) delivers a working WSUS-on-WID: disk init (E:/F:) → `win_feature`
 install → `wsusutil postinstall` → SUSDB relocated to `E:\WID\Data` (ONLINE, read-write; C: originals
 health-gated-deleted) → content on `F:\WSUS`. Maintenance core: **C08** WsusPool IIS tuning, **C09** weekly
 SUSDB reindex (SYSTEM), **C10** monthly WSUS Server Cleanup (SYSTEM). Sync: **C11a** languages + **C11b**
@@ -266,10 +274,14 @@ env-passed inputs + normalized-compare/re-acquire-verify + `[char]92`, never `\'
 `--syntax-check` both miss it). Behavior-preserving: converge `pre-maturity` ok=44 changed=0; from-baseline E2E
 ok=49 changed=29 failed=0 (Detach/Attach exercised through a real relocation).
 
-**★ NEXT: roadmap item 4 — industry best-practices logging.** Research-grounded IIS W3C + ETW, WSUS
-`SoftwareDistribution.log`, WsusService/WID event channels, sane sizes/retention, meaningful Event Viewer
-views — **including making C12b's IIS log file actually materialize + re-verifying the write lands on G:** (the
-C12b "merge then investigate" follow-up). Then item 5 (PARKED — AWS/proxmox OS-disk swap).
+**★ IN PROGRESS: roadmap item 4 — industry best-practices logging.** **C13a DONE (`f614e58`)** — root-caused
+the C12b IIS-log-not-materializing gap (the `Web-Http-Logging` role service was never installed; config was
+already correct) and installed it → **W3C logs now write to G:** (proven; C12b loop CLOSED). Remaining, smaller
+than first thought (WSUS event logging + SoftwareDistribution.log already work): **C13b** event-log sizing to
+STIG minimums, **C13c** Event Viewer custom views for WSUS/IIS/WID, **C13d** (optional) relocate
+`SoftwareDistribution.log` to G:. An exhaustive research workflow (`item4-logging-research`) is scoping the
+concrete values (STIG sizes, custom-view XML/XPath, relocation feasibility). Then item 5 (PARKED — AWS/proxmox
+OS-disk swap).
 
 **C11 sync arc — COMPLETE / "good enough" (Director pull-back 2026-07-17).** **C11a** (`1c211bd`) — restrict
 update languages to `['en']` (config-object idiom). **C11b** (`5003474 [audited fb87098]`) — gated
