@@ -1,0 +1,16 @@
+<ViewerConfig>
+  <QueryConfig>
+    <QueryParams>
+      <UserQuery />
+    </QueryParams>
+    <QueryNode>
+      <Name>WID - SUSDB</Name>
+      <Description>Windows Internal Database (MSSQL$MICROSOFT##WID) engine events backing SUSDB.</Description>
+      <QueryList>
+        <Query Id="0">
+          <Select Path="Application">*[System[Provider[@Name='MSSQL$MICROSOFT##WID']]]</Select>
+        </Query>
+      </QueryList>
+    </QueryNode>
+  </QueryConfig>
+</ViewerConfig>
