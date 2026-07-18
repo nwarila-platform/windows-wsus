@@ -119,5 +119,10 @@ wsus_defaults:
       day: 'sunday'
       time: '02:00'
       time_limit: 'PT1H'
+    # Enable the Microsoft-IIS-Configuration/Operational event channel (logs IIS config changes — a
+    # web-shell/config-tamper signal; operational-class = retention-safe, low volume). Set false to opt out. C13i.
+    config_channel_enabled: true
+    # Max size (bytes) for that channel; 20 MB mirrors the App/System sizing. C13i.
+    config_channel_max_bytes: 20971520
 # Disk identity (wid_disk_id / wsus_disk_id) is declared in the 'wsus:' override dict and read as
 # config.wid_disk_id / config.wsus_disk_id (see README); this file holds role-default conventions.
