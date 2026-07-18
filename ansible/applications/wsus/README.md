@@ -26,6 +26,7 @@ are **not** top-level vars and are **not** nested under `wsus.data_disks.*`.
 |----------------------|-------------|--------------|
 | `wid_disk_id` | `config.wid_disk_id` | WID/database disk, mapped to `E:` with label `WSUSDB` |
 | `wsus_disk_id` | `config.wsus_disk_id` | WSUS content disk, mapped to `F:` with label `WSUSDATA` |
+| `iis_disk_id` | `config.iis_disk_id` | IIS working-dir disk, mapped to `G:` with label `WSUSIIS` (the IIS `inetpub` — logs + wwwroot — relocates here; STIG "IIS on its own drive"). **Required** (C12a) — a missing/wrong id fails `BEGIN | Assert Declared Data Disks Are Attached` with "found 0", like the other disks. |
 | `upstream_server` | `config.upstream_server` | Upstream WSUS server this host syncs from (downstream/replica topology; `SyncFromMicrosoftUpdate=false`). **Required** (C11d) — `validate.yml` fails the play if empty/undefined. Hostname of the upstream WSUS; connection policy (port/SSL/replica) is in `sync.*` defaults below. |
 
 Each value is the case-sensitive Windows disk `unique_id` (for example,
@@ -45,6 +46,9 @@ consumed configuration one cycle piece at a time.
 | `data_disks.db.allocation_unit` | `65536` | NTFS allocation unit (bytes) for E: — 64 KiB, MS SQL/WID storage best practice |
 | `data_disks.content.label` | `WSUSDATA` | NTFS volume label for the WSUS content disk (F:) |
 | `data_disks.content.allocation_unit` | `4096` | NTFS allocation unit (bytes) for F: — 4 KiB NTFS default (MS is silent on WSUS-content cluster size) |
+| `data_disks.iis.drive_letter` | `G:` | Target drive letter for the IIS working-dir disk (`inetpub` relocated here). C12a |
+| `data_disks.iis.label` | `WSUSIIS` | NTFS volume label for the IIS disk (G:). C12a |
+| `data_disks.iis.allocation_unit` | `4096` | NTFS allocation unit (bytes) for G: — 4 KiB NTFS default (IIS logs/wwwroot are many small files). C12a |
 | `content_subdir` | `WSUS` | WSUS content folder name; the role forms the content root as `<content drive letter>:\<content_subdir>` (e.g. `F:\WSUS`); `wsusutil postinstall` (C05) creates `WSUSContent` inside it |
 | `db_subdir` | `WID\Data` | SUSDB relocation target dir name; the role forms `<db drive letter>:\<db_subdir>` (e.g. `E:\WID\Data`); C06 relocates `SUSDB.mdf`/`.ldf` there |
 | `wsuspool.queue_length` | `2000` | WsusPool IIS app-pool request queue length (MS best-practice, up from 1000). C08 |
