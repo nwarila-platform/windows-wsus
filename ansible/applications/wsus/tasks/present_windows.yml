@@ -51,6 +51,17 @@
     # MICROSOFT##WID; named pipes are case-insensitive). Env-passed (WID_CONN) to the SqlClient blocks so the
     # literal is defined once and no raw \\.\pipe\ backslashes sit in PowerShell source (split_args-safety).
     __wid_conn_master__: 'server=\\.\pipe\MICROSOFT##WID\tsql\query;database=master;trusted_connection=true;'
+    # The four 'Installed Role Services' completion flags written at the END of each postinstall component
+    # (measured =2, RTRACK-C05). Hoisted to block scope (C14a) so the C05 postinstall gate AND the C14a
+    # data-loss interlock consume ONE derivation — a second, divergent copy would be a latent inconsistency.
+    # Block vars are lazily evaluated, so referencing the mid-block register is fine.
+    __postinstall_flags__: >-
+      {{
+        ['UpdateServices-API', 'UpdateServices-Services', 'UpdateServices-UI', 'UpdateServices-WidDatabase']
+        | map('extract', __wsus_postinstall_probe__.properties | default({}), 'value')
+        | map('default', 0)
+        | list
+      }}
   block:
 
     #region ------ [ Initialization ] -------------------------------------------------------- #
@@ -217,6 +228,37 @@
         path: 'HKLM:\SOFTWARE\Microsoft\Update Services\Server\Setup\Installed Role Services'
       register: __wsus_postinstall_probe__
 
+    # C14a DATA-LOSS INTERLOCK (roadmap item 5 precursor). A populated SUSDB.mdf on the DB volume together with
+    # ABSENT postinstall completion flags means: this OS has never been post-installed, yet the data volume
+    # already carries a database — i.e. the data disks were adopted from a previous machine (an OS-disk swap).
+    # The role does NOT implement adopt yet, and continuing would DESTROY that database: postinstall would
+    # create an empty SUSDB on C:, the C06 probe would read 'pending', and the C06 win_copy would overwrite
+    # E:\WID\Data\SUSDB.mdf with the empty one (C06g's health gate cannot tell — an empty SUSDB is legitimately
+    # ONLINE + read-write), after which C06i deletes the C: originals. Nothing would survive. Fail closed.
+    # UNREACHABLE in greenfield (a fresh machine has no mdf on the DB volume) and in the converged state
+    # (flags are =2 once postinstall has run), so this guard is invisible outside the adopt scenario.
+    - name: 'MAIN | Assert No Adopted SUSDB Before Post-Installation'
+      ansible.windows.win_stat:
+        path: '{{ __wid_data_dir__ }}\SUSDB.mdf'
+        # get_checksum MUST be false: when SUSDB is attached, the WID engine holds an exclusive handle on the
+        # .mdf and win_stat's default checksum pass fails with "being used by another process" (measured on the
+        # converged VM, C14a P4). Only .stat.exists is needed here. (Claude P4 repair.)
+        get_checksum: false
+      register: __susdb_adopt_probe__
+
+    - name: 'MAIN | Refuse To Post-Install Over An Adopted SUSDB'
+      ansible.builtin.assert:
+        that:
+          - not (__susdb_adopt_probe__.stat.exists and __postinstall_flags__ != [2, 2, 2, 2])
+        fail_msg: >-
+          Refusing to run wsusutil postinstall: a SUSDB already exists at
+          {{ __wid_data_dir__ }}\SUSDB.mdf but this OS has never completed WSUS post-installation
+          (Installed Role Services flags = {{ __postinstall_flags__ }}, expected [2, 2, 2, 2]).
+          This is the adopt-existing-data-volumes case (an OS-disk replacement), which this role does
+          NOT implement yet — continuing would overwrite and destroy the existing database.
+          Restore the original OS disk, or wait for the roadmap item 5 adopt path.
+        quiet: true
+
     # Runs the WSUS post-installation: creates SUSDB in WID (on C: — relocated at C06), creates
     # WSUSContent inside the content root, configures the IIS 'WSUS Administration' site (8530),
     # and enables+starts WsusService. WID is selected by the ABSENCE of SQL_INSTANCE_NAME. Gated
@@ -224,14 +266,6 @@
     # Win32 rules (the exe path contains spaces). NO trailing backslash on CONTENT_DIR. wsusutil
     # logs to a random .tmp in %TEMP% (stdout names it); the first run takes minutes.
     - name: 'MAIN | Run WSUS Post-Installation (WID, content on F:)'
-      vars:
-        __postinstall_flags__: >-
-          {{
-            ['UpdateServices-API', 'UpdateServices-Services', 'UpdateServices-UI', 'UpdateServices-WidDatabase']
-            | map('extract', __wsus_postinstall_probe__.properties | default({}), 'value')
-            | map('default', 0)
-            | list
-          }}
       when: __postinstall_flags__ != [2, 2, 2, 2]
       ansible.windows.win_command:
         argv:
