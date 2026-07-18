@@ -97,5 +97,8 @@ wsus_defaults:
   # the global siteDefaults + every site's logFile.directory here.
   iis:
     log_dir: 'G:\inetpub\logs\LogFiles'
+    # The IIS default web content root, relocated to the IIS disk (G:) for STIG "IIS on its own drive".
+    # Literal drive-qualified path (a %SystemDrive% token is treated as drift). C12c.
+    wwwroot: 'G:\inetpub\wwwroot'
 # Disk identity (wid_disk_id / wsus_disk_id) is declared in the 'wsus:' override dict and read as
 # config.wid_disk_id / config.wsus_disk_id (see README); this file holds role-default conventions.
