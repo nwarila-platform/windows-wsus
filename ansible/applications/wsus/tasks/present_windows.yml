@@ -754,10 +754,10 @@
             if ([string]::IsNullOrWhiteSpace($p)) {
                 return ''
             }
-            return $p.Trim().Replace('/', '\').TrimEnd('\')
+            return $p.Trim().Replace('/', [char]92).TrimEnd([char]92)
         }
         $want = Normalize-IisConfiguredPath $env:IIS_LOG_DIR
-        if ($want -match '%[^%]+%' -or $want -notmatch '^[A-Za-z]:\\') {
+        if ($want -match '%[^%]+%' -or $want -notmatch '^[A-Za-z]:') {
             throw ('iis.log_dir must be a literal drive-qualified path (no %VAR%): ' + $env:IIS_LOG_DIR)
         }
         $changed = $false
@@ -778,7 +778,7 @@
         if ($needChange) {
             Set-WebConfigurationProperty -filter 'system.applicationHost/sites/siteDefaults/logFile' -name directory -value $want
             foreach ($s in $sites) {
-                Set-ItemProperty -LiteralPath ('IIS:\Sites\' + $s.Name) -name logFile.directory -value $want
+                Set-ItemProperty -LiteralPath ('IIS:\Sites' + [char]92 + $s.Name) -name logFile.directory -value $want
             }
             $globalAfter = (Get-WebConfigurationProperty -filter 'system.applicationHost/sites/siteDefaults/logFile' -name directory).Value
             $bad = @()
@@ -804,6 +804,83 @@
         IIS_LOG_DIR: '{{ config.iis.log_dir }}'
       register: __iis_logdir__
       changed_when: "__iis_logdir__.stdout | trim == 'changed'"
+
+    # Validate once before mutation so native path params never expand a bad %VAR% override.
+    - name: 'MAIN | Validate + Normalize IIS wwwroot Target'
+      ansible.windows.win_shell: |
+        $ErrorActionPreference = 'Stop'
+        $p = $env:WWWROOT
+        if ([string]::IsNullOrWhiteSpace($p)) {
+            throw 'iis.wwwroot is required'
+        }
+        $norm = $p.Trim().Replace('/', [char]92).TrimEnd([char]92)
+        if ($norm -match '%[^%]+%' -or $norm -notmatch '^[A-Za-z]:') {
+            throw ('iis.wwwroot must be a literal drive-qualified path (no %VAR%): ' + $p)
+        }
+        Write-Output $norm
+      environment:
+        WWWROOT: '{{ config.iis.wwwroot }}'
+      register: __iis_wwwroot_norm__
+      changed_when: false
+
+    # Copy content before repointing so the Default Web Site has a populated G: root.
+    - name: 'MAIN | Copy IIS wwwroot Content To G:'
+      ansible.windows.win_copy:
+        src: 'C:\inetpub\wwwroot\'
+        dest: '{{ __iis_wwwroot_norm__.stdout | trim }}\'
+        remote_src: true
+
+    # Repoint IIS default-root metadata in both registry views to the IIS disk.
+    - name: 'MAIN | Repoint InetStp PathWWWRoot To G:'
+      ansible.windows.win_regedit:
+        path: '{{ item }}'
+        name: PathWWWRoot
+        data: '{{ __iis_wwwroot_norm__.stdout | trim }}'
+        type: string
+      loop:
+        - 'HKLM:\SOFTWARE\Microsoft\InetStp'
+        - 'HKLM:\SOFTWARE\Wow6432Node\Microsoft\InetStp'
+
+    # Repoint only the Default Web Site; the WSUS Administration site stays untouched.
+    - name: 'MAIN | Repoint Default Web Site Root To G:'
+      ansible.windows.win_shell: |
+        $ErrorActionPreference = 'Stop'
+        Import-Module WebAdministration
+        function Normalize-IisConfiguredPath([string]$p) {
+            if ([string]::IsNullOrWhiteSpace($p)) {
+                return ''
+            }
+            return $p.Trim().Replace('/', [char]92).TrimEnd([char]92)
+        }
+        $want = Normalize-IisConfiguredPath $env:WWWROOT
+        if ($want -match '%[^%]+%' -or $want -notmatch '^[A-Za-z]:') {
+            throw ('wwwroot must be a literal drive-qualified path (no %VAR%): ' + $env:WWWROOT)
+        }
+        $site = Get-Website -Name 'Default Web Site'
+        if (-not $site) {
+            throw 'Default Web Site not found'
+        }
+        function Test-IisConfiguredPath([string]$cur) {
+            $c = Normalize-IisConfiguredPath $cur
+            if ($c -match '%[^%]+%') {
+                return $false
+            }
+            return [string]::Equals($c, $want, [System.StringComparison]::OrdinalIgnoreCase)
+        }
+        if (-not (Test-IisConfiguredPath $site.physicalPath)) {
+            Set-ItemProperty -LiteralPath 'IIS:\Sites\Default Web Site' -name physicalPath -value $want
+            $after = (Get-Website -Name 'Default Web Site').physicalPath
+            if (-not (Test-IisConfiguredPath $after)) {
+                throw ('Default Web Site physicalPath did not persist to ' + $want + ' (got ' + $after + ')')
+            }
+            Write-Output 'changed'
+        } else {
+            Write-Output 'nochange'
+        }
+      environment:
+        WWWROOT: '{{ __iis_wwwroot_norm__.stdout | trim }}'
+      register: __iis_wwwroot__
+      changed_when: "__iis_wwwroot__.stdout | trim == 'changed'"
 
     #endregion --- [ Main: IIS Relocation ] ----------------------------------------------- #
 
