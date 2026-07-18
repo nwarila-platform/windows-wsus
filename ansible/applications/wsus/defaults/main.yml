@@ -100,5 +100,15 @@ wsus_defaults:
     # The IIS default web content root, relocated to the IIS disk (G:) for STIG "IIS on its own drive".
     # Literal drive-qualified path (a %SystemDrive% token is treated as drift). C12c.
     wwwroot: 'G:\inetpub\wwwroot'
+    # IIS W3C log event destination (STIG V-218786). Valid: File | ETW | 'File,ETW'. File keeps the G: file
+    # logs; ETW adds a real-time event emit. Director (2026-07-18): ship File,ETW. C13e.
+    log_target_w3c: 'File,ETW'
+    # STIG-required W3C CUSTOM log fields (V-218788/V-218789) — a SEPARATE collection from the standard fields
+    # (logExtFileFlags), so the already-complete standard set does not cover them. C13d.
+    custom_log_fields:
+      - { field: 'Connection', source: 'Connection', source_type: 'RequestHeader' }
+      - { field: 'Warning', source: 'Warning', source_type: 'RequestHeader' }
+      - { field: 'Authorization', source: 'Authorization', source_type: 'RequestHeader' }
+      - { field: 'Content-Type', source: 'Content-Type', source_type: 'ResponseHeader' }
 # Disk identity (wid_disk_id / wsus_disk_id) is declared in the 'wsus:' override dict and read as
 # config.wid_disk_id / config.wsus_disk_id (see README); this file holds role-default conventions.
