@@ -199,9 +199,11 @@ Sequence:
 | ID | Piece | Status | Notes / gating |
 |----|-------|--------|----------------|
 | C13a | Install the `Web-Http-Logging` IIS role service (native `win_feature`) so IIS W3C logging writes to G: | ✅ merged `f614e58 [audited 1409070]` 2026-07-18 | **Root-caused the C12b gap:** log config was correct but no file wrote because the HTTP Logging module was never installed (WSUS's C04 pulls the web server, not HTTP Logging). Codex P2 AGREE (MS-researched: correct + sufficient, no over-install, no reboot). Converge ok=45 changed=1; **W3C logs materialize on G:\inetpub\logs\LogFiles\W3SVC*** (0 leaked to C:); idempotency changed=0. **Closes the C12b "merge then investigate" loop.** RTRACK-C13a. |
-| C13b | Event-log sizing/retention to STIG minimums | ⛏️ queued | Application/System 20 MB Circular today; research in flight (`item4-logging-research`). |
-| C13c | Event Viewer custom views for WSUS/IIS/WID | ⛏️ queued | "Meaningful views into the services"; win_copy XML → `%ProgramData%\Microsoft\Event Viewer\Views`. |
-| C13d | (optional) relocate `SoftwareDistribution.log` to G: | ⛏️ queued | If MS-supported; else drop. |
+| ~~C13b~~ | ~~event-log MaxSize to STIG floors~~ | ❌ DROPPED (Director 2026-07-18) | GPO territory (`HKLM\SOFTWARE\Policies\...\EventLog`); GPOs own ~99% of STIG. Role = non-GPO IIS/WSUS only. [[role-vs-gpo-scope]] |
+| C13c-e | IIS W3C log STIG hardening: log-dir ACL (V-218790) + 4 custom fields (V-218788/9) + `logTargetW3C=File,ETW` (V-218786) | ✅ merged `6c0a3e4 [audited ae4b031]` 2026-07-18 | Director-scoped IIS-specific items; ETW=ship, ACL=org-conv+STIG-FC. Codex P2 REVISE→folded (full-tuple guard). **2 Claude P4 repairs:** PS `@(pipe\|ConvertFrom-Json)` jaggedness → DISP_E_TYPEMISMATCH; logTargetW3C flags-enum returns String (read `[string]` not `.Value`). Converge ok=47 changed=3; 4 custom fields ACTIVE in the live G: log #Fields; idempotency changed=0. RTRACK-C13c-e. |
+| C13f/g | IIS log-cleanup runner (retention 90d) + weekly SYSTEM schedule — IIS never auto-purges | ⛏️ queued | Mirrors C09a/b + C10a/b. |
+| C13h/i | 3 Event Viewer custom views + `Microsoft-IIS-Configuration/Operational` channel | ⛏️ queued | Declarative XML + guarded wevtutil. |
+| ~~SoftwareDist reloc~~ | ~~move WSUS logs off C:~~ | ❌ DROPPED | MS-unsupported; self-bounded by `.old` rollover. |
 
 ### Track G — governance / Director decisions
 | ID | Item | Status | Notes |
