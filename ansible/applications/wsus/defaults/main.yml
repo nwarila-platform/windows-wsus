@@ -110,5 +110,14 @@ wsus_defaults:
       - { field: 'Warning', source: 'Warning', source_type: 'RequestHeader' }
       - { field: 'Authorization', source: 'Authorization', source_type: 'RequestHeader' }
       - { field: 'Content-Type', source: 'Content-Type', source_type: 'ResponseHeader' }
+    # IIS W3C log retention (days). IIS has no built-in retention; the C13g scheduled task deletes *.log
+    # older than this under iis.log_dir. Director (2026-07-18): 90. Overridable. C13f.
+    log_retention_days: 90
+    # Weekly off-hours schedule for the IIS log cleanup (02:00 sits between the 00:00 monthly WSUS cleanup
+    # and the 03:00 weekly SUSDB reindex). C13g.
+    log_cleanup_schedule:
+      day: 'sunday'
+      time: '02:00'
+      time_limit: 'PT1H'
 # Disk identity (wid_disk_id / wsus_disk_id) is declared in the 'wsus:' override dict and read as
 # config.wid_disk_id / config.wsus_disk_id (see README); this file holds role-default conventions.
