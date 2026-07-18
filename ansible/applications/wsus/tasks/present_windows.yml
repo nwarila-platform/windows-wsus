@@ -1036,4 +1036,54 @@
 
     #endregion --- [ Main: IIS Logging + Relocation ] ------------------------------------- #
 
+    #region ------ [ Main: Observability ] ------------------------------------------------- #
+
+    # Deploy pre-built Event Viewer custom views for meaningful operational visibility into the services.
+    # Event Viewer reads %ProgramData%\Microsoft\Event Viewer\Views\*.xml at startup (the folder exists on a
+    # fresh server); the views appear under "Custom Views" on the next open. Static XML, win_copy is
+    # checksum-idempotent. C13h.
+    - name: 'MAIN | Ensure Event Viewer Views Directory'
+      ansible.windows.win_file:
+        path: 'C:\ProgramData\Microsoft\Event Viewer\Views'
+        state: directory
+
+    - name: 'MAIN | Deploy WSUS/IIS/WID Event Viewer Custom Views'
+      ansible.windows.win_copy:
+        src: 'eventviewer/{{ item }}'
+        dest: 'C:\ProgramData\Microsoft\Event Viewer\Views\{{ item }}'
+      loop: ['WSUS.xml', 'IIS-WsusPool.xml', 'WID-SUSDB.xml']
+      loop_control:
+        label: '{{ item }}'
+
+    # Enable the IIS-Configuration Operational channel via the native EventLogConfiguration API (no wevtutil
+    # string-parsing). Guard on BOTH IsEnabled AND MaximumSizeInBytes so an already-enabled-but-wrong-size
+    # channel still converges; re-acquire + verify. Gated on iis.config_channel_enabled so a host can opt out.
+    # §8 win_shell (channel state has no native module). C13i.
+    - name: 'MAIN | Enable IIS Configuration Operational Event Channel'
+      when: config.iis.config_channel_enabled | bool
+      ansible.windows.win_shell: |
+        $ErrorActionPreference = 'Stop'
+        $ch = $env:CHANNEL
+        $wantBytes = [long]$env:MAX_BYTES
+        $cfg = New-Object System.Diagnostics.Eventing.Reader.EventLogConfiguration $ch
+        if ((-not $cfg.IsEnabled) -or ($cfg.MaximumSizeInBytes -ne $wantBytes)) {
+            $cfg.IsEnabled = $true
+            $cfg.MaximumSizeInBytes = $wantBytes
+            $cfg.SaveChanges()
+            $c2 = New-Object System.Diagnostics.Eventing.Reader.EventLogConfiguration $ch
+            if ((-not $c2.IsEnabled) -or ($c2.MaximumSizeInBytes -ne $wantBytes)) {
+                throw ('channel ' + $ch + ' did not persist: enabled=' + $c2.IsEnabled + ' bytes=' + $c2.MaximumSizeInBytes)
+            }
+            Write-Output 'changed'
+        } else {
+            Write-Output 'nochange'
+        }
+      environment:
+        CHANNEL: 'Microsoft-IIS-Configuration/Operational'
+        MAX_BYTES: '{{ config.iis.config_channel_max_bytes }}'
+      register: __iis_config_channel__
+      changed_when: "__iis_config_channel__.stdout | trim == 'changed'"
+
+    #endregion --- [ Main: Observability ] ------------------------------------------------- #
+
 #endregion --- [ Script ] -------------------------------------------------------------------- #
