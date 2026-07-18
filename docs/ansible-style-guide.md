@@ -186,6 +186,19 @@ clobber, verified at the module source). These stay `quiet: true` with an action
   between logical sections. Idiomatic one-line pipeline filter blocks
   (`Where-Object { ... }`) stay inline — OTBS governs control statements. First applied:
   the C06c relocation probe; binding on all later embedded scripts (C06e/C06g+).
+- **SEEDED (C12c, 2026-07-17) — win_shell free-form must not put a backslash immediately
+  before a closing quote (`\'` / `\"`).** Ansible parses the free-form module arg of
+  `win_shell`/`win_command` with `split_args`, which honors `\` as an escape **even inside
+  single quotes**. A literal backslash right before a closing quote — `Replace('/','\')`,
+  `'IIS:\Sites\'`, `'C:\'` — escapes the quote, unbalances the parser, and fails the task
+  at **LOAD time** (`failed at splitting arguments, either an unbalanced jinja2 block or
+  quotes`) before it ever runs. Interior backslashes are fine (`'IIS:\Sites\Default Web Site'`);
+  only backslash-adjacent-to-a-closing-quote breaks. **RULE:** build such strings with
+  `[char]92` (`('IIS:\Sites' + [char]92 + $s.Name)`) and never end a quoted literal with `\`.
+  VERIFY any embedded block:
+  `python -c "from ansible.parsing.splitter import split_args; split_args(open('block.txt').read())"`
+  (pipx venv: `/root/.local/share/pipx/venvs/ansible-core/bin/python`). Systemic — a headline
+  target of the inline-PowerShell-maturity pass (all `win_shell` §8 tasks audited for this).
 - **SEEDED (U1, 2026-07-16 — Director directive, P2-narrowed) — Users browse-access ACL
   hygiene.** Role-created directories INTENDED FOR INTERACTIVE ADMINISTRATION/BROWSING,
   under an explicitly documented trust model ("all interactive users are admins"), get an

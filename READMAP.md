@@ -46,7 +46,14 @@ Sequence:
    WSUS source — downstream/replica topology; REQUIRED `upstream_server` var). **C11c (products) built +
    P4-green + P4.5-presented then DROPPED**, and **C11e/C11f (schedule/auto-approval) ABANDONED** — a
    downstream/replica INHERITS products, classifications, schedule, and approvals from its upstream WSUS, so
-   those pieces are unnecessary. **THE ROLE IS FEATURE-COMPLETE.**
+   those pieces are unnecessary. **THE ROLE IS FEATURE-COMPLETE (feature core).**
+5b. **Post-feature roadmap (Director autonomy on items 1–4) — item 3 (IIS on its own drive) ✅ CLOSED.**
+   (1) ✅ C11e from-baseline Save-conflict fix. (2) ✅ VM re-baselined to 3 disks (v6). (3) ✅ **IIS `inetpub`
+   → G:** — C12a (provision G:) + C12b (site logs) + C12c (wwwroot + PathWWWRoot). (4) ⛏️ industry
+   best-practices logging (incl. making C12b's IIS log file materialize) — **after** the maturity pass.
+   **ACTIVE INITIATIVE: the inline-PowerShell-maturity pass** (Director 2026-07-17) — audit EVERY `win_shell`
+   §8 task for full idempotency + native-module-like behavior; headline finding = the `split_args` `\'`
+   escaping fragility (C12c). (5) 💤 PARKED — AWS/proxmox OS-disk swap.
 6. **Upstream debt retirement** — TD-001 loader v3.1 proposal (gated by
    `loader-change-protocol.md`) + TD-002 chassis lint warn_list PR (normal PR, no
    gate). Deferred by Director decision until the local role is the priority no more.
@@ -176,6 +183,13 @@ Sequence:
 | C11d | Configure the upstream WSUS source (downstream/replica) — `win_shell` on `GetConfiguration()`: `SyncFromMicrosoftUpdate=false` + `UpstreamWsusServerName`/`Port`/`UseSsl` + `IsReplicaServer` from a REQUIRED `config.upstream_server` (validate.yml) + `sync.upstream_port`/`upstream_use_ssl`/`replica` defaults; five-field Save-on-diff + re-acquire-verify | ✅ merged `2cfb2fa [audited 89b8127]` 2026-07-17 | First Codex cycle on **gpt-5.5 @ xhigh**. P2 REVISE r1 (required-input contract → validate.yml, §4b/V) → AGREE r2; converge changed=1, SSH downstream config verified, idempotency changed=0, negative (no upstream_server) validate.yml fails at INIT. **CLOSES the C11 sync arc.** RTRACK-C11d. |
 | ~~C11e/C11f~~ | ~~Daily sync schedule / auto-approval rule~~ | ❌ ABANDONED (Director 2026-07-17) | A downstream/replica inherits the schedule + approvals from its upstream WSUS. |
 
+### Track I — IIS on its own drive (roadmap item 3; STIG "each application on its own drive")
+| ID | Piece (single command) | Status | Notes / gating |
+|----|------------------------|--------|----------------|
+| C12a | Provision the 3rd data disk (G:, `WSUSIIS`, 4 KiB) for the IIS `inetpub` — generic `__data_disks__` `iis` entry + REQUIRED `iis_disk_id`; validate.yml 3-way distinctness; VM re-baselined to 3 disks (v6) | ✅ merged 2026-07-17 | The N-disk generic loop absorbed the 3rd disk (all disk tasks `loop: __data_disks__`); `iis_disk_id` required like the others ("found 0" assert). eui.BC9F0ECE9FBC4B9A000C296303722FC1. |
+| C12b | Repoint IIS site logs → G: — `win_shell` config-object on `siteDefaults` + every site's `logFile.directory` → `iis.log_dir` (`G:\inetpub\logs\LogFiles`); literal-path guard (`%SystemDrive%` = drift) | ✅ merged 2026-07-17 | Config is STIG-correct + idempotent; the log **file** does NOT materialize on an idle VM (w3wp=0, no real WSUS clients — never logs on C: either). NOT a defect. Functional logging = roadmap item 4 (Director "merge then investigate"). |
+| C12c | Relocate IIS wwwroot → G: (NATIVE-FIRST) — no-change validate+normalize preflight → `win_copy` content → `win_regedit` ×2 (`InetStp` `PathWWWRoot` native+Wow6432) → `win_shell` Default Web Site `physicalPath`; new `iis.wwwroot` default | ✅ merged `565b8d4 [audited 6069486]` 2026-07-17 | P2 REVISE r1 (native modules expand %VAR% in path params → no-change validate PREFLIGHT feeds all mutations) → AGREE r2. **Claude P4 repair: `\'` in win_shell free-form breaks Ansible `split_args` → `[char]92`** (also fixed the merged C12b task). Converge changed=3, SSH PathWWWRoot(both)+Default Web Site=G:, WSUS Admin site untouched, http 200; idempotency changed=0. **CLOSES item 3.** RTRACK-C12c. |
+
 ### Track G — governance / Director decisions
 | ID | Item | Status | Notes |
 |----|------|--------|-------|
@@ -199,16 +213,24 @@ stateful data off the OS disk so the OS disk becomes disposable** (item 1 IIS-di
 1. ✅ **C11e — from-baseline Save-conflict fix** (`d2814cd`). The from-baseline E2E verify caught that C11d's
    config `Save()` fails while the C11b prove-started MU sync is running; C11d now stops the sync first.
    **`main` is GREEN from baseline** (ok=44 changed=25 failed=0). Done.
-2. ⛏️ **Re-baseline the dev VM to 3 RAW disks** — add a blank `nvme0:3` IIS disk (`vmware-vdiskmanager` +
-   VMX edit; VM powered off + baseline snapshot deleted/retaken per VM-LIFECYCLE §3). Capture its `eui.*`
-   for the future `iis_disk_id`. Baseline v5→v6. (Adding an undeclared disk does NOT break the current
-   guards — they assert only the DECLARED disks; item 3 declares + provisions it.)
-3. ⛏️ **Whole WSUS IIS site → dedicated disk (G:)** — decompose (like C02/C06): provision G:, then relocate
-   the full IIS site (`inetpub` / the `WsusAdministration` site + `WsusContent` vdir + logs) off C:. IIS
-   config is riddled with `%SystemDrive%` — decompose-heavy. Adds `iis_disk_id` (required, like the others).
-4. ⛏️ **Industry best-practices logging** — research-grounded: IIS W3C fields + ETW, WSUS
-   `SoftwareDistribution.log`, the WsusService/WID event channels, sane sizes/retention, and meaningful
-   Event Viewer views. Independent; can overlap item 3's tail.
+2. ✅ **Re-baselined the dev VM to 3 RAW disks** (baseline v5→v6). Added `nvme0:3` IIS disk; captured
+   `eui.BC9F0ECE9FBC4B9A000C296303722FC1` → `iis_disk_id`.
+3. ✅ **IIS `inetpub` → dedicated disk (G:) — CLOSED.** Director refined "whole site" → "leave WSUS where it
+   is, just move the IIS (inetpub)"; EXPLICIT-REPOINT chosen. **C12a** (provision G:) + **C12b** (site logs)
+   + **C12c** (wwwroot + `InetStp PathWWWRoot` + Default Web Site physicalPath). The WSUS Administration site
+   stays in Program Files (untouched). Track I above.
+4. ⛏️ **Industry best-practices logging — NEXT (after the inline-PowerShell-maturity pass).** Research-grounded:
+   IIS W3C fields + ETW, WSUS `SoftwareDistribution.log`, the WsusService/WID event channels, sane
+   sizes/retention, meaningful Event Viewer views. **Includes making C12b's IIS log file actually materialize
+   + re-verifying the write lands on G:** (the C12b "merge then investigate" follow-up).
+
+   **★ ACTIVE INITIATIVE — inline-PowerShell-maturity pass (Director 2026-07-17):** before item 4, audit EVERY
+   `win_shell` §8 task (C05 postinstall probe was reshaped to win_reg_stat; C06 SUSDB relocation SqlClient
+   blocks; C08 tuning guard; C09/C10 maintenance runners; C11a–e sync config-objects; C12b/C12c IIS) for **full
+   idempotency + native-module-like behavior**. Headline finding from C12c: Ansible `split_args` treats `\` as
+   an escape **even inside single quotes**, so `\'` (backslash-before-quote) unbalances the free-form parser
+   and fails task-load — use `[char]92`, keep `\` off closing quotes. Test any win_shell block with
+   `from ansible.parsing.splitter import split_args` (pipx venv python).
 5. 💤 **PARKED — AWS OS-disk replacement / adopt-existing-volumes.** PROD is **AWS** (AMI + EBS, NOT the
    proxmox path in AGENTS.md — a divergence to resolve): swap the AMI for a fresh fully-patched OS + re-attach
    the existing WSUS EBS volumes. The role goes **bi-modal** — detect populated data volumes (by `unique_id`)
@@ -218,14 +240,26 @@ stateful data off the OS disk so the OS disk becomes disposable** (item 1 IIS-di
 
 ---
 
-## ⏱️ SESSION HANDOFF — 2026-07-17 — for the next fresh session
+## ⏱️ SESSION HANDOFF — 2026-07-17 (IIS-arc close) — for the next fresh session
 
-**STATE: THE ROLE IS FEATURE-COMPLETE.** Core role + maintenance core + the C11 sync arc are all done. `main`
-@ the C11d codification commit. The build spine (C01–C06i) delivers a working WSUS-on-WID: disk init (E:/F:)
-→ `win_feature` install → `wsusutil postinstall` → SUSDB relocated to `E:\WID\Data` (ONLINE, read-write; C:
-originals health-gated-deleted) → content on `F:\WSUS`. Maintenance core: **C08** WsusPool IIS tuning,
-**C09** weekly SUSDB reindex (SYSTEM), **C10** monthly WSUS Server Cleanup (SYSTEM). **C07 (END verify)
-DROPPED** (theater; §4b).
+**STATE: feature core + the IIS-on-its-own-drive arc are done. `main` @ the C12c codification commit
+(`565b8d4`).** The build spine (C01–C06i) delivers a working WSUS-on-WID: disk init (E:/F:) → `win_feature`
+install → `wsusutil postinstall` → SUSDB relocated to `E:\WID\Data` (ONLINE, read-write; C: originals
+health-gated-deleted) → content on `F:\WSUS`. Maintenance core: **C08** WsusPool IIS tuning, **C09** weekly
+SUSDB reindex (SYSTEM), **C10** monthly WSUS Server Cleanup (SYSTEM). Sync: **C11a** languages + **C11b**
+category bootstrap (prove-started) + **C11d** upstream/downstream source (+**C11e** stop-sync-before-Save
+from-baseline fix). **IIS on G: (roadmap item 3, CLOSED):** **C12a** provision G: (3rd disk, VM re-baselined
+v6) + **C12b** site logs → G: + **C12c** wwwroot + `InetStp PathWWWRoot` → G:. **C07 (END verify) DROPPED**
+(theater; §4b).
+
+**★ NEXT: the inline-PowerShell-maturity pass** (Director 2026-07-17, ACTIVE) — audit EVERY `win_shell` §8
+task for full idempotency + native-module-like behavior. **Headline finding (C12c):** Ansible's `split_args`
+(free-form parser for win_shell/win_command) treats `\` as an escape **even inside single quotes**, so `\'`
+(a backslash immediately before a closing quote — e.g. `Replace('/','\')`, `'IIS:\Sites\'`) unbalances the
+parser → `failed at splitting arguments` at task-LOAD time (before any run). **Fix: use `[char]92` for
+backslashes and keep `\` off closing quotes.** Verify any block with
+`/root/.local/share/pipx/venvs/ansible-core/bin/python -c "from ansible.parsing.splitter import split_args; ..."`.
+Then roadmap item 4 (functional logging, incl. making C12b's IIS log file materialize on G:).
 
 **C11 sync arc — COMPLETE / "good enough" (Director pull-back 2026-07-17).** **C11a** (`1c211bd`) — restrict
 update languages to `['en']` (config-object idiom). **C11b** (`5003474 [audited fb87098]`) — gated
@@ -280,10 +314,11 @@ bounded audits (adherence/scope/gate-logic), each `< /dev/null` — each converg
 the sacred fresh-OS anchor; ONE rolling `pre-<piece>` snapshot (`scripts/snapshot-step.sh <piece>`,
 taken post-merge only) is the usual revert target — `REVERT_TO=pre-<piece> scripts/compose-and-run.sh`
 so merged pieces no-op fast instead of re-converging. At most TWO snapshots ever (`docs/VM-LIFECYCLE.md`
-§4). **The role is feature-complete (C11d merged), so NO new rolling snapshot was taken — `pre-C11c` remains
-the rolling snapshot** (a CLEAN idle post-C11b state: full catalog, languages=en, category catalog
-bootstrapped + role-marked). C11d reverts there + re-applies fast (it needs `upstream_server`, now a DEV
-PLACEHOLDER in the playbook `wsus:` dict). An optional from-baseline E2E verify uses the BASELINE snapshot.
+§4). **Rolling snapshot after the IIS arc = `pre-maturity`** — a CLEAN, FULLY-CONVERGED-through-C12c 3-disk
+state (E:/F:/G: provisioned, SUSDB on E:, content on F:, inetpub on G:, sync configured). The
+inline-PowerShell-maturity pass reverts there (`REVERT_TO=pre-maturity`) and each refactored win_shell task
+should converge to **changed=0** (behavior-preserving) — the exact proof a maturity refactor needs. An
+optional from-baseline E2E verify uses the BASELINE snapshot (`pre-ansible-clean-ssh-ready`, v6, 3 disks).
 
 **Contract now:** disk ids are declared in the `wsus:` override dict and read as
 `config.wid_disk_id` (DB→E:WSUSDB) / `config.wsus_disk_id` (content→F:WSUSDATA), each the
@@ -311,11 +346,13 @@ composed-tree lint + fixtures + VM proofs in P4 · plain-gate ansible-lint exits
 so a `-e '{"wsus":{…}}'` proof override REPLACES the dict and MUST re-state
 `temp_dir: false`** (presence proof needs no `-e`; footgun confined to `-e` overrides).
 
-**Next action: the role is FEATURE-COMPLETE — a Director scope decision.** No build piece is queued. Options:
-(a) an optional **from-baseline E2E verify** — revert to `pre-ansible-clean-ssh-ready`, one composed pass, to
-re-prove the whole role from fresh OS (it now REQUIRES `upstream_server`, declared as a DEV PLACEHOLDER in the
-playbook `wsus:` dict, `4049218`); expect the full spine + maintenance + C11a/C11b/C11d to converge, then
-idempotent. (b) The **T-track endgame** — backport this repo to a `*-template` (parameterize the dev-VM disk
-ids + upstream_server), then GitHub import (`nwarila-platform` org). Open G-track: Director ratification of the
-PROPOSED §8 escape-hatch policy (native-first; win_command argv; win_shell for cmdlets/shell semantics) — now
-exercised across C05/C06/C08–C11d. **Codex is now `gpt-5.5` @ xhigh** (drive with `-p wsus`, `< /dev/null`).
+**Next action: the inline-PowerShell-maturity pass (Director 2026-07-17, ACTIVE INITIATIVE).** Audit EVERY
+`win_shell` §8 task for full idempotency + native-module-like behavior. Recommended first move: an inventory
+sweep of all win_shell/win_command tasks in `present_windows.yml` (+ the `files/*.ps1` runners), scored on
+(a) `split_args` safety — no `\'` backslash-before-quote (the C12c finding; the systemic risk), (b) idempotency
+— correct `changed_when`/gates, no blind mutation, (c) native-module-like behavior — normalized compare,
+re-acquire-verify, fail-closed. Then decompose fixes into strict-cycle pieces (M-track). AFTER the maturity
+pass: roadmap item 4 (functional logging, incl. C12b's IIS log file materializing on G:). Open G-track:
+ratify the PROPOSED §8 escape-hatch policy (native-first; win_command argv; win_shell for cmdlets/shell
+semantics) — now exercised across C05/C06/C08–C12c. **Codex is now `gpt-5.5` @ xhigh** (drive with `-p wsus`,
+`< /dev/null`). Rolling snapshot to take at C12c P5 close = `pre-maturity` (fully-converged-through-C12c).
