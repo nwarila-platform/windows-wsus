@@ -11,6 +11,12 @@
 # =========================================================================================== #
 ---
 wsus_defaults:
+  # Which situation this run is for (roadmap item 5). 'greenfield' = a fresh machine: postinstall creates SUSDB
+  # in WID on C: and the C06 arc relocates it to the DB volume. 'adopt' = an OS-disk replacement: the DB volume
+  # already holds a SUSDB from the previous OS, so the role ATTACHES it BEFORE postinstall (postinstall then
+  # reuses + schema-upgrades it; proven by hand, RTRACK-C14b-c). Declared per-playbook in the `wsus:` dict —
+  # ansible/playbooks/wsus.yml leaves the default, ansible/playbooks/wsus-adopt.yml sets 'adopt'. C14h.
+  mode: 'greenfield'
   # WSUS content folder NAME only; the role joins it with data_disks.content.drive_letter to
   # form the content root (e.g. F:\WSUS). wsusutil postinstall (C05) creates WSUSContent inside
   # it. Name-only keeps the content drive in ONE place so it cannot drift.
