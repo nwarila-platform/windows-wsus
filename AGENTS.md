@@ -47,13 +47,16 @@ Ansible portion is developed and executed today.
 1. `.framework-pin` holds the ansible-framework commit SHA to build against
    (no release tags exist upstream yet; switch to tags when release-please cuts one).
 2. `scripts/compose-and-run.sh` clones/updates the framework into `.compose/`,
-   checks out the pinned SHA, rsyncs `ansible/applications/wsus/` into the framework's
-   `applications/` namespace, then runs `ansible/playbooks/wsus.yml` with the
-   framework's `ansible.cfg` (its `roles_path = applications:operating_systems`
-   resolves the role by bare name).
-3. The role ships the framework's **byte-identical v3.0.0 generic loader** as
-   `tasks/main.yml`. NEVER edit it per-role — loader changes are governance-surface
-   (see `_handoff/loop/STRICT-CYCLE-adapted.md`) and belong upstream in the framework.
+   checks out the pinned SHA, rsyncs every role under `ansible/applications/` into the
+   framework's `applications/` namespace, then runs the selected playbook
+   (`COMPOSE_PLAYBOOK`, default `wsus.yml`) with the framework's `ansible.cfg` (its
+   `roles_path = applications:operating_systems` resolves roles by bare name).
+3. The role ships a **local v3.1.0 generic loader** as `tasks/main.yml` — the framework's
+   pinned **v3.0.0** plus the optional `validate.yml` hook, so it is **NOT** byte-identical
+   to upstream today. That divergence is the known, tracked **TD-003** (`docs/TECH-DEBT.md`);
+   upstreaming the hook restores the byte-identical invariant. NEVER edit the loader
+   per-role regardless — loader changes are governance-surface (see
+   `_handoff/loop/STRICT-CYCLE-adapted.md`) and belong upstream in the framework.
 
 ## Dev target VM + snapshot discipline
 
@@ -109,8 +112,18 @@ export PATH="$PATH:/root/.local/bin"
 yamllint -c .yamllint.yml ansible
 # ansible-lint MUST run from the composed tree — the role only resolves there,
 # and the chassis .ansible-lint profile applies (repo-side playbook lint fails
-# syntax-check by design):
-(cd .compose/ansible-framework && ansible-lint applications/wsus)
+# syntax-check by design). Lint every role overlaid from this repo:
+(
+    cd .compose/ansible-framework
+    shopt -s nullglob
+    role_paths=()
+    for role_source in ../../ansible/applications/*; do
+        role_paths+=("applications/$(basename "${role_source}")")
+    done
+    shopt -u nullglob
+    [ "${#role_paths[@]}" -gt 0 ] || { echo "no overlaid roles found" >&2; exit 1; }
+    ansible-lint "${role_paths[@]}"
+)
 bash -n scripts/compose-and-run.sh scripts/revert-vm.sh
 # Inline-PowerShell gate (piece M): every win_shell/win_command free-form block must parse
 # through split_args AND contain no backslash-before-quote (\' / \"). This is the ONLY static
