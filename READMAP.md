@@ -258,7 +258,53 @@ stateful data off the OS disk so the OS disk becomes disposable** (item 1 IIS-di
 
 ---
 
-## ⏱️ SESSION HANDOFF — 2026-07-18 (item 4 CLOSED — role feature+maintenance+sync+logging complete) — for the next fresh session
+## ⏱️ SESSION HANDOFF — 2026-07-20 (C15 arc opened; WDM-0 merged) — for the next fresh session
+
+**STATE:** `main` @ `00f34a8` `[audited 95f5f9d]` + this codification. Item 5 (OS-disk replacement) closed at
+C14h-j. The **C15 arc** is now open: a SECOND role, `windows_disk_manager`, replacing the `wsus` disk region
+entirely. Plan of record: **`_handoff/steps/C15-arc.plan-v3.md`** (v1 and v2 kept for the record; both were
+REVISEd twice by Fable + Sol). Memory: [[windows-disk-manager-arc]].
+
+**PLATFORM MODEL (Director, 2026-07-20) — build in this order:**
+1. **PHASE 1 — VMware (IMMEDIATE GOAL).** Everything platform-independent + `identity_vmware.yml`. Needs no
+   AWS account, no Proxmox host, and none of M1/M2/M3.
+2. **PHASE 2 — AWS.** `identity_aws.yml`. AWS is an **ephemeral E2E proof** — deploy, check, destroy per merge,
+   minimal spend, and a portfolio artifact. Always greenfield; it never adopts.
+3. **PHASE 3 — GitHub workflows,** AWS portion only. The workflow **calls** `compose-and-run.sh`
+   (`SKIP_REVERT=1` + `INVENTORY=`) rather than reimplementing compose/overlay.
+4. **DEFERRED — Proxmox = PRODUCTION** (real clients, daily). Follows the `talos-cluster` project. **M3**
+   (does the authored `serial` reach `Get-Disk .SerialNumber`?) gates it — traced through PVE/QEMU source,
+   never observed in a guest. **Pin `scsiN`, not `virtioN`.**
+
+**ARCHITECTURE (both reviewers, independently: option D).** ONE role, per-platform adapter task files at
+`tasks/identity_<platform>.yml` (directly under `tasks/` — the splitargs glob is non-recursive). `platform` is a
+REQUIRED user variable, **verified** against `ansible_facts.system_vendor`, never auto-detected. The adapter
+answers only *"which disk number is each purpose?"* and never mutates or authorizes. **The seam with `wsus` is a
+DRIVE LETTER** — `wsus` keeps no disk-identity concept and its disk region is DELETED, not repaired. Letters are
+declared once in shared play vars; completion is handed over as a namespaced non-cacheable readiness fact.
+**Governing principle: select by what the pipeline AUTHORS, never what it DISCOVERS.**
+
+**⚠️ FOUR CONFIRMED DEFECTS ON `main`** (verified at module source; ranked as deployed) — they leave with the
+disk region at W-c rather than being patched, and **no AWS deploy should happen before that**:
+**D-3** `unformatted` authorizes writes from ABSENCE of evidence (`win_disk_facts.ps1:215-216` — `Get-Partition
+-ErrorAction SilentlyContinue`, `partitions` key only `if ($parts)`); **D-4** `partition_style RAW` treated as
+blank though RAW means only "no recognised partition table"; **D-1** `win_partition` given `disk_number` +
+`drive_letter` with no `partition_number` resolves `Get-Partition -DriveLetter` GLOBALLY and discards the disk
+number (`win_partition.ps1:~101`; call site `present_windows.yml:228-233`); **D-2** `win_format` at `force:false`
+reformats a populated volume on label mismatch (`win_format.ps1:206-213`; the ALU guard shields `db` but not
+`content`↔`iis`, both 4096). Chains: D-1→D-2 destroys a disk never classified; D-3/D-4→D-2 destroys a
+misclassified one.
+
+**NEXT:** `WDM-1` (role skeleton, local v3.1.0 loader per Director) → WDM-2..11 → W-a..d. Every phase-1 piece is
+provable on the dev VM.
+
+**Also open:** the IIS letter leak (`defaults/main.yml:105,108` hardcode `G:\inetpub\...` independent of
+`data_disks.iis.drive_letter`) — W-a. And `AGENTS.md`'s loader claim is now accurate: local **v3.1.0** =
+upstream v3.0.0 + the `validate.yml` hook = **TD-003**, so it is NOT byte-identical to upstream today.
+
+---
+
+## ⏱️ SESSION HANDOFF — 2026-07-18 (item 4 CLOSED — role feature+maintenance+sync+logging complete) — historical
 
 **STATE: the role is COMPLETE through roadmap item 4.** Feature core + IIS-on-its-own-drive arc + inline-PowerShell
 maturity pass + **roadmap item 4 (industry best-practices logging) ALL DONE.** `main` @ the C13h-i codification
