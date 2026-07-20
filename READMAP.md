@@ -258,12 +258,36 @@ stateful data off the OS disk so the OS disk becomes disposable** (item 1 IIS-di
 
 ---
 
-## ⏱️ SESSION HANDOFF — 2026-07-20 (C15 arc opened; WDM-0 merged) — for the next fresh session
+## ⏱️ SESSION HANDOFF — 2026-07-20 (C15 arc: WDM-0 + **WDM-1** merged) — for the next fresh session
 
-**STATE:** `main` @ `00f34a8` `[audited 95f5f9d]` + this codification. Item 5 (OS-disk replacement) closed at
-C14h-j. The **C15 arc** is now open: a SECOND role, `windows_disk_manager`, replacing the `wsus` disk region
-entirely. Plan of record: **`_handoff/steps/C15-arc.plan-v3.md`** (v1 and v2 kept for the record; both were
-REVISEd twice by Fable + Sol). Memory: [[windows-disk-manager-arc]].
+**STATE:** `main` @ `cfd2979` `[audited 6fa53d9]` + this codification. Item 5 (OS-disk replacement) closed at
+C14h-j. The **C15 arc** is open and **the second role now EXISTS on `main`**: `ansible/applications/windows_disk_manager/`
+(defaults, byte-identical local v3.1.0 loader, `validate.yml`, `present_windows.yml`, README), wired FIRST into
+**both** playbooks. It will replace the `wsus` disk region entirely. Plan of record:
+**`_handoff/steps/C15-arc.plan-v3.md`** (v1 and v2 kept for the record; both were REVISEd twice by Fable + Sol).
+
+> **Memory links are dead.** The per-session memory store was **purged 2026-07-20** at the Director's
+> instruction — it was reinforcing an anti-pattern (see `_handoff/RESTART.md` §8). **`_handoff/RESTART.md` is
+> now the single re-entry document.** Every `[[double-bracket]]` reference in this file is a broken pointer;
+> do not chase them, and do not recreate a parallel memory.
+
+**Track D — `windows_disk_manager` (C15 arc), phase 1 VMware:**
+
+| Piece | Status |
+|---|---|
+| WDM-0 | ✅ merged `00f34a8` `[audited 95f5f9d]` — composer harness (multi-role overlay + `COMPOSE_PLAYBOOK`) |
+| WDM-1 | ✅ merged `cfd2979` `[audited 6fa53d9]` — role skeleton + platform/vendor contract + two-role composition. **P5 codified retroactively**; see the caveat below |
+| WDM-2 | ⛏️ next in the arc — read-only resolver (`win_powershell`, needs `[CmdletBinding(SupportsShouldProcess)]` or check mode skips it) |
+| WDM-3..11 | ⛏️ queued — adapter dispatch → emptiness gate → onlining → letter preflight → reconcile → init/partition/format → readiness fact |
+| W-b | 🔄 **PULLED FORWARD** by the Director (2026-07-20) — collapse to ONE playbook. P0 v3 written; **P2 REFUSED v2**; awaiting P2 r2 |
+
+**⚠️ WDM-1 EVIDENCE CAVEAT — do not cite its numbers as proven.** WDM-1 merged without its P5 commit; the
+codification was reconstructed afterwards. What is **re-verifiable on the merged tree**: both loaders resolve to
+the same git blob `a83954c3` (md5 `c45774a2`), the wsus tree hash `dc550265` is unchanged across all refs, the
+new role is structurally incapable of reporting `changed` (2 asserts only), and its 17-task count checks out.
+What is **merge-time record only, with no artifact retained**: `ok=73 changed=35 failed=0`, idempotency
+`changed=0`, and the three negatives. Also: **no P2 r2 verdict was ever recorded** — the packet merged still
+reading "awaiting P2 r2". Full detail and process findings in `_handoff/steps/RTRACK-WDM-1.md`.
 
 **PLATFORM MODEL (Director, 2026-07-20) — build in this order:**
 1. **PHASE 1 — VMware (IMMEDIATE GOAL).** Everything platform-independent + `identity_vmware.yml`. Needs no
@@ -295,12 +319,33 @@ reformats a populated volume on label mismatch (`win_format.ps1:206-213`; the AL
 `content`↔`iis`, both 4096). Chains: D-1→D-2 destroys a disk never classified; D-3/D-4→D-2 destroys a
 misclassified one.
 
-**NEXT:** `WDM-1` (role skeleton, local v3.1.0 loader per Director) → WDM-2..11 → W-a..d. Every phase-1 piece is
-provable on the dev VM.
+**NEXT:** **`W-b`** — the Director pulled it forward on 2026-07-20 ("cool les go with the 1 playbook now"), ahead
+of the WDM-2..11 sequence. Its P0 v3 packet is written; **P2 REFUSED v2** and its objection stands. Then
+`WDM-2` (read-only resolver) → WDM-3..11 → W-a/W-c/W-d. Every phase-1 piece is provable on the dev VM.
+
+**The `mode` flag is tracked debt, not settled design** (`RESTART.md` §8). W-b v3 deliberately KEEPS it and
+defers removal to a W-b2, because P2 proved detection is not yet trustworthy enough to drop the C14a interlock:
+the SUSDB attach exits `nochange` on **any** registered database named SUSDB, before the path/health check, and
+`windows_disk_manager` does not own drive letters until WDM-7. Removing the flag needs both fixed. Do not
+re-propose the flag as a design; the Director's standing direction is to **fix detection, not add declaration
+layers**.
 
 **Also open:** the IIS letter leak (`defaults/main.yml:105,108` hardcode `G:\inetpub\...` independent of
-`data_disks.iis.drive_letter`) — W-a. And `AGENTS.md`'s loader claim is now accurate: local **v3.1.0** =
-upstream v3.0.0 + the `validate.yml` hook = **TD-003**, so it is NOT byte-identical to upstream today.
+`data_disks.iis.drive_letter`) — W-a. **Loader count changed at WDM-1:** this repo now carries **TWO**
+byte-identical local v3.1.0 loaders (`wsus/tasks/main.yml` and `windows_disk_manager/tasks/main.yml`, both md5
+`c45774a2`), each = upstream v3.0.0 + the `validate.yml` hook = **TD-003**. Neither is byte-identical to the
+pinned upstream, and TD-003's closure must now update **both**.
+
+**Snapshot discipline has lapsed across the WDM pieces:** `vmrun listSnapshots` still shows `pre-item5`
+(refreshed 2026-07-18, before WDM-0 and WDM-1). No `pre-WDM-*` rolling snapshot was ever taken, so
+`REVERT_TO=` has no recent step target and the only anchor is the fresh-OS baseline.
+
+> **⚠️ Everything BELOW this line is historical.** The 2026-07-18 and earlier handoff blocks are written in live
+> present tense and contain **four mutually contradictory "next action" pointers** and two different "current"
+> rolling snapshots. They record what was true then. Derive position from THIS block, `_handoff/QUEUE.md`, and
+> `_handoff/REVIEW.md` — never from the blocks below. (Sections §1/§3/§4 above are likewise stale in places:
+> §1 still calls the T-track endgame "next" and §3's roadmap table has no rows for C14a, C14d-g, C14h-j, WDM-0
+> or WDM-1. Cleaning those up is its own piece, deliberately not folded into the WDM-1 codification.)
 
 ---
 
