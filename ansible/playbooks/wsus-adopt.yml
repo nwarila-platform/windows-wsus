@@ -34,6 +34,12 @@
     # Platform convention: 'env' is the operator-facing extra-var; 'ENV' is the
     # play-var the loader validates (mirrors the wazuh central playbooks).
     ENV: "{{ env }}"
+    windows_disk_manager:
+      # TD-001: disable the loader's POSIX temp-dir; the role owns its Windows operations.
+      # NOTE: a `-e '{"windows_disk_manager":{...}}'` override REPLACES this whole mapping,
+      # so a proof override must re-state temp_dir: false.
+      temp_dir: false
+      platform: 'vmware'
     wsus:
       # TD-001: disable the loader's POSIX temp-dir; the role owns its staging via
       # ansible.windows.win_tempfile (queue piece C02).
@@ -66,4 +72,5 @@
         cacheable: true
 
   roles:
+    - role: 'windows_disk_manager'
     - role: 'wsus'
