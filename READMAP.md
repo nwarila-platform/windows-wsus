@@ -266,13 +266,23 @@ C14h-j. The **C15 arc** is open and **the second role now EXISTS on `main`**: `a
 **both** playbooks. It will replace the `wsus` disk region entirely. Plan of record:
 **`_handoff/steps/C15-arc.plan-v3.md`** (v1 and v2 kept for the record; both were REVISEd twice by Fable + Sol).
 
-**THE ACTIVE NEXT PIECE IS `remove mode` (Director, 2026-07-20).** The role must support exactly two paths,
-DETECTED never declared: (1) full new deployment, all fresh disks; (2) OS disk replaced, all data disks kept.
-Path 2 is the ROUTINE weekly path — the EC2 AMI rotates weekly and CI/CD must succeed unattended against a
-fresh env or a refreshed AMI. Both paths are already observably distinct (C14d-g classifies by NTFS label,
-which survives an OS swap). `mode` only restated the labels. Removing it **subsumes W-b entirely** (delete
-`wsus-adopt.yml`, no selector, no `-e wsus_mode` plumbing). Prerequisite **C06j is DONE** (below). Detail and
-the folded design/attack findings live in `_handoff/steps/C06j.plan.json` "next_piece_preview" and RESTART.md §7.
+**PIVOT (Director, 2026-07-20 late): BUILD `windows_disk_manager` PROVISIONING FIRST, then `wsus` consumes.**
+The Director ripped the disk-provisioning region OUT of the wsus role directly (it is 100% out of scope for
+wsus — WDM owns ALL disk; wsus receives only drive letters). That rip-out is the W-c intent pulled forward,
+but it is HELD (on branch `wip/wsus-disk-strip`, + a scratchpad patch) and NOT on main: wsus must keep
+provisioning until WDM can, or the composed two-role playbook has no volumes to install onto. So the active
+next piece is **`WDM-2`** (read-only resolver) and the whole WDM provisioning arc (WDM-2..11), per
+`_handoff/steps/C15-arc.plan-v3.md`. Only after WDM-11 does the wsus reframe land (W-c): delete the disk
+region, hand letters over, and reframe the DB flow.
+
+**THE wsus REFRAME (lands at W-c, AFTER WDM-11):** two paths, DETECTED never declared — (1) full new
+deployment, all fresh disks; (2) OS disk replaced, all data disks kept (the ROUTINE weekly AMI-rotation path).
+The DB flow collapses to the Director's 2-step: install the WSUS role → if a SUSDB already exists on the data
+volume, ATTACH-before-postinstall so postinstall reuses it (then sweep any C: remnant); else move the DB
+C:→E:. `mode`, `wsus-adopt.yml`, and the C14a interlock all go. **HARD PROOF REQUIREMENT (Director "I don't
+trust Microsoft to behave"):** attach-before-postinstall must be EMPIRICALLY re-proven in the new flow, not
+taken from MS docs (RTRACK-C14b-c hand-proved it once; re-prove it here). This SUPERSEDES C16a/C16b and W-b —
+all three are folded into the single post-WDM wsus reframe; do not build them standalone.
 
 > **Memory links are dead.** The per-session memory store was **purged 2026-07-20** at the Director's
 > instruction — it was reinforcing an anti-pattern (see `_handoff/RESTART.md` §8). **`_handoff/RESTART.md` is
@@ -285,9 +295,11 @@ the folded design/attack findings live in `_handoff/steps/C06j.plan.json` "next_
 |---|---|
 | WDM-0 | ✅ merged `00f34a8` `[audited 95f5f9d]` — composer harness (multi-role overlay + `COMPOSE_PLAYBOOK`) |
 | WDM-1 | ✅ merged `cfd2979` `[audited 6fa53d9]` — role skeleton + platform/vendor contract + two-role composition. **P5 codified retroactively**; see the caveat below |
-| C06j | ✅ merged `f0ef314` `[audited 052d122]` — gate the C06i C: originals delete on the relocation probe, not E: health alone. Closes a pre-existing data-loss path (deleted un-copied C: files on a 'relocated' host). Prereq for `remove mode`. Six-run matched-pair proof; RTRACK-C06j |
-| remove `mode` | ⛏️ **ACTIVE NEXT** — delete the flag + `wsus-adopt.yml` + the C14a interlock; gate the adopt attach on `__susdb_adopt_probe__.stat.exists` alone (NOT the completion flags — RTRACK-C14a:23); harden the attach `nochange` shortcut to verify the registered SUSDB is healthy AND entirely under `__wid_data_dir__`. **Subsumes W-b.** W-b.plan.json v3 is superseded — do not build it |
-| WDM-2 | ⛏️ then — read-only resolver (`win_powershell`, needs `[CmdletBinding(SupportsShouldProcess)]` or check mode skips it) |
+| C06j | ✅ merged `f0ef314` `[audited 052d122]` — gate the C06i C: originals delete on the relocation probe, not E: health alone. Closes a pre-existing data-loss path (deleted un-copied C: files on a 'relocated' host). Six-run matched-pair proof; RTRACK-C06j |
+| ~~C16a~~ | ⛔ **SUPERSEDED by the pivot** — P0+P2-AGREE (harden adopt-attach nochange). Its logic folds into the post-WDM wsus DB reframe; do not build standalone. `C16a.plan.json` kept for the design |
+| ~~remove `mode`~~ / ~~W-b~~ | ⛔ **SUPERSEDED** — folded into the post-WDM wsus reframe (W-c). Not standalone pieces |
+| **WDM-2** | ⛏️ **ACTIVE NEXT** — read-only resolver (`win_powershell`, needs `[CmdletBinding(SupportsShouldProcess)]` or check mode skips it). Per `C15-arc.plan-v3.md`. wsus keeps provisioning throughout the WDM build (rip-out held on `wip/wsus-disk-strip`) |
+| WDM-3..11 | ⛏️ dispatch → emptiness gate → bounded onlining → letter preflight → two-phase reconcile → init/partition/format+label → readiness fact. Seam = drive letter (D8) |
 | WDM-3..11 | ⛏️ queued — adapter dispatch → emptiness gate → onlining → letter preflight (**WDM-7 owns drive letters — LOAD-BEARING for weekly path-2 CI, not polish**) → reconcile → init/partition/format → readiness fact |
 
 **⚠️ WDM-1 EVIDENCE CAVEAT — do not cite its numbers as proven.** WDM-1 merged without its P5 commit; the
