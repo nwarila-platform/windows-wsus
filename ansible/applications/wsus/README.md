@@ -38,9 +38,11 @@ consumed configuration one cycle piece at a time.
 
 ### Merged configuration
 
+The role detects greenfield vs adopt from the presence of a complete SUSDB on the data volume;
+there is no mode flag.
+
 | `wsus_defaults` key | Default | Purpose |
 |---------------------|---------|---------|
-| `mode` | `greenfield` | Which situation the run is for. `greenfield` (default) = fresh machine: postinstall creates SUSDB and the C06 arc relocates it to the DB volume. `adopt` = OS-disk replacement: the SUSDB already on the DB volume is ATTACHED before postinstall, which then reuses it. Use `ansible/playbooks/wsus.yml` for greenfield and `ansible/playbooks/wsus-adopt.yml` for adopt. Adopt preconditions: supply the CURRENT disk `unique_id`s (an OS swap changes them) and use a replacement OS at least as patched as the one it replaces. C14h |
 | `data_disks.db.drive_letter` | `E:` | Target drive letter for the WID/database disk |
 | `data_disks.content.drive_letter` | `F:` | Target drive letter for the WSUS content disk |
 | `data_disks.db.label` | `WSUSDB` | NTFS volume label for the WID/database disk (E:) |
