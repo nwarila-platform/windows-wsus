@@ -258,13 +258,21 @@ stateful data off the OS disk so the OS disk becomes disposable** (item 1 IIS-di
 
 ---
 
-## ⏱️ SESSION HANDOFF — 2026-07-20 (C15 arc: WDM-0 + **WDM-1** merged) — for the next fresh session
+## ⏱️ SESSION HANDOFF — 2026-07-20 (WDM-1 codified; **C06j merged**; `mode` removal is next) — for the next fresh session
 
-**STATE:** `main` @ `cfd2979` `[audited 6fa53d9]` + this codification. Item 5 (OS-disk replacement) closed at
+**STATE:** `main` @ `f0ef314` `[audited 052d122]` + this codification. Item 5 (OS-disk replacement) closed at
 C14h-j. The **C15 arc** is open and **the second role now EXISTS on `main`**: `ansible/applications/windows_disk_manager/`
 (defaults, byte-identical local v3.1.0 loader, `validate.yml`, `present_windows.yml`, README), wired FIRST into
 **both** playbooks. It will replace the `wsus` disk region entirely. Plan of record:
 **`_handoff/steps/C15-arc.plan-v3.md`** (v1 and v2 kept for the record; both were REVISEd twice by Fable + Sol).
+
+**THE ACTIVE NEXT PIECE IS `remove mode` (Director, 2026-07-20).** The role must support exactly two paths,
+DETECTED never declared: (1) full new deployment, all fresh disks; (2) OS disk replaced, all data disks kept.
+Path 2 is the ROUTINE weekly path — the EC2 AMI rotates weekly and CI/CD must succeed unattended against a
+fresh env or a refreshed AMI. Both paths are already observably distinct (C14d-g classifies by NTFS label,
+which survives an OS swap). `mode` only restated the labels. Removing it **subsumes W-b entirely** (delete
+`wsus-adopt.yml`, no selector, no `-e wsus_mode` plumbing). Prerequisite **C06j is DONE** (below). Detail and
+the folded design/attack findings live in `_handoff/steps/C06j.plan.json` "next_piece_preview" and RESTART.md §7.
 
 > **Memory links are dead.** The per-session memory store was **purged 2026-07-20** at the Director's
 > instruction — it was reinforcing an anti-pattern (see `_handoff/RESTART.md` §8). **`_handoff/RESTART.md` is
@@ -277,9 +285,10 @@ C14h-j. The **C15 arc** is open and **the second role now EXISTS on `main`**: `a
 |---|---|
 | WDM-0 | ✅ merged `00f34a8` `[audited 95f5f9d]` — composer harness (multi-role overlay + `COMPOSE_PLAYBOOK`) |
 | WDM-1 | ✅ merged `cfd2979` `[audited 6fa53d9]` — role skeleton + platform/vendor contract + two-role composition. **P5 codified retroactively**; see the caveat below |
-| WDM-2 | ⛏️ next in the arc — read-only resolver (`win_powershell`, needs `[CmdletBinding(SupportsShouldProcess)]` or check mode skips it) |
-| WDM-3..11 | ⛏️ queued — adapter dispatch → emptiness gate → onlining → letter preflight → reconcile → init/partition/format → readiness fact |
-| W-b | 🔄 **PULLED FORWARD** by the Director (2026-07-20) — collapse to ONE playbook. P0 v3 written; **P2 REFUSED v2**; awaiting P2 r2 |
+| C06j | ✅ merged `f0ef314` `[audited 052d122]` — gate the C06i C: originals delete on the relocation probe, not E: health alone. Closes a pre-existing data-loss path (deleted un-copied C: files on a 'relocated' host). Prereq for `remove mode`. Six-run matched-pair proof; RTRACK-C06j |
+| remove `mode` | ⛏️ **ACTIVE NEXT** — delete the flag + `wsus-adopt.yml` + the C14a interlock; gate the adopt attach on `__susdb_adopt_probe__.stat.exists` alone (NOT the completion flags — RTRACK-C14a:23); harden the attach `nochange` shortcut to verify the registered SUSDB is healthy AND entirely under `__wid_data_dir__`. **Subsumes W-b.** W-b.plan.json v3 is superseded — do not build it |
+| WDM-2 | ⛏️ then — read-only resolver (`win_powershell`, needs `[CmdletBinding(SupportsShouldProcess)]` or check mode skips it) |
+| WDM-3..11 | ⛏️ queued — adapter dispatch → emptiness gate → onlining → letter preflight (**WDM-7 owns drive letters — LOAD-BEARING for weekly path-2 CI, not polish**) → reconcile → init/partition/format → readiness fact |
 
 **⚠️ WDM-1 EVIDENCE CAVEAT — do not cite its numbers as proven.** WDM-1 merged without its P5 commit; the
 codification was reconstructed afterwards. What is **re-verifiable on the merged tree**: both loaders resolve to
