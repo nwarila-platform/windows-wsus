@@ -694,9 +694,11 @@
       register: __susdb_relocated_healthy__
       changed_when: false
 
-    # Retire the copy-don't-move fallback: delete stale C: originals ONLY when the probe says
-    # 'healthy'. win_file absent is idempotent; this is the arc's only fallback-destroying
-    # step, hence the strictest gate. The explicit two-file loop never touches WID system DBs.
+    # Retire the copy-don't-move fallback: delete stale C: originals ONLY when THIS RUN's
+    # pending|orphaned relocation copied them and the probe says 'healthy'. A resume that
+    # died after attach but before this task leaves genuine stale C: originals permanently;
+    # accepted tradeoff: no durable copy-time provenance exists. win_file absent is
+    # idempotent; the explicit two-file loop never touches WID system DBs.
     - name: 'MAIN | Remove SUSDB Originals From System Volume'
       ansible.windows.win_file:
         path: '{{ __wid_source_dir__ }}\{{ item }}'
@@ -704,7 +706,9 @@
       loop: ['SUSDB.mdf', 'SUSDB_log.ldf']
       loop_control:
         label: '{{ item }}'
-      when: __susdb_relocated_healthy__.stdout | trim == 'healthy'
+      when:
+        - __susdb_probe__.stdout | trim in ['pending', 'orphaned']
+        - __susdb_relocated_healthy__.stdout | trim == 'healthy'
 
     #endregion --- [ Main: SUSDB Relocation ] ----------------------------------------------- #
 
