@@ -258,31 +258,32 @@ stateful data off the OS disk so the OS disk becomes disposable** (item 1 IIS-di
 
 ---
 
-## ⏱️ SESSION HANDOFF — 2026-07-20 (WDM-1 codified; **C06j merged**; `mode` removal is next) — for the next fresh session
+## ⏱️ SESSION HANDOFF — 2026-07-21 (**C16 MERGED: `mode` removed, ONE linear DB flow**) — for the next fresh session
 
-**STATE:** `main` @ `f0ef314` `[audited 052d122]` + this codification. Item 5 (OS-disk replacement) closed at
-C14h-j. The **C15 arc** is open and **the second role now EXISTS on `main`**: `ansible/applications/windows_disk_manager/`
-(defaults, byte-identical local v3.1.0 loader, `validate.yml`, `present_windows.yml`, README), wired FIRST into
-**both** playbooks. It will replace the `wsus` disk region entirely. Plan of record:
-**`_handoff/steps/C15-arc.plan-v3.md`** (v1 and v2 kept for the record; both were REVISEd twice by Fable + Sol).
+**STATE:** `main` @ `8ee53a4` `[audited 5ff8d5f]` + this codification. Item 5 (OS-disk replacement) closed at
+C14h-j. The **C15 arc** is open: the second role `ansible/applications/windows_disk_manager/` exists on main
+(WDM-0/WDM-1). Plan of record: **`_handoff/steps/C15-arc.plan-v3.md`**.
 
-**PIVOT (Director, 2026-07-20 late): BUILD `windows_disk_manager` PROVISIONING FIRST, then `wsus` consumes.**
-The Director ripped the disk-provisioning region OUT of the wsus role directly (it is 100% out of scope for
-wsus — WDM owns ALL disk; wsus receives only drive letters). That rip-out is the W-c intent pulled forward,
-but it is HELD (on branch `wip/wsus-disk-strip`, + a scratchpad patch) and NOT on main: wsus must keep
-provisioning until WDM can, or the composed two-role playbook has no volumes to install onto. So the active
-next piece is **`WDM-2`** (read-only resolver) and the whole WDM provisioning arc (WDM-2..11), per
-`_handoff/steps/C15-arc.plan-v3.md`. Only after WDM-11 does the wsus reframe land (W-c): delete the disk
-region, hand letters over, and reframe the DB flow.
+**C16 (2026-07-21) — the wsus DB reframe + `mode` removal, PULLED FORWARD and DONE.** The Director pulled the
+DB-flow half of the wsus reframe ahead of the WDM arc and it merged. `mode` is GONE. Greenfield and adopt now
+run ONE linear DB block, gated on **postinstall-changed**, differing by a single `when:` on the copy:
+detect BOTH SUSDB files on the data volume (empty|present|partial) → copy C:→E: only when empty (adopt skips)
+→ attach from E: + verify (unhealthy: `sp_detach_db` then throw, **NEVER DROP**) → delete C: only when healthy.
+**The attach-before-postinstall idea was ABANDONED** — it leaned on MS-undocumented postinstall-reuse the
+Director didn't trust; the chosen **install-then-reconcile** flow makes postinstall do its plain documented
+thing (create on C:) then discards the throwaway and attaches the adopted DB. Empirically proven on the
+OS-swap lab: **postinstall-then-swap PRESERVES the adopted ServerId + catalog** (the "don't trust MS" question,
+answered). `wsus-adopt.yml` DELETED (one playbook; role auto-detects). Dual-audited HAPPY (Fable + Sol). See
+`RTRACK-C16.md`. This SUPERSEDES the old C16a/C16b/W-b plans (do not build them).
 
-**THE wsus REFRAME (lands at W-c, AFTER WDM-11):** two paths, DETECTED never declared — (1) full new
-deployment, all fresh disks; (2) OS disk replaced, all data disks kept (the ROUTINE weekly AMI-rotation path).
-The DB flow collapses to the Director's 2-step: install the WSUS role → if a SUSDB already exists on the data
-volume, ATTACH-before-postinstall so postinstall reuses it (then sweep any C: remnant); else move the DB
-C:→E:. `mode`, `wsus-adopt.yml`, and the C14a interlock all go. **HARD PROOF REQUIREMENT (Director "I don't
-trust Microsoft to behave"):** attach-before-postinstall must be EMPIRICALLY re-proven in the new flow, not
-taken from MS docs (RTRACK-C14b-c hand-proved it once; re-prove it here). This SUPERSEDES C16a/C16b and W-b —
-all three are folded into the single post-WDM wsus reframe; do not build them standalone.
+**WHAT REMAINS of the wsus reframe (the DISK half, still at W-c after WDM):** WDM owns ALL disk; wsus should
+receive only drive letters. The Director's disk-provisioning rip-out is HELD on branch `wip/wsus-disk-strip`
+(NOT on main — wsus must keep provisioning until WDM can, or the composed playbook has no volumes). So the
+**ACTIVE NEXT piece is `WDM-2`** (read-only resolver) and the WDM provisioning arc (WDM-2..11), per
+`C15-arc.plan-v3.md`. Only after WDM-11 does W-c land: delete the wsus disk region, hand letters over.
+**Drive-letter ownership (WDM-7) is LOAD-BEARING for C16's adopt path** — the DB detect probes E: (the
+configured letter); an adopted volume on a different letter is missed. On the lab letters land by ordering
+luck (`RTRACK-C14b-c`); WDM-7 makes it contract. Path 2 (weekly AMI rotation) depends on it.
 
 > **Memory links are dead.** The per-session memory store was **purged 2026-07-20** at the Director's
 > instruction — it was reinforcing an anti-pattern (see `_handoff/RESTART.md` §8). **`_handoff/RESTART.md` is
@@ -296,8 +297,7 @@ all three are folded into the single post-WDM wsus reframe; do not build them st
 | WDM-0 | ✅ merged `00f34a8` `[audited 95f5f9d]` — composer harness (multi-role overlay + `COMPOSE_PLAYBOOK`) |
 | WDM-1 | ✅ merged `cfd2979` `[audited 6fa53d9]` — role skeleton + platform/vendor contract + two-role composition. **P5 codified retroactively**; see the caveat below |
 | C06j | ✅ merged `f0ef314` `[audited 052d122]` — gate the C06i C: originals delete on the relocation probe, not E: health alone. Closes a pre-existing data-loss path (deleted un-copied C: files on a 'relocated' host). Six-run matched-pair proof; RTRACK-C06j |
-| ~~C16a~~ | ⛔ **SUPERSEDED by the pivot** — P0+P2-AGREE (harden adopt-attach nochange). Its logic folds into the post-WDM wsus DB reframe; do not build standalone. `C16a.plan.json` kept for the design |
-| ~~remove `mode`~~ / ~~W-b~~ | ⛔ **SUPERSEDED** — folded into the post-WDM wsus reframe (W-c). Not standalone pieces |
+| **C16** | ✅ **merged `8ee53a4` `[audited 5ff8d5f]`** — remove `mode`; ONE linear DB flow (detect-not-declare), install-then-reconcile, attach-never-deletes, two-file partial fail-closed; `wsus-adopt.yml` deleted. Greenfield ok=69/changed=35; adopt lab ok=65/changed=22 (ServerId+catalog preserved); DROP-safety + both partial negatives proven; dual-audit HAPPY. Supersedes C16a/C16b/W-b. `RTRACK-C16` |
 | **WDM-2** | ⛏️ **ACTIVE NEXT** — read-only resolver (`win_powershell`, needs `[CmdletBinding(SupportsShouldProcess)]` or check mode skips it). Per `C15-arc.plan-v3.md`. wsus keeps provisioning throughout the WDM build (rip-out held on `wip/wsus-disk-strip`) |
 | WDM-3..11 | ⛏️ dispatch → emptiness gate → bounded onlining → letter preflight → two-phase reconcile → init/partition/format+label → readiness fact. Seam = drive letter (D8) |
 | WDM-3..11 | ⛏️ queued — adapter dispatch → emptiness gate → onlining → letter preflight (**WDM-7 owns drive letters — LOAD-BEARING for weekly path-2 CI, not polish**) → reconcile → init/partition/format → readiness fact |
