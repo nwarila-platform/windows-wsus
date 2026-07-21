@@ -13,7 +13,7 @@
 #      (its roles_path resolves roles by bare name).
 #
 # Usage: scripts/compose-and-run.sh [-e env=int] [any extra ansible-playbook args...]
-#        COMPOSE_PLAYBOOK=wsus-adopt.yml to select a playbook under ansible/playbooks/.
+#        COMPOSE_PLAYBOOK=<name>.yml to select a playbook under ansible/playbooks/ (default wsus.yml).
 #        SKIP_REVERT=1 to bypass the snapshot-revert gate (composition testing only).
 #        REVERT_TO=pre-<piece> to revert to the rolling per-step snapshot instead of
 #        the fresh-OS baseline (passed through to revert-vm.sh; VM-LIFECYCLE.md §2).
