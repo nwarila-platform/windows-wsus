@@ -15,7 +15,7 @@
         },
         "StringLike": {
           "token.actions.githubusercontent.com:sub": "repo:nwarila-platform/windows-wsus:*",
-          "token.actions.githubusercontent.com:job_workflow_ref": "nwarila-platform/windows-wsus/.github/workflows/deploy.yml@*"
+          "token.actions.githubusercontent.com:job_workflow_ref": "nwarila-platform/windows-wsus/.github/workflows/aws-deploy.yml@*"
         }
       }
     }
