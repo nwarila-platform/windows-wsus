@@ -11,3 +11,9 @@
 # local-only secrets / scratch (never commit credentials)
 *.secret
 temp-password*
+
+# Withheld from the public repository (Director, 2026-07-29): these enumerate findings that are
+# still OPEN in secure-wazuh, a public sibling. Publishing them before those findings close would
+# hand out a map of live weaknesses. They stay on disk and are re-evaluated when the backport lands.
+_handoff/AWS-IAM-AUDIT-wazuh.md
+_handoff/WAZUH-IAM-BACKPORT.md
