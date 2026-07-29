@@ -38,6 +38,9 @@ readonly -a FOREIGN_IDENTITY_PATTERNS=(
     'secure-wazuh'
     'wazuh'
     'pdq-deploy-inventory'
+    '1316209027'               # pdq-deploy-inventory repository id — a partial substitution with a SIBLING's
+                              # id is the fail-open case this gate exists for, and the
+                              # twelve-digit account rule does not catch a 10-digit id
     '1307854438'              # secure-wazuh repository id — the sharpest fail-open of the audit
     '230745524'               # nwarila-platform owner id (only ever appeared in a dead subject)
     'sg-06a3a06bcc4413c10'    # secure-wazuh's retired standing security group
