@@ -70,7 +70,7 @@ if os_disk_probe="$(timeout --kill-after="${IDENTITY_PROBE_KILL}" "${IDENTITY_PR
 else
     probe_rc=$?
 fi
-os_disk_id="$(printf '%s' "${os_disk_probe}" | tr -d '\r')"
+os_disk_id="${os_disk_probe%$'\r'}"
 
 if [ "${probe_rc}" -ne 0 ] || [ -z "${os_disk_id}" ] \
    || [ "${os_disk_id}" != "${EXPECTED_OS_DISK_ID}" ]; then
@@ -89,7 +89,7 @@ if [ "${probe_rc}" -ne 0 ] || [ -z "${os_disk_id}" ] \
         echo "!! possible too (disk renumbering, a replaced or reset OS disk). Establish which" >&2
         echo "!! before concluding." >&2
     else
-        echo "!! The probe did not return a usable value, so identity is UNKNOWN — not proven" >&2
+        echo "!! The probe exit status or returned value was unusable, so identity is UNKNOWN — not proven" >&2
         echo "!! wrong. Check reachability first; conclude nothing about which machine answered." >&2
     fi
     exit 1
