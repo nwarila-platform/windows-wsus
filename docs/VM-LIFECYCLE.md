@@ -99,11 +99,13 @@ any cycle uses it.
   machine answered. The hostname does not establish identity either: a full clone
   of this VM answers with the same name unless it is renamed.
 - After SSH becomes reachable, `scripts/revert-vm.sh` opens a bounded probe and
-  requires Disk 0 to present the OS-disk id recorded in §1 before it sends the
-  guest's first mutating command. This verifies only the connection opened by that
-  probe. It does **not** bind the later, separate connection used for the playbook
-  run. If this VM and a clone both claim the static address, those two connections
-  can reach different machines.
+  requires the Disk 0 value to match the OS-disk id recorded in §1 byte-for-byte
+  after removing the single terminal carriage return left by the PowerShell CRLF
+  line ending. Embedded carriage returns and every other payload difference remain
+  mismatches. The gate runs before the guest's first mutating command. This verifies
+  only the connection opened by that probe. It does **not** bind the later, separate
+  connection used for the playbook run. If this VM and a clone both claim the static
+  address, those two connections can reach different machines.
 - If the LAN itself ever changes (subnet/gateway), that is a baseline-level change:
   set the new static config, then re-baseline (§3), then update
   `ansible/inventory/vmware.yml`, `scripts/revert-vm.sh`, and the session runbook
@@ -117,8 +119,8 @@ any cycle uses it.
 |---|---|---|
 | `revertToSnapshot` errors | snapshot name drift / duplicate chain | `listSnapshots`, restore exactly-one-name invariant (§4) |
 | SSH never returns post-revert | VM left powered off; IP moved; guest firewall | `vmrun list` → `start nogui`; `getGuestIPAddress`; console via Workstation GUI |
-| Identity probe succeeded, but Disk 0 returned a non-empty id that does not match §1 | A different machine answering the address is most likely; same-machine causes include disk renumbering or a reset/replaced OS disk | Establish which VMs are running and which machine holds the address before drawing a conclusion. If another machine answered, nothing observed on it is evidence about this VM |
-| Identity probe failed or returned no usable value | Transport failure, a `Get-Disk` error, or a timeout; identity is unknown, not proven wrong | Check reachability and the reported probe diagnostics first; conclude nothing about which machine answered |
+| Identity probe exited zero, but the non-empty Disk 0 value does not match §1 byte-for-byte | A different machine answering the address is most likely; same-machine causes include disk renumbering or a reset/replaced OS disk | Establish which VMs are running and which machine holds the address before drawing a conclusion. If another machine answered, nothing observed on it is evidence about this VM |
+| Identity probe exited non-zero, or exited zero with an empty Disk 0 value | Transport failure, a `Get-Disk` error, a timeout, or another probe failure; identity is unknown, not proven wrong. A displayed correct-looking value does not override a non-zero status | Check reachability and the reported probe diagnostics first; conclude nothing about which machine answered |
 | `getGuestIPAddress` errors | Tools not running (baseline damage) | boot fully, check `Get-Service VMTools`; if truly gone, re-baseline from scratch |
 | Key auth suddenly fails | controller agent empty after reboot (NOT the VM) | `ssh-add -l` first — two-command fix in `docs/KEY-RELOAD.md` |
 | Guest clock skew after revert | memory-snapshot resume | expected; `revert-vm.sh` fires `w32tm /resync` |
