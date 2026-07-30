@@ -12,8 +12,8 @@
 *.secret
 temp-password*
 
-# Withheld from the public repository (Director, 2026-07-29): these enumerate findings that are
-# still OPEN in secure-wazuh, a public sibling. Publishing them before those findings close would
-# hand out a map of live weaknesses. They stay on disk and are re-evaluated when the backport lands.
-_handoff/AWS-IAM-AUDIT-wazuh.md
-_handoff/WAZUH-IAM-BACKPORT.md
+# Strict-cycle audit trail — process records, not repository content (Director, 2026-07-30).
+# The whole tree is ignored, and it was purged from history the same day, so this supersedes the
+# earlier per-file withholding of the wazuh IAM audit and backport notes: nothing under _handoff/
+# can reach a commit by any path. The files stay on disk and are read by every session.
+**/_handoff/
