@@ -5,15 +5,21 @@
 *.retry
 *.log
 
-# strict-cycle worktrees live outside the repo (../.worktrees) but guard anyway
+# build worktrees live outside the repo (../.worktrees) but guard anyway
 .worktrees/
 
 # local-only secrets / scratch (never commit credentials)
 *.secret
 temp-password*
 
-# Strict-cycle audit trail — process records, not repository content (Director, 2026-07-30).
-# The whole tree is ignored, and it was purged from history the same day, so this supersedes the
-# earlier per-file withholding of the wazuh IAM audit and backport notes: nothing under _handoff/
-# can reach a commit by any path. The files stay on disk and are read by every session.
+# Working notes and audit trail — process records, not repository content. The whole tree is
+# ignored and was purged from history, so nothing under it can reach a commit by any path.
+# The files stay on disk and are read by every session.
 **/_handoff/
+
+# Local operating notes, role contracts and position tracking. Deliberately kept out of the
+# repository: they describe how the work is organised, not what the software does.
+ROADMAP.md
+AGENTS.md
+.claude/
+docs/session-runbook.md

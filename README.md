@@ -30,7 +30,5 @@ scripts/compose-and-run.sh -e env=int
 | `terraform/` | **NOT ACTIVE** — future proxmox-terraform-framework consumer |
 | `docs/ansible-style-guide.md` | The org style & design guide (grows per cycle) |
 | `docs/TECH-DEBT.md` | Known debt (TD-001: framework loader Windows gap) |
-| the working notes | cycle ceremony: queue, work orders, review ledger |
 
-Status: **skeleton** — role logic is built one command at a time via the adapted
-cycle; see `AGENTS.md`.
+Status: **skeleton** — role logic is built one command at a time; see `AGENTS.md`.

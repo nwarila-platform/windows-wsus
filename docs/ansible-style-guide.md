@@ -32,12 +32,11 @@
   upstream framework PR only.
 - **RATIFIED (Director, 2026-07-15):** `tasks/main.yml` is intentionally a generic,
   hash-matched global loader. Any recommended change and/or optimization
-  recommendation targeting it MUST be validated by **two independent agents from
-  different model families — one an independent reviewer and one a second independent reviewer** — each
+  recommendation targeting it MUST be validated by **two independent reviewers,
+  drawn from different sources so their judgements are not correlated** — each
   independently confirming (i) the change is warranted at all (default NO) and
   (ii) it is a generic improvement that fits EVERY consuming role comfortably,
-  preserving the hash-match invariant. Full gate:
-  the loader-change gate. Unanimous agreement + Director
+  preserving the hash-match invariant. Unanimous agreement + Director
   acceptance required; otherwise the loader does not change.
 - OS task files: `<state>_<family>[_<dist>[_<ver>]].yml`, resolved most-specific-first
   via `first_found`. This role ships `present_windows.yml` + `clean_windows.yml`
@@ -245,9 +244,8 @@ clobber, verified at the module source). These stay `quiet: true` with an action
 
 - Conventional Commits, scope = role name or `framework` (framework CI enforces
   upstream; this repo follows the same format).
-- Build process: one command per cycle via the cycle definition;
-  every cycle ends with a ledger row and any style-rule ratifications recorded here
-  with the cycle ID.
+- Build process: one command per cycle; every cycle ends with a ledger row and any
+  style-rule ratifications recorded here with the cycle ID.
 
 ## 8. Open questions (moved to RATIFIED/rule sections as cycles decide them)
 

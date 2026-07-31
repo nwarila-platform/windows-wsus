@@ -33,9 +33,9 @@
   with `ansible_facts.os_family != 'Windows'`, add a `win_tempfile`-based temp-dir
   branch, document Windows become/transport expectations in the chassis. Any future
   Windows role needs this; the workarounds here are the evidence base for that PR.
-  **Gate:** as a loader change, this proposal must pass
-  the loader-change gate (two independent validations,
-  generic-preservation proof, Director acceptance) BEFORE the upstream PR is opened.
+  **Gate:** as a loader change, this proposal must pass the loader-change gate (two
+  independent reviewers, generic-preservation proof, Director acceptance) BEFORE the
+  upstream PR is opened.
 - **Exit criteria:** framework release containing v3.1 → bump `.framework-pin` →
   delete the playbook workarounds → close TD-001.
 
@@ -64,8 +64,8 @@
 ## TD-003 — local v3 loader carries a `validate.yml` hook not yet upstream
 
 - **What:** `ansible/applications/wsus/tasks/main.yml` was bumped **v3.0.0 → v3.1.0** under a
-  one-time Director-approved exception (two independent reviewers: unanimous APPROVE, per
-  the loader-change gate) to add a GENERIC `INIT | Validating Merged
+  one-time Director-approved exception (two independent reviewers, unanimous APPROVE,
+  per the loader-change gate) to add a GENERIC `INIT | Validating Merged
   Configuration` hook: after merging the running config, the loader includes the role's optional
   `tasks/validate.yml` (`first_found`, skipped if absent), passing the merged `config`. This gives
   every role a place to assert its MERGED-config contract, which `meta/argument_specs.yml` cannot see.
@@ -76,7 +76,7 @@
   bytes in one commit; grep every consumer repo (incl. the 4 wazuh roles) for a pre-existing
   `tasks/validate.yml` before release; then bump `.framework-pin`, re-copy, and re-verify sha256
   equality → close TD-003 (restores the byte-identical invariant).
-- **Evidence:** the V change record + the both independent reviewers verdicts (loader-change gate).
+- **Evidence:** the piece's change record and both independent verdicts (loader-change gate).
 
 ## TD-004 — WsusPool tuning uses the deprecated `community.windows.win_iis_webapppool`
 
@@ -93,4 +93,4 @@
   migrate the `MAIN | Tune WsusPool Application Pool` task from `community.windows.win_iis_webapppool`
   to `microsoft.iis.web_app_pool` (verify the `attributes` mapping / parameter shape), add
   `microsoft.iis` to the composition's collection requirements, and re-run the C08 proofs → close TD-004.
-- **Evidence:** C08 packet `moduleChoice.moduleDeprecationNote` + the C08. change record
+- **Evidence:** the C08 plan's module-choice deprecation note and its change record.

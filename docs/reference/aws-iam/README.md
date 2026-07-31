@@ -4,7 +4,7 @@
 provisions the roles and policies; Terraform does not manage them.
 
 Cloned from `secure-wazuh` and **hardened during the clone** against four rounds of dual independent
-audit (the working notes). This document's most important section is the
+audit of a sibling repository's IAM. This document's most important section is the
 [substitution contract](#substitution-contract) — read it before applying anything.
 
 ## Substitution contract

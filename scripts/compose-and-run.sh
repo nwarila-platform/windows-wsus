@@ -108,7 +108,7 @@ validated_roles=()
 # rsync pass: validating and overlaying in one loop lets a valid role be written to the
 # framework tree before a later invalid one aborts the run, leaving a partial overlay behind.
 # Same rule the composer already applies to COMPOSE_PLAYBOOK (0a) — no side effect precedes
-# validation. (validation repair, WDM-0.)
+# validation.
 for role_source in "${role_sources[@]}"; do
     role_name="$(basename "${role_source}")"
 

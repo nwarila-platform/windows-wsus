@@ -6,8 +6,7 @@ ansible-framework v3 generic loader (`tasks/main.yml`, byte-identical — never 
 and a family-level `present_windows.yml` / `clean_windows.yml`.
 
 **Status: build in progress.** BEGIN input guards are implemented; later logic lands
-one command per cycle piece — see the build queue (repo root) for the build
-queue.
+one command per piece.
 
 ## Configuration
 
@@ -34,7 +33,7 @@ Each value is the case-sensitive Windows disk `unique_id` (for example,
 `community.windows.win_disk_facts` as the disk's `unique_id`. The role requires one
 exactly matching attached disk for each identifier. Drive letters, labels, and
 filesystem conventions are documented here for the fixed mapping but land as
-consumed configuration one cycle piece at a time.
+consumed configuration one piece at a time.
 
 ### Merged configuration
 
