@@ -44,8 +44,8 @@
           label: 'WSUSIIS'
           allocation_unit: 4096
     wsus:
-      # TD-001: disable the local loader's POSIX temp-dir; the role owns its staging via
-      # ansible.windows.win_tempfile.
+      # TD-001: disable the local loader's POSIX temp-dir because the WSUS role does not
+      # consume the loader-provided staging directory.
       temp_dir: false
       # Upstream WSUS server (C11d): this server is a DOWNSTREAM of the named upstream WSUS
       # (SyncFromMicrosoftUpdate=false). REQUIRED input (validate.yml asserts it) — no default.
