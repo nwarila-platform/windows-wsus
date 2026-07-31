@@ -11,7 +11,7 @@
 # to exactly one attached disk. The Main region's state-aware safety guard authorizes provisioning.
 # Config-contract invariants (id distinctness) live in tasks/validate.yml (run by the
 # loader). Later pieces (C02c+) append the volume mutations after the Main region, one
-# command per cycle piece.
+# command per piece.
 #
 # =========================================================================================== #
 ---
@@ -44,7 +44,7 @@
     # SUSDB relocation target, same no-drift derivation as __content_dir__. Renders e.g. E:\WID\Data.
     __wid_data_dir__: "{{ config.data_disks.db.drive_letter }}:\\{{ config.db_subdir }}"
     # WID instance's fixed default data directory under %SystemDrive% (MS-specified; SUSDB installs
-    # here — ground truth the C05 change record). Derived from the gathered SystemDrive fact, NOT literal C:
+    # here — measured on the target). Derived from the gathered SystemDrive fact, NOT literal C:
     # and NOT from db_subdir (which names the configurable E: TARGET; the source is fixed by WID).
     __wid_source_dir__: "{{ ansible_facts.env.SystemDrive }}\\Windows\\WID\\Data"
     # Fixed WID master named-pipe connection string (architectural constant: the WID instance pipe is
@@ -52,7 +52,7 @@
     # literal is defined once and no raw \\.\pipe\ backslashes sit in PowerShell source (split_args-safety).
     __wid_conn_master__: 'server=\\.\pipe\MICROSOFT##WID\tsql\query;database=master;trusted_connection=true;'
     # The four 'Installed Role Services' completion flags written at the END of each postinstall component
-    # (measured =2, the C05 change record). Hoisted to block scope (C14a) so the C05 postinstall gate AND the C14a
+    # (measured =2). Hoisted to block scope (C14a) so the C05 postinstall gate AND the C14a
     # data-loss interlock consume ONE derivation — a second, divergent copy would be a latent inconsistency.
     # Block vars are lazily evaluated, so referencing the mid-block register is fine.
     __postinstall_flags__: >-
@@ -339,7 +339,7 @@
         state: present
 
     # Read-only completion-truth probe: the four Installed Role Services flags are written at
-    # the END of each postinstall component (measured =2 live, the C05 change record). Get-WsusServer is
+    # the END of each postinstall component (measured =2 live). Get-WsusServer is
     # runtime-truth and failed when the C06 arc legitimately stopped the stack; a midway
     # postinstall death leaves flags !=2, so the documented repair operation re-runs.
     # Runtime verification belongs to C07.
@@ -1041,7 +1041,7 @@
         $wantNorm = Normalize-Target $wantTarget
         # logTargetW3C (a flags enum) is returned as a plain String by Get-WebConfigurationProperty /
         # Get-ItemProperty — NOT a wrapper with .Value (unlike 'directory'), so read it via [string](...)
-        # (a .Value read yields empty and would loop-set + false-fail the verify). (validation repair.)
+        # (a .Value read yields empty and would loop-set + false-fail the verify).
         $sdCur = [string](Get-WebConfigurationProperty -filter 'system.applicationHost/sites/siteDefaults/logFile' -name logTargetW3C)
         if ((Normalize-Target $sdCur) -ne $wantNorm) {
             Set-WebConfigurationProperty -filter 'system.applicationHost/sites/siteDefaults/logFile' -name logTargetW3C -value $wantTarget
@@ -1057,7 +1057,7 @@
         $cfFilter = 'system.applicationHost/sites/siteDefaults/logFile/customFields'
         # PS 5.1: `@(pipeline | ConvertFrom-Json)` wraps a JSON array as ONE jagged element (member
         # enumeration then makes $f.field an array -> DISP_E_TYPEMISMATCH on Add). Assign the command
-        # result first, THEN @() it, so each $f is a scalar-valued object. (validation repair.)
+        # result first, THEN @() it, so each $f is a scalar-valued object.
         $parsed = ConvertFrom-Json $env:CUSTOM_FIELDS
         $want = @($parsed)
         foreach ($f in $want) {

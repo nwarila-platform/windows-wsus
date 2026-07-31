@@ -70,7 +70,7 @@ scripts/revert-vm.sh                                   # 1. start from the CURRE
 scripts/revert-vm.sh                                   # 6. prove the new baseline reverts + SSH-ready
 ```
 Then update the baseline description in §1 and the date/contents note in `AGENTS.md`,
-and run the smoke proof (S3 in the session runbook §6 / first composed run) before
+and run the smoke proof (the first composed run) before
 any cycle uses it.
 
 ## 4. Snapshot hygiene
@@ -115,8 +115,8 @@ any cycle uses it.
   address, those two connections can reach different machines.
 - If the LAN itself ever changes (subnet/gateway), that is a baseline-level change:
   set the new static config, then re-baseline (§3), then update
-  `ansible/inventory/vmware.yml`, `scripts/revert-vm.sh`, and the session runbook
-  §4/§6 together — grep the old IP repo-wide.
+  `ansible/inventory/vmware.yml` and `scripts/revert-vm.sh` together — grep the old IP
+  repo-wide.
 - Discovery fallback if the guest is ever unreachable at the expected address:
   `"$VMRUN" getGuestIPAddress "$VMX"` (needs Tools running).
 
