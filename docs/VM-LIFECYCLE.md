@@ -21,11 +21,12 @@ known-clean state.*
   OS (DO NOT touch) `eui.D71C311D211B6731000C296D8345C5CC`.
   The OS entry above is the recorded value enforced by the identity gate in
   `scripts/revert-vm.sh`; §5 defines the connection-scoped guarantee.
-- **The data disks are RAW on purpose.** Guest-side disk init (GPT/format/label/
-  letter) is the `wsus` role's job (style guide §4a — the role configures the handed
-  machine end-to-end). The baseline provides only the *hardware*; a formatted disk in
-  the baseline would be a forbidden un-diffable artifact. Every clean revert therefore
-  hands the role blank disks, exercising its init path each run.
+- **The data disks are RAW on purpose.** Guest-side disk initialization, formatting,
+  labeling, and letter assignment are declared in `ansible/playbooks/wsus.yml` and performed
+  by the framework's `windows_disk_manager` role before `wsus`. The baseline provides
+  only the *hardware*; a formatted disk in the baseline would be a forbidden
+  un-diffable artifact. Every clean revert therefore hands the composed play blank
+  disks, exercising the provisioner's initialization path each run.
 - Baseline history: v1 clean+SSH → v2 +static IP → v3 +2 vCPU/4 GB → v4 +2 disks
   (formatted; superseded) → v5 disks wiped RAW (the E2E-role decision) → **v6 +3rd RAW
   disk (20 GB WSUSIIS, `nvme0:3`)** for the whole-WSUS-IIS-site relocation arc (Director
@@ -53,8 +54,9 @@ known-clean state.*
 
 Triggers: credential rotation, Tools/OS servicing worth baking in, **hardware**
 changes (vCPU/RAM, adding/removing disks — a fresh raw disk is hardware; formatting
-it is NOT, that's the role's job per §4a), TD-001 exit (loader v3.1), transport
-changes. Note: adding a disk requires the VM **powered off** AND the snapshot
+it is NOT, and belongs to the composed play's `windows_disk_manager` step), TD-001
+exit (local loader replacement), transport changes. Note: adding a disk requires the
+VM **powered off** AND the snapshot
 **deleted first** (memory snapshots pin the old hardware set) — see the v4 disk-add
 in this file's history.
 
@@ -135,8 +137,9 @@ any cycle uses it.
 
 ## 7. Ownership boundaries
 
-- Guest-OS state changes come from exactly two sources: **the role under build**
-  (reverted away every run) or **the re-baseline procedure** (§3, Director-approved).
-  Hand-edits to the guest outside those two paths invalidate the baseline guarantee.
+- Guest-OS state changes come from exactly two sources: **the roles run by the
+  composed play** (reverted away every run) or **the re-baseline procedure** (§3,
+  Director-approved). Hand-edits to the guest outside those two paths invalidate the
+  baseline guarantee.
 - VM hardware/config changes (disks, NIC mode, CPU/RAM) are Director-level decisions
   and always end with a re-baseline (§3).
