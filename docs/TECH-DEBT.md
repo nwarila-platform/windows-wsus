@@ -39,27 +39,18 @@
 - **Exit criteria:** framework release containing v3.1 → bump `.framework-pin` →
   delete the playbook workarounds → close TD-001.
 
-## TD-002 — chassis ansible-lint config conflicts with the ratified `#region` idiom
+## TD-002 — CLOSED: chassis ansible-lint config supports the `#region` idiom
 
-- **Recorded:** 2026-07-15 (C01/P4 discovery; pending Director disposition)
-- **Where:** framework chassis `.ansible-lint` (`profile: safety`, `warn_list` lacks
-  `yaml[comments]`)
-- **Symptom:** the documented gate `(cd .compose/ansible-framework && ansible-lint
-  applications/wsus)` exits 2 with every `#region`/`#endregion` banner counted as a
-  fatal `yaml[comments]` violation (34 in the wsus role at C01). This is NOT a wsus
-  problem: the framework's own `applications/python3_pip` fails its own gate
-  identically (exit 2). The chassis `.yamllint.yml` already treats the same banners
-  as warnings — the two chassis configs disagree about the established idiom.
-- **Interim gate (used from C01 on, proposed in review and independently validated):**
-  `ansible-lint --warn-list 'yaml[comments]' applications/wsus` — 0 failures /
-  34 warnings, matching the yamllint stance. The verification snippet in `AGENTS.md`
-  still shows the plain command; update it once the Director accepts this gate.
-- **Proper fix:** upstream framework PR adding `yaml[comments]` to the chassis
-  `.ansible-lint` `warn_list` (config-only; NOT a loader change, so the normal PR
-  process applies — no loader-change-protocol gate needed). Evidence base: this
-  entry + C01 lint logs.
-- **Exit criteria:** framework release with the warn_list fix → bump
-  `.framework-pin` → drop the `--warn-list` flag from the gate → close TD-002.
+- **Recorded:** 2026-07-15
+- **Closed:** 2026-07-30 by framework pin
+  `5f5cae8104a8a64fd923e5c20271d0591d891bc9`.
+- **Original issue:** the framework chassis `.ansible-lint` safety profile treated every
+  `#region` / `#endregion` banner as a fatal `yaml[comments]` violation, while the chassis
+  `.yamllint.yml` already treated the same established idiom as a warning.
+- **Resolution observed:** the pinned framework's `.ansible-lint` now includes
+  `yaml[comments]` in `warn_list`. The plain composed-tree `ansible-lint` command therefore
+  reports these comments as warnings without failing. No repository-side gate override is
+  needed.
 
 ## TD-003 — local v3 loader carries a `validate.yml` hook not yet upstream
 
