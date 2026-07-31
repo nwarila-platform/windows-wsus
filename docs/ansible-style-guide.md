@@ -25,11 +25,13 @@
   running config materializes as `<role>_running`; playbook overrides use the bare
   `<role>:` dict. (Loader v3 contract.)
 
-## 3. Loader contract — SEEDED (framework v3.0.0)
+## 3. Loader contract — SEEDED (framework v3.2.1; local WSUS v3.1.0)
 
-- Every role ships the framework's generic loader as `tasks/main.yml`,
+- Every role must ship the framework's generic loader as `tasks/main.yml`,
   **byte-identical, never edited per-role**. Loader changes are governance-surface →
   upstream framework PR only.
+- The local WSUS loader currently diverges from the pinned shared loader; this
+  implementation debt is recorded in `docs/TECH-DEBT.md`.
 - **RATIFIED (Director, 2026-07-15):** `tasks/main.yml` is intentionally a generic,
   hash-matched global loader. Any recommended change and/or optimization
   recommendation targeting it MUST be validated by **two independent reviewers,
@@ -64,18 +66,22 @@
 
 ## 4a. Role scope — the "handed machine" contract — RATIFIED (Director, 2026-07-15)
 
-- The application role configures the target **end-to-end**. Its input contract is a
-  machine handed to it as **OS + reachable SSH + attached-but-blank data disks** —
-  exactly what a fresh Terraform-provisioned (today: snapshot) VM provides. From that
-  point the role owns **all guest OS state**: storage init (Initialize/format/label/
-  assign), features, app install, configuration, and verification.
+- **RATIFIED (Director, 2026-07-31) — composed-play ownership amendment.** The owner
+  of guest OS state is the **composed play and its ordered roles**, not a single
+  application role. Its input contract is a machine handed to it as **OS + reachable
+  SSH + attached-but-blank data disks** — exactly what a fresh Terraform-provisioned
+  (today: snapshot) VM provides. Guest disk provisioning through drive-letter
+  assignment belongs to the shared `windows_disk_manager` role, which runs first; the
+  application role consumes the resulting volumes by drive letter and owns application
+  features, installation, configuration, and verification.
 - **Boundary:** *hardware provisioning* (disk count/size/attachment, vCPU/RAM, NIC)
   belongs to the deploy layer (baseline snapshot now, proxmox-terraform-framework
-  later). *Guest OS state* belongs to the role. Formatting a disk into the baseline
-  image is FORBIDDEN — it must be role-declared code, proven on every clean revert.
+  later). *Guest OS state* belongs to the composed play and its ordered roles.
+  Formatting a disk into the baseline image is FORBIDDEN — it must be role-declared
+  code, proven on every clean revert.
 - This intentionally **diverges from wazuh**, where storage prep is an operator/packer
-  prerequisite outside the app role. For nwarila-platform Windows app repos the app
-  role is the single E2E configurator of the machine it is handed.
+  prerequisite outside the composed Ansible play. For nwarila-platform Windows app
+  repos the composed play is the end-to-end configurator of the machine it is handed.
 - Disk identification is **declarative by a stable per-disk identifier — never
   disk-number- nor size-coupled** (amended C01r, 2026-07-15): select the target disk
   by its declared `unique_id` (Windows Get-Disk `UniqueId` / `win_disk_facts.unique_id`,
@@ -105,8 +111,7 @@ clobber, verified at the module source). These stay `quiet: true` with an action
 - The guard stage is **read-only on the target**: facts gathering, asserts, and **scoped
   resolution vars** — a block `vars:` attribute deriving a declared-spec → resolved-object from
   gathered facts (no mutation, and NEVER `set_fact`, which bleeds across roles — see §4). The
-  first *mutating* task belongs to the piece that owns it, never a guard. (Exercised: R3 —
-  `__data_disks__[].matches` resolves each disk once, reused by the Attached assert + safety guard.)
+  first *mutating* task belongs to the piece that owns it, never a guard.
 - Facts are gathered **once**, at the superset the load-bearing path needs; a mutating piece owns
   its own post-mutation refresh.
 - Declarative resource selection resolves to **exactly one** match per declared spec (assert
@@ -114,9 +119,10 @@ clobber, verified at the module source). These stay `quiet: true` with an action
   `| first`). Zero and multiple are both hand-off failures. Declared specs must be mutually
   distinguishable (e.g. distinct identifiers).
 - The declared CONFIG contract (post-merge `config.*`) is validated in ONE place where `config` is
-  in scope — the role's `tasks/validate.yml`, run by the v3.1.0 loader's
-  `INIT | Validating Merged Configuration` hook — **never** `meta/argument_specs.yml` (structurally
-  blind to the merged `config`; see §8).
+  in scope — the role's `tasks/validate.yml`, run by the loader's
+  `INIT | Validating Merged Configuration` hook (local WSUS v3.1.0 and shared framework
+  v3.2.1) — **never** `meta/argument_specs.yml` (structurally blind to the merged
+  `config`; see §8).
 - Guard pieces carry a negative proof (deliberately-wrong input fails on the intended assert;
   sibling specs still pass). (Exercised: C01 / C01r / C02a / C02b / V.)
 
@@ -125,12 +131,22 @@ clobber, verified at the module source). These stay `quiet: true` with an action
 - A piece that MUTATES a declared resource carries a **state-aware safety assert BEFORE
   the first mutation** — the destructive analog of the §4b read-only guard. It refuses
   to clobber a resource that does not match the managed layout, recognizing an
-  already-managed target by a **declared convention** (e.g. the disk's target drive
-  letter), NEVER by size or enumeration number. Blank/RAW, already-ours, and neutral
-  (unlettered) states proceed; a foreign/occupied state refuses loudly with an
-  actionable `fail_msg`. (Exercised: C02b — RAW or our-drive-letter → provision; a
-  foreign drive letter → refuse. Idempotency: recognizing 'ours' lets a converged
-  resource pass, which a blank-only guard would wrongly reject.)
+  already-managed target by a **declared convention** (for example, an NTFS volume's
+  declared label), NEVER by size or enumeration number. Blank/RAW, already-ours, and
+  positively recognized unformatted states proceed; a foreign/occupied state refuses
+  loudly with an actionable `fail_msg`. Recognizing the declared label lets an adopted
+  or converged volume pass, which a blank-only guard would wrongly reject.
+- **RATIFIED (Director, 2026-07-31) — named exception: pinned shared
+  `windows_disk_manager`.** The pinned shared role brings every declared disk online
+  and writable before classifying observed state and asserting that none is foreign.
+  It resets and accumulates `__resolved_disks__` with `set_fact`. Its attachment guard
+  resolves each declared `unique_id` to exactly one match; the later classifier repeats
+  that selection and uses `| first` to build its matched-disk input. This exception is
+  scoped only to that shared role. Its foreign-layout assert still precedes every
+  provisioning module (initialize, partition, and format). The application-role code
+  it replaced used the same online-before-guard ordering, so delegation did not
+  introduce that ordering. The general §4, §4b, and §4c requirements remain unchanged
+  for roles written in this repository.
 
 ## 5. Windows conventions — SEEDED (first Windows role; ratify via research per cycle)
 
@@ -146,10 +162,11 @@ clobber, verified at the module source). These stay `quiet: true` with an action
   `docs/TECH-DEBT.md`.
 - **RATIFIED (C02a, 2026-07-15 — supersedes the C01r §5-ext) — required per-target
   inputs live in the `<role>:` override dict, consumed via `config`.** Environment-
-  specific inputs the role cannot default (e.g. disk identifiers `wid_disk_id` /
-  `wsus_disk_id`) are declared inside the `<role>:` override dict (playbook /
-  group_vars / host_vars) and read as `config.<key>`, matching the framework/wazuh
-  idiom and the loader's `defaults -> overlays -> <role> override -> config` merge.
+  specific inputs the role cannot default (for example, `upstream_server` for `wsus`
+  or `disks[].unique_id` for `windows_disk_manager`) are declared inside the
+  corresponding `<role>:` override dict (playbook / group_vars / host_vars) and read
+  from that role's `config`, matching the framework/wazuh idiom and the loader's
+  `defaults -> overlays -> <role> override -> config` merge.
   Only `ENV`/`state` stay top-level (loader-level). NOTE: a `-e '{"<role>":{...}}'`
   override REPLACES the whole dict, so co-locate loader-read keys (`temp_dir`) with any
   `-e`/override-provided keys, and any override must re-state them. The README documents
@@ -258,8 +275,9 @@ clobber, verified at the module source). These stay `quiet: true` with an action
 - Argument specs (`meta/argument_specs.yml`) — **DECIDED (V, 2026-07-15): NOT adopted for
   enforcement.** The auto-inserted arg-spec validator runs BEFORE the v3 loader builds the merged
   `config` (verified empirically), so it is structurally blind to `config.*` and only duplicates the
-  loader's ENV/state assert. Merged-config validation lives in the role's `tasks/validate.yml` (run
-  by the loader's v3.1.0 `INIT | Validating Merged Configuration` hook, §4b). argument_specs is
-  permissible only as description-only documentation of the `<role>:` dict shape. _(superseded note)_ wazuh roles use them; python3_pip's
-  meta shape TBD against it.
+  loader's ENV/state assert. Merged-config validation lives in each role's
+  `tasks/validate.yml`, run by the local WSUS v3.1.0 or shared framework v3.2.1
+  `INIT | Validating Merged Configuration` hook (§4b). argument_specs is permissible
+  only as description-only documentation of the `<role>:` dict shape. _(superseded note)_
+  wazuh roles use them; python3_pip's meta shape TBD against it.
 - Secrets handling for Windows (no vault usage yet in this repo).
