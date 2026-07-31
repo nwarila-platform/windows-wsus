@@ -12,28 +12,22 @@
 ---
 #region ------ [ Script ] -------------------------------------------------------------------- #
 
-# Load-bearing config invariant: data-disk identifiers and drive letters must be DISTINCT. No
-# module and no arg-spec expresses wid/wsus/iis or E:/F:/G uniqueness; if duplicated, logical disks
-# can resolve to the SAME physical disk/partition (silent-wrong).
-- name: 'BEGIN | Assert Data Disk Identifiers And Drive Letters Are Distinct'
+# Load-bearing config invariant: application drive letters must be DISTINCT. The disk-manager
+# role validates its own declaration, but it cannot see this role's independently overrideable
+# path targets. A duplicate here silently sends two logical data purposes to one volume.
+- name: 'BEGIN | Assert Data Disk Drive Letters Are Distinct'
   when: (state | default('present') | string | lower | trim) == 'present'
   vars:
-    __disk_ids__:
-      - "{{ config.wid_disk_id | default('') | string | trim }}"
-      - "{{ config.wsus_disk_id | default('') | string | trim }}"
-      - "{{ config.iis_disk_id | default('') | string | trim }}"
     __disk_letters__:
       - "{{ config.data_disks.db.drive_letter | default('') | string | trim | upper }}"
       - "{{ config.data_disks.content.drive_letter | default('') | string | trim | upper }}"
       - "{{ config.data_disks.iis.drive_letter | default('') | string | trim | upper }}"
   ansible.builtin.assert:
     that:
-      - (__disk_ids__ | select | list | unique | length) == (__disk_ids__ | select | list | length)
       - (__disk_letters__ | select | list | unique | length) == (__disk_letters__ | select | list | length)
     fail_msg: >-
-      wsus.wid_disk_id/wsus_disk_id/iis_disk_id must each identify a DIFFERENT disk, and
-      data_disks.db/content/iis.drive_letter must each be a DIFFERENT letter. A collision makes two
-      logical disks resolve to the same physical disk/partition (silent-wrong). ids={{ __disk_ids__ }}
+      wsus.data_disks.db/content/iis.drive_letter must each be a DIFFERENT letter. A collision
+      sends two logical data purposes to the same volume (silent-wrong).
       letters={{ __disk_letters__ }}.
     quiet: true
 

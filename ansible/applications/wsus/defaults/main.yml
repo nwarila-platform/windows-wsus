@@ -5,8 +5,9 @@
 # Lowest-precedence configuration for the wsus role, merged by the v3 loader into
 # 'wsus_running' (defaults -> vars/<os>[_<env>].yml overlays -> playbook 'wsus:' dict).
 #
-# Populated one piece at a time via the build queue;
-# every key added here must be documented in the role README the same cycle.
+# Disk provisioning belongs to windows_disk_manager. This role uses the database and content
+# letters to build application paths; the IIS letter is only a drive-letter distinctness input,
+# while the IIS paths remain literal. Every key is documented in the role README.
 #
 # =========================================================================================== #
 ---
@@ -21,22 +22,14 @@ wsus_defaults:
   # DB drive lives in ONE place (data_disks.db.drive_letter) — no drift. Consumed by C06.
   db_subdir: 'WID\Data'
   data_disks:
-    # Drive letters consumed by the C02b state-aware safety guard (recognize an already-managed
-    # disk by its target letter). These labels + allocation units are consumed by C02e win_format:
-    # E: WSUSDB 64 KiB (SUSDB/SQL), F: WSUSDATA 4 KiB (WSUS content), and G: WSUSIIS 4 KiB
-    # (IIS working-dir disk; inetpub relocated here in C12b/c).
+    # Application path targets only. The playbook's windows_disk_manager declaration owns disk
+    # identity, provisioning, labels, and allocation units, and must assign these same letters.
     db:
       drive_letter: 'E'
-      label: 'WSUSDB'
-      allocation_unit: 65536
     content:
       drive_letter: 'F'
-      label: 'WSUSDATA'
-      allocation_unit: 4096
     iis:
       drive_letter: 'G'
-      label: 'WSUSIIS'
-      allocation_unit: 4096
   # MS WSUS best practices, "Disable recycling and configure memory limits". These are MS's
   # dedicated-host defaults; shared/co-located hosts should override private_memory_kb with a
   # finite limit and adjust the remaining WsusPool settings as required.
@@ -125,5 +118,5 @@ wsus_defaults:
     config_channel_enabled: true
     # Max size (bytes) for that channel; 20 MB mirrors the App/System sizing. C13i.
     config_channel_max_bytes: 20971520
-# Disk identity (wid_disk_id / wsus_disk_id) is declared in the 'wsus:' override dict and read as
-# config.wid_disk_id / config.wsus_disk_id (see README); this file holds role-default conventions.
+# Disk identity and volume-format conventions are declared for windows_disk_manager in the
+# playbook; this file holds only wsus role defaults.

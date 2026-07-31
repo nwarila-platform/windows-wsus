@@ -29,6 +29,6 @@ scripts/compose-and-run.sh -e env=int
 | `scripts/` | compose-and-run + snapshot revert helpers |
 | `terraform/` | **NOT ACTIVE** — future proxmox-terraform-framework consumer |
 | `docs/ansible-style-guide.md` | The org style & design guide (grows per cycle) |
-| `docs/TECH-DEBT.md` | Known debt (TD-001: framework loader Windows gap) |
+| `docs/TECH-DEBT.md` | Known debt (TD-001: local overlaid loader Windows gap) |
 
 Status: **skeleton** — role logic is built one command at a time; see `AGENTS.md`.
