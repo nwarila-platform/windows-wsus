@@ -5,8 +5,9 @@
 # Lowest-precedence configuration for the wsus role, merged by the v3 loader into
 # 'wsus_running' (defaults -> vars/<os>[_<env>].yml overlays -> playbook 'wsus:' dict).
 #
-# Disk provisioning belongs to windows_disk_manager. This role retains only the drive letters
-# it consumes when building WSUS, WID, and IIS paths. Every key is documented in the role README.
+# Disk provisioning belongs to windows_disk_manager. This role uses the database and content
+# letters to build application paths; the IIS letter is only a drive-letter distinctness input,
+# while the IIS paths remain literal. Every key is documented in the role README.
 #
 # =========================================================================================== #
 ---

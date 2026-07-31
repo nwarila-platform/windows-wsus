@@ -5,9 +5,11 @@
 # Complete install and configuration path for the wsus role on the Windows family (resolved by
 # the v3 loader via first_found). Receives the merged running configuration as 'config'.
 #
-# Disk provisioning is delegated to windows_disk_manager, which must run before this role. The
-# wsus role consumes the resulting volumes only by the configured E:/F:/G application paths.
-# Config-contract invariants owned by this role live in tasks/validate.yml.
+# Disk provisioning is delegated to windows_disk_manager, which the playbook runs first. The wsus
+# role builds WID and WSUS content paths from the database and content letters; its IIS letter is
+# only a distinctness-check input, while IIS paths are literal. Matching those letters to the
+# provisioner's declaration is required but unenforced. This role's configuration invariants live
+# in tasks/validate.yml.
 #
 # =========================================================================================== #
 ---

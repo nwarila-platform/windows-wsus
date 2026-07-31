@@ -66,18 +66,22 @@
 
 ## 4a. Role scope — the "handed machine" contract — RATIFIED (Director, 2026-07-15)
 
-- The application role configures the target **end-to-end**. Its input contract is a
-  machine handed to it as **OS + reachable SSH + attached-but-blank data disks** —
-  exactly what a fresh Terraform-provisioned (today: snapshot) VM provides. From that
-  point the role owns **all guest OS state**: storage init (Initialize/format/label/
-  assign), features, app install, configuration, and verification.
+- **RATIFIED (Director, 2026-07-31) — composed-play ownership amendment.** The owner
+  of guest OS state is the **composed play and its ordered roles**, not a single
+  application role. Its input contract is a machine handed to it as **OS + reachable
+  SSH + attached-but-blank data disks** — exactly what a fresh Terraform-provisioned
+  (today: snapshot) VM provides. Guest disk provisioning through drive-letter
+  assignment belongs to the shared `windows_disk_manager` role, which runs first; the
+  application role consumes the resulting volumes by drive letter and owns application
+  features, installation, configuration, and verification.
 - **Boundary:** *hardware provisioning* (disk count/size/attachment, vCPU/RAM, NIC)
   belongs to the deploy layer (baseline snapshot now, proxmox-terraform-framework
-  later). *Guest OS state* belongs to the role. Formatting a disk into the baseline
-  image is FORBIDDEN — it must be role-declared code, proven on every clean revert.
+  later). *Guest OS state* belongs to the composed play and its ordered roles.
+  Formatting a disk into the baseline image is FORBIDDEN — it must be role-declared
+  code, proven on every clean revert.
 - This intentionally **diverges from wazuh**, where storage prep is an operator/packer
-  prerequisite outside the app role. For nwarila-platform Windows app repos the app
-  role is the single E2E configurator of the machine it is handed.
+  prerequisite outside the composed Ansible play. For nwarila-platform Windows app
+  repos the composed play is the end-to-end configurator of the machine it is handed.
 - Disk identification is **declarative by a stable per-disk identifier — never
   disk-number- nor size-coupled** (amended C01r, 2026-07-15): select the target disk
   by its declared `unique_id` (Windows Get-Disk `UniqueId` / `win_disk_facts.unique_id`,
@@ -132,6 +136,17 @@ clobber, verified at the module source). These stay `quiet: true` with an action
   positively recognized unformatted states proceed; a foreign/occupied state refuses
   loudly with an actionable `fail_msg`. Recognizing the declared label lets an adopted
   or converged volume pass, which a blank-only guard would wrongly reject.
+- **RATIFIED (Director, 2026-07-31) — named exception: pinned shared
+  `windows_disk_manager`.** The pinned shared role brings every declared disk online
+  and writable before classifying observed state and asserting that none is foreign.
+  It resets and accumulates `__resolved_disks__` with `set_fact`. Its attachment guard
+  resolves each declared `unique_id` to exactly one match; the later classifier repeats
+  that selection and uses `| first` to build its matched-disk input. This exception is
+  scoped only to that shared role. Its foreign-layout assert still precedes every
+  provisioning module (initialize, partition, and format). The application-role code
+  it replaced used the same online-before-guard ordering, so delegation did not
+  introduce that ordering. The general §4, §4b, and §4c requirements remain unchanged
+  for roles written in this repository.
 
 ## 5. Windows conventions — SEEDED (first Windows role; ratify via research per cycle)
 
