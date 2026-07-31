@@ -2,11 +2,12 @@
 
 Installs and configures **Windows Server Update Services backed by WID** (Windows
 Internal Database) on Windows Server 2025. Framework-compatible role: ships the
-ansible-framework v3 generic loader (`tasks/main.yml`, byte-identical — never edit)
-and a family-level `present_windows.yml` / `clean_windows.yml`.
+local v3.1.0 generic loader (`tasks/main.yml`) and a family-level
+`present_windows.yml` / `clean_windows.yml`.
 
-**Status: build in progress.** BEGIN input guards are implemented; later logic lands
-one command per piece.
+Disk provisioning is delegated to the framework's `windows_disk_manager` role. The
+playbook must run that role before `wsus`; this role consumes the provisioned volumes
+by drive letter and does not select, initialize, partition, or format disks.
 
 ## Configuration
 
@@ -14,26 +15,44 @@ Defaults live under `wsus_defaults` (`defaults/main.yml`) and merge with
 `vars/windows[_<env>].yml` overlays plus the playbook's `wsus:` override dict into
 `wsus_running` (exposed to task files as `config`).
 
-### Required inputs
-
-The disk identifiers are declared in the `wsus:` override dict in the playbook,
-`group_vars`, or `host_vars`. The loader merges that dict into the role configuration,
-where the role consumes them as `config.wid_disk_id` and `config.wsus_disk_id`. They
-are **not** top-level vars and are **not** nested under `wsus.data_disks.*`.
+### Required WSUS input
 
 | `wsus:` override key | Consumed as | Fixed target |
 |----------------------|-------------|--------------|
-| `wid_disk_id` | `config.wid_disk_id` | WID/database disk, mapped to `E:` with label `WSUSDB` |
-| `wsus_disk_id` | `config.wsus_disk_id` | WSUS content disk, mapped to `F:` with label `WSUSDATA` |
-| `iis_disk_id` | `config.iis_disk_id` | IIS working-dir disk, mapped to `G:` with label `WSUSIIS` (the IIS `inetpub` — logs + wwwroot — relocates here; STIG "IIS on its own drive"). **Required** (C12a) — a missing/wrong id fails `BEGIN | Assert Declared Data Disks Are Attached` with "found 0", like the other disks. |
 | `upstream_server` | `config.upstream_server` | Upstream WSUS server this host syncs from (downstream/replica topology; `SyncFromMicrosoftUpdate=false`). **Required** (C11d) — `validate.yml` fails the play if empty/undefined. Hostname of the upstream WSUS; connection policy (port/SSL/replica) is in `sync.*` defaults below. |
 
-Each value is the case-sensitive Windows disk `unique_id` (for example,
-`eui.<hex>`). Read it with PowerShell's `Get-Disk` `UniqueId` property or from
-`community.windows.win_disk_facts` as the disk's `unique_id`. The role requires one
-exactly matching attached disk for each identifier. Drive letters, labels, and
-filesystem conventions are documented here for the fixed mapping but land as
-consumed configuration one piece at a time.
+### Disk provisioning
+
+Declare `windows_disk_manager` separately in the playbook with the platform and every
+managed disk's stable identity, drive letter, label, and allocation unit. Run it before
+`wsus`:
+
+```yaml
+windows_disk_manager:
+  platform: 'vmware'
+  disks:
+    - unique_id: 'eui.6C7076230CC23C55000C2968C7AE5760'
+      drive_letter: 'E'
+      label: 'WSUSDB'
+      allocation_unit: 65536
+    - unique_id: 'eui.CF4AE05CEB88F43B000C29656D55634B'
+      drive_letter: 'F'
+      label: 'WSUSDATA'
+      allocation_unit: 4096
+    - unique_id: 'eui.BC9F0ECE9FBC4B9A000C296303722FC1'
+      drive_letter: 'G'
+      label: 'WSUSIIS'
+      allocation_unit: 4096
+
+roles:
+  - role: 'windows_disk_manager'
+  - role: 'wsus'
+```
+
+The `wsus_defaults.data_disks.*.drive_letter` values must match the provisioner's
+drive-letter declarations. No cross-role check enforces that equality. If a mismatched
+WSUS letter names an existing volume, this role places the corresponding WSUS content
+on the wrong volume without failing.
 
 ### Merged configuration
 
@@ -44,13 +63,7 @@ there is no mode flag.
 |---------------------|---------|---------|
 | `data_disks.db.drive_letter` | `E:` | Target drive letter for the WID/database disk |
 | `data_disks.content.drive_letter` | `F:` | Target drive letter for the WSUS content disk |
-| `data_disks.db.label` | `WSUSDB` | NTFS volume label for the WID/database disk (E:) |
-| `data_disks.db.allocation_unit` | `65536` | NTFS allocation unit (bytes) for E: — 64 KiB, MS SQL/WID storage best practice |
-| `data_disks.content.label` | `WSUSDATA` | NTFS volume label for the WSUS content disk (F:) |
-| `data_disks.content.allocation_unit` | `4096` | NTFS allocation unit (bytes) for F: — 4 KiB NTFS default (MS is silent on WSUS-content cluster size) |
 | `data_disks.iis.drive_letter` | `G:` | Target drive letter for the IIS working-dir disk (`inetpub` relocated here). C12a |
-| `data_disks.iis.label` | `WSUSIIS` | NTFS volume label for the IIS disk (G:). C12a |
-| `data_disks.iis.allocation_unit` | `4096` | NTFS allocation unit (bytes) for G: — 4 KiB NTFS default (IIS logs/wwwroot are many small files). C12a |
 | `iis.log_dir` | `G:\inetpub\logs\LogFiles` | Where IIS writes its site logs — on the IIS disk (G:), not the system drive (STIG "IIS on its own drive"). Must be a **literal** drive-qualified path (a `%SystemDrive%`-style token is treated as drift). The role repoints the global `siteDefaults` + every site's `logFile.directory` here. C12b |
 | `iis.wwwroot` | `G:\inetpub\wwwroot` | Active IIS web root, relocated to the IIS disk (G:). Must be a **literal** drive-qualified path (a `%SystemDrive%`-style token is rejected). The role copies the current wwwroot content, repoints the `InetStp` `PathWWWRoot` registry value (native + Wow6432Node) and the **Default Web Site** `physicalPath` here — the WSUS Administration site (Program Files) is untouched. C12c |
 | `iis.log_target_w3c` | `File,ETW` | IIS W3C log event destination (STIG V-218786). `File` keeps the G: file logs; `ETW` adds a real-time event emit. Set on siteDefaults + every site. Valid: `File`, `ETW`, `File,ETW`. C13e |
@@ -84,16 +97,14 @@ there is no mode flag.
 | `sync.upstream_use_ssl` | `false` | Sync from the upstream WSUS over SSL. C11d |
 | `sync.replica` | `true` | `IsReplicaServer`: `true` = **replica** downstream mirroring the upstream's product/classification selections **and** approvals (inherit-everything, no local management); `false` = autonomous downstream that syncs metadata from the upstream but manages its own approvals. C11d |
 
-The role provisions a declared disk only when it is RAW or already carries its target
-drive letter. It refuses an initialized disk carrying a foreign drive letter, which
-protects existing data and prevents an identifier mistake from selecting the OS/system
-disk with `C:`. Disk size is never used for selection. C02e NTFS-formats E:/F: with these labels +
-allocation units (WSUSDB at 64 KiB, WSUSDATA at 4 KiB).
+`windows_disk_manager` owns disk selection, safety classification, initialization,
+partitioning, drive-letter assignment, and formatting. The `wsus` role begins at the
+drive-letter seam and owns only application data and configuration on those volumes.
 
-The identifiers and `temp_dir` must co-locate in one `wsus:` declaration. The loader
-reads `temp_dir` from the raw `wsus` var, and Ansible does not merge role override
-dicts across precedence levels; a higher-precedence `wsus:` value replaces the whole
-mapping.
+The required `upstream_server` and `temp_dir` workaround must co-locate in one `wsus:`
+declaration. The loader reads `temp_dir` from the raw `wsus` var, and Ansible does not
+merge role override dicts across precedence levels; a higher-precedence `wsus:` value
+replaces the whole mapping.
 
 ## Requirements
 
