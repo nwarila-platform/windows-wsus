@@ -19,6 +19,8 @@ known-clean state.*
   Disk `unique_id`s (stable `eui.*`, populated on RAW): WSUSDB `eui.6C7076230CC23C55000C2968C7AE5760`,
   WSUSDATA `eui.CF4AE05CEB88F43B000C29656D55634B`, WSUSIIS `eui.BC9F0ECE9FBC4B9A000C296303722FC1`;
   OS (DO NOT touch) `eui.D71C311D211B6731000C296D8345C5CC`.
+  The OS entry above is the recorded value enforced by the identity gate in
+  `scripts/revert-vm.sh`; §5 defines the connection-scoped guarantee.
 - **The data disks are RAW on purpose.** Guest-side disk init (GPT/format/label/
   letter) is the `wsus` role's job (style guide §4a — the role configures the handed
   machine end-to-end). The baseline provides only the *hardware*; a formatted disk in
@@ -93,6 +95,24 @@ any cycle uses it.
 - NIC: bridged to the physical LAN; guest MAC **`00:0C:29:98:E2:69`**;
   **`192.168.0.181/24` is STATIC in-guest** (gw/dns `192.168.0.1`), converted from
   DHCP and baked into the baseline on 2026-07-15 — no router dependency.
+- The address selects the destination of a connection; it does not establish which
+  machine answered. The hostname does not establish identity either: a full clone
+  of this VM answers with the same name unless it is renamed.
+- After SSH becomes reachable, `scripts/revert-vm.sh` opens a bounded probe and
+  captures the Disk 0 output. The shell discards every NUL byte and strips every
+  trailing line feed during capture; the script then removes at most one terminal
+  carriage return and compares the resulting value with the OS-disk id recorded in
+  §1. An embedded carriage return and any value representing a different disk id
+  remain mismatches, and the gate refuses them.
+- The gate has a known, accepted bound: a payload that differs from the recorded id
+  only by one or more inserted NUL bytes, one or more extra trailing line feeds, or
+  any combination of those classes is normalized to a match before comparison and
+  is not caught. The check exists to catch the wrong machine answering the address;
+  no value representing a different disk id can pass it.
+- The gate runs before the guest's first mutating command. It verifies only the
+  connection opened by that probe and does **not** bind the later, separate
+  connection used for the playbook run. If this VM and a clone both claim the static
+  address, those two connections can reach different machines.
 - If the LAN itself ever changes (subnet/gateway), that is a baseline-level change:
   set the new static config, then re-baseline (§3), then update
   `ansible/inventory/vmware.yml`, `scripts/revert-vm.sh`, and the session runbook
@@ -106,6 +126,8 @@ any cycle uses it.
 |---|---|---|
 | `revertToSnapshot` errors | snapshot name drift / duplicate chain | `listSnapshots`, restore exactly-one-name invariant (§4) |
 | SSH never returns post-revert | VM left powered off; IP moved; guest firewall | `vmrun list` → `start nogui`; `getGuestIPAddress`; console via Workstation GUI |
+| Identity probe exited zero, but the non-empty value compared for Disk 0 does not match §1 | A different machine answering the address is most likely; same-machine causes include disk renumbering or a reset/replaced OS disk | Establish which VMs are running and which machine holds the address before drawing a conclusion. If another machine answered, nothing observed on it is evidence about this VM |
+| Identity probe exited non-zero, or exited zero with an empty compared Disk 0 value | Transport failure, a `Get-Disk` error, a timeout, or another probe failure; identity is unknown, not proven wrong. A displayed correct-looking compared value does not override a non-zero status | Check reachability and the reported probe diagnostics first; conclude nothing about which machine answered |
 | `getGuestIPAddress` errors | Tools not running (baseline damage) | boot fully, check `Get-Service VMTools`; if truly gone, re-baseline from scratch |
 | Key auth suddenly fails | controller agent empty after reboot (NOT the VM) | `ssh-add -l` first — two-command fix in `docs/KEY-RELOAD.md` |
 | Guest clock skew after revert | memory-snapshot resume | expected; `revert-vm.sh` fires `w32tm /resync` |
