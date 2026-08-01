@@ -29,11 +29,27 @@ materialized copy **cannot** catch that, because the materialized copy is what i
 | `<subnet-id>` | the deploy subnet | Layer-0 bootstrap output | as above — **one subnet account-wide**, shared by all siblings |
 | `<ebs-kms-key-id>` | the key `alias/aws/ebs` resolves to **in this account** | `aws kms describe-key --key-id alias/aws/ebs` | fail-closed. Account-wide and AWS-managed, so **siblings legitimately share the same key id** |
 | `<key-pair-name>` | this repo's EC2 key pair | Layer-0 bootstrap output | fail-closed at launch |
+| `<artifact-bucket>` | the S3 bucket holding the deploy artifacts | the deploy plan / Layer-0 bootstrap output | fail-closed — `s3:GetObject` on a `<...>` bucket name is denied. **But see below: the object-key prefix, not the bucket, is what separates the siblings** |
 
 Because the VPC, subnet and EBS key are account-wide, **the identity tag is the only thing separating
 the sibling repositories from each other.** The `ec2:Subnet` pin bounds every repo to the same deploy
 subnet; it does not hold them apart. That raises the stakes on the next paragraph rather than easing
 them.
+
+**`<artifact-bucket>` behaves the same way, and its failure mode is quieter.** If the artifact bucket
+is shared across siblings — the likely arrangement, since it is Layer-0 infrastructure — then
+substituting it correctly grants nothing by itself. The read grant is scoped by the **object-key
+prefix**, `applications/windows-wsus/tls/*`, not by the bucket name. Widen that prefix, or paste a
+sibling's prefix into it, and this repository gains read access to another repository's private key
+material with every placeholder correctly substituted and the gate green. The gate proves no literal
+leaked; it cannot prove the prefix is the right one. Treat the prefix as load-bearing and read it
+back at apply time.
+
+The write grant is the same prefix boundary read backwards. `windows-wsus_artifact-folder` is scoped
+to `applications/windows-wsus/tls/*` and carries no `s3:ListBucket`, so a wrong prefix cannot be
+discovered by enumeration — it simply writes this repository's private key material into a location
+another repository is authorized to read. Substituting `<artifact-bucket>` correctly does not make
+the prefix correct. Read the prefix back at apply time, on both policies.
 
 **`<repository-id>` is the one that can hurt you.** It is the sole authorization key for
 `LifecycleOnlyOnOurTaggedResources` (terminate / delete-volume / detach) and
@@ -58,7 +74,8 @@ out of git.
 | Role | Trust source | Policies | Purpose |
 |---|---|---|---|
 | `github_nwarila-platform_windows-wsus` | `roles/github_nwarila-platform_windows-wsus.trust.json` | `github_nwarila-platform_windows-wsus` · `windows-wsus_deploy-ec2-launch` · `windows-wsus_deploy-ec2-lifecycle` · `windows-wsus_deploy-sg-ssm-kms` · `windows-wsus_deploy-discovery-iam` | CI state, deploy, prove, destroy |
-| `github_nwarila-platform_windows-wsus-admin` | `roles/github_nwarila-platform_windows-wsus-admin.trust.json` | `github_nwarila-platform_windows-wsus` · the same four deploy policies | Operator break-glass and local deploy |
+| `github_nwarila-platform_windows-wsus-admin` | `roles/github_nwarila-platform_windows-wsus-admin.trust.json` | `github_nwarila-platform_windows-wsus` · the same four deploy policies · `windows-wsus_artifact-folder` · `windows-wsus_artifact-assume` | Operator break-glass and local deploy |
+| `windows-wsus-artifact-reader` | `roles/windows-wsus-artifact-reader.trust.json` | `windows-wsus_artifact-read` | Controller-assumed, read-only artifact delivery |
 | `windows-wsus-poc-role` | `roles/windows-wsus-poc-role.trust.json` | `AmazonSSMManagedInstanceCore` (AWS-managed) **only** | EC2 instance profile `windows-wsus-poc-profile` |
 
 The `-admin` role carries the state policy as well as the four deploy policies: a local

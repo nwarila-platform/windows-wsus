@@ -73,6 +73,7 @@ readonly -a REQUIRED_PLACEHOLDERS=(
     '<ebs-kms-key-id>'
     '<key-pair-name>'
     '<owner-id>'
+    '<artifact-bucket>'
 )
 
 fail() { printf 'check-iam-literals: FAIL — %s\n' "$1" >&2; exit 1; }
