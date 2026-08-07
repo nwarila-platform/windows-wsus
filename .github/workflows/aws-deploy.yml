@@ -68,6 +68,17 @@ jobs:
         with:
           persist-credentials: false
 
+      # The controller toolchain, first: the split_args gate below imports ansible's own
+      # parser, and everything here is needed by the configure stage anyway.
+      - name: Install Ansible and the SSM session plugin
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet --no-cache-dir "ansible-core${ANSIBLE_CORE_SPEC}" boto3 botocore
+          ansible-galaxy collection install ansible.windows community.windows amazon.aws
+          curl -fsS -o /tmp/session-manager-plugin.deb \
+            https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb
+          sudo dpkg -i /tmp/session-manager-plugin.deb > /dev/null
+
       # Fail-closed source gates, before any credential exists: IAM placeholders + the
       # workflow-rename tripwire, the trigger contract, and the win_shell split_args scan
       # (whose failure class otherwise surfaces only mid-run, after money is spent).
@@ -155,15 +166,6 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
           role-session-name: aws-deploy-configure-${{ github.run_id }}
           role-duration-seconds: 3600
-
-      - name: Install Ansible and the SSM session plugin
-        run: |
-          set -euo pipefail
-          python3 -m pip install --quiet --no-cache-dir "ansible-core${ANSIBLE_CORE_SPEC}" boto3 botocore
-          ansible-galaxy collection install ansible.windows community.windows amazon.aws
-          curl -fsS -o /tmp/session-manager-plugin.deb \
-            https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb
-          sudo dpkg -i /tmp/session-manager-plugin.deb > /dev/null
 
       - name: Install the SSH key
         env:
