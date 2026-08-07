@@ -1,0 +1,37 @@
+# =========================================================================================== #
+# File: 'ansible/inventory/aws_ec2.yml'
+# --- [ Description ] ----------------------------------------------------------------------- #
+#
+# Dynamic inventory for the ephemeral AWS PoC (amazon.aws.aws_ec2 plugin — the filename must
+# end in aws_ec2.yml for plugin detection). Finds the running instance the terraform framework
+# tagged Function=wsus, addresses it by its Elastic IP, and places it in the same
+# 'wsus_servers' group the lab inventory uses, so the playbooks are inventory-agnostic.
+#
+# Credentials come from the caller's AWS environment (in CI, the OIDC session). The private
+# key path matches where the workflow installs the AWS_EC2_SSH_PRIVATE_KEY secret — the
+# private half of the org-shared 'nwarila-ec2-key' pair.
+#
+# =========================================================================================== #
+plugin: 'amazon.aws.aws_ec2'
+
+regions:
+  - 'us-east-1'
+
+filters:
+  tag:Function: 'wsus'
+  instance-state-name: 'running'
+
+# The framework stamps Name = <hostname> (non-overwritable), so hosts keep their tfvars name.
+hostnames:
+  - 'tag:Name'
+
+groups:
+  wsus_servers: true
+
+compose:
+  ansible_host: 'public_ip_address'
+  ansible_user: '"Administrator"'
+  ansible_connection: '"ssh"'
+  ansible_shell_type: '"powershell"'
+  ansible_ssh_private_key_file: '"~/.ssh/nwarila-ec2-key.pem"'
+  ansible_ssh_common_args: '"-o StrictHostKeyChecking=accept-new"'

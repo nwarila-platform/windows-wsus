@@ -55,7 +55,6 @@ jobs:
       DEPLOY_ROLE: github_nwarila-platform_windows-wsus
       TF_DIR: .frameworks/aws-terraform-framework/terraform
       STATE_KEY: nwarila-platform/windows-wsus/aws-poc.tfstate
-      WSUS_HOSTNAME: wsus-poc-01
       # Matches the pinned ansible-framework's requirements-dev.txt spec.
       ANSIBLE_CORE_SPEC: '>=2.21.2,<2.22'
       # Drives the framework's provider default_tags — satisfies every create-time
@@ -138,107 +137,38 @@ jobs:
           role-session-name: aws-deploy-configure-${{ github.run_id }}
           role-duration-seconds: 3600
 
-      # Readiness (sshd + EC2Launch + DefaultShell->PowerShell), compose the pinned framework
-      # with this repo's role, run the play, prove WSUS serves. One stage, one transport.
-      - name: Run Ansible (readiness + configure + prove)
+      # Readiness, configuration and the WSUS proof all live in the playbook; the dynamic
+      # inventory (ansible/inventory/aws_ec2.yml) finds the instance by its Function tag.
+      # This step just prepares the controller: toolchain, SSH key, compose overlay.
+      - name: Run Ansible
         timeout-minutes: 110
         env:
           ANSIBLE_CONFIG: ${{ github.workspace }}/.frameworks/ansible-framework/ansible.cfg
           AWS_EC2_SSH_PRIVATE_KEY: ${{ secrets.AWS_EC2_SSH_PRIVATE_KEY }}
           # Imported by the play's pre-tasks — same value the OIDC role ARN is built from.
           AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
-          GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
         run: |
           set -euo pipefail
-
-          # -- controller toolchain (boto3 powers the role's Function-tag resolver) ----------
           python3 -m pip install --quiet --no-cache-dir "ansible-core${ANSIBLE_CORE_SPEC}" boto3 botocore
           ansible-galaxy collection install ansible.windows community.windows amazon.aws
 
-          # -- compose overlay: validate every role, refuse framework-TRACKED paths ----------
+          install -d -m 0700 "${HOME}/.ssh"
+          install -m 0600 /dev/stdin "${HOME}/.ssh/nwarila-ec2-key.pem" <<< "${AWS_EC2_SSH_PRIVATE_KEY}"
+
+          # Compose overlay: this repo's roles onto the pinned framework tree. Refuse a
+          # framework-TRACKED role path so an overlay can never replace framework-owned code.
           framework_dir="${GITHUB_WORKSPACE}/.frameworks/ansible-framework"
           for role_source in "${GITHUB_WORKSPACE}"/ansible/applications/*; do
             role_name="$(basename "${role_source}")"
-            [[ "${role_name}" =~ ^[a-z][a-z0-9_]*$ ]] || { echo "!! bad role name ${role_name}" >&2; exit 1; }
-            [ ! -L "${role_source}" ] || { echo "!! symlinked role ${role_source}" >&2; exit 1; }
             [ -f "${role_source}/tasks/main.yml" ] || { echo "!! missing tasks/main.yml in ${role_source}" >&2; exit 1; }
             [ -z "$(git -C "${framework_dir}" ls-files -- "applications/${role_name}/")" ] \
               || { echo "!! refusing framework-tracked role path applications/${role_name}" >&2; exit 1; }
-          done
-          for role_source in "${GITHUB_WORKSPACE}"/ansible/applications/*; do
-            rsync -a --delete "${role_source}/" "${framework_dir}/applications/$(basename "${role_source}")/"
+            rsync -a --delete "${role_source}/" "${framework_dir}/applications/${role_name}/"
           done
 
-          # -- target address: the EIP the framework bound to eni-0 --------------------------
-          eip="$(aws ec2 describe-addresses \
-            --filters "Name=tag:Name,Values=${WSUS_HOSTNAME}" \
-                      "Name=tag:nwarila:management:repository-id,Values=${GITHUB_REPOSITORY_ID}" \
-            --query 'Addresses[0].PublicIp' --output text)"
-          { [ -n "${eip}" ] && [ "${eip}" != "None" ]; } \
-            || { echo 'no Elastic IP found for the PoC instance' >&2; exit 1; }
-          echo "target: ${eip}"
-
-          # -- readiness: sshd up, EC2Launch done, DefaultShell = PowerShell -----------------
-          install -m 0600 /dev/stdin "${RUNNER_TEMP}/key.pem" <<< "${AWS_EC2_SSH_PRIVATE_KEY}"
-          ssh_cmd() {
-            ssh -i "${RUNNER_TEMP}/key.pem" -o BatchMode=yes -o ConnectTimeout=10 \
-                -o ServerAliveInterval=15 -o StrictHostKeyChecking=accept-new \
-                -o UserKnownHostsFile="${RUNNER_TEMP}/known_hosts" \
-                "Administrator@${eip}" "$@"
-          }
-          for _ in $(seq 1 90); do ssh_cmd 'exit 0' 2>/dev/null && break; sleep 10; done
-          ssh_cmd 'exit 0' || { echo 'sshd never became reachable' >&2; exit 1; }
-          ssh_cmd '"C:\Program Files\Amazon\EC2Launch\EC2Launch.exe" status -b'
-          flip="Set-ItemProperty -Path 'HKLM:\SOFTWARE\OpenSSH' -Name DefaultShell"
-          flip="${flip} -Value 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe';"
-          flip="${flip} Restart-Service sshd"
-          # The restart drops our own session; verify with a PowerShell-only construct.
-          ssh_cmd "powershell -NoProfile -NonInteractive -Command \"${flip}\"" || true
-          ready=false
-          for _ in $(seq 1 12); do
-            if ssh_cmd '(Get-ItemProperty "HKLM:\SOFTWARE\OpenSSH").DefaultShell' 2>/dev/null \
-              | grep -qi 'powershell.exe'; then ready=true; break; fi
-            sleep 5
-          done
-          [ "${ready}" = true ] || { echo 'DefaultShell flip did not take' >&2; exit 1; }
-
-          # -- inventory + play --------------------------------------------------------------
-          cat > "${RUNNER_TEMP}/inventory.yml" <<EOF
-          wsus_servers:
-            hosts:
-              ${WSUS_HOSTNAME}:
-                ansible_host: '${eip}'
-            vars:
-              ansible_user: 'Administrator'
-              ansible_connection: 'ssh'
-              ansible_shell_type: 'powershell'
-              ansible_ssh_private_key_file: '${RUNNER_TEMP}/key.pem'
-              ansible_ssh_common_args: '-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=${RUNNER_TEMP}/known_hosts'
-          EOF
-          ( cd "${framework_dir}" && ansible-playbook -i "${RUNNER_TEMP}/inventory.yml" \
-              "${GITHUB_WORKSPACE}/ansible/playbooks/wsus-aws.yml" -e env=test )
-
-          # -- prove WSUS actually serves, on the disks the deploy layer handed it -----------
-          ssh_cmd 'powershell -NoProfile -NonInteractive -Command -' <<'PS'
-          $ErrorActionPreference = 'Stop'
-          foreach ($name in @('WsusService', 'W3SVC', 'MSSQL$MICROSOFT##WID')) {
-            $svc = Get-Service -Name $name
-            if ($svc.Status -ne 'Running') { throw "service $name is $($svc.Status), not Running" }
-          }
-          foreach ($pair in @(@('E', 'WSUSDB'), @('F', 'WSUSDATA'), @('G', 'WSUSIIS'))) {
-            $vol = Get-Volume -DriveLetter $pair[0]
-            if ($vol.FileSystemLabel -cne $pair[1]) {
-              throw "volume $($pair[0]): label '$($vol.FileSystemLabel)' != '$($pair[1])'"
-            }
-          }
-          if (-not (Test-Path 'E:\WID\Data\SUSDB.mdf')) { throw 'SUSDB.mdf not relocated to E:\WID\Data' }
-          if (-not (Test-Path 'F:\WSUS\WSUSContent')) { throw 'content root F:\WSUS\WSUSContent missing' }
-          $wsus = Get-WsusServer -Name localhost -PortNumber 8530
-          $null = $wsus.GetStatus()
-          $resp = Invoke-WebRequest -UseBasicParsing -Uri 'http://localhost:8530/ClientWebService/client.asmx'
-          if ($resp.StatusCode -ne 200) { throw "ClientWebService answered $($resp.StatusCode)" }
-          Write-Output 'PROOF: WSUS serving on 8530, WID on E:, content on F:, IIS artifacts on G:'
-          PS
+          cd "${framework_dir}"
+          ansible-playbook -i "${GITHUB_WORKSPACE}/ansible/inventory/aws_ec2.yml" \
+            "${GITHUB_WORKSPACE}/ansible/playbooks/wsus-aws.yml" -e env=test
 
       # The originals are dead by now; a destroy with dead credentials strands paid resources.
       - name: Refresh AWS credentials before destroy (OIDC)

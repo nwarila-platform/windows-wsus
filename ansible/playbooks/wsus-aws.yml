@@ -22,6 +22,49 @@
 #
 # =========================================================================================== #
 ---
+#region ------ [ Play: Windows Readiness ] ---------------------------------------------------- #
+# Runs BEFORE any Windows module can work: the instance boots with the OpenSSH DefaultShell
+# as cmd (the framework's bootstrap deliberately leaves it — see its user_data), and
+# ansible_shell_type is powershell. Every task here is `raw` — the one module that sends a
+# plain command line regardless of shell — so this play can wait for sshd, wait for EC2Launch
+# to finish provisioning, and flip the default shell to PowerShell for the real play below.
+- name: 'PLAY | Wait for Windows readiness (sshd, EC2Launch, PowerShell default shell)'
+  hosts: 'wsus_servers'
+  gather_facts: false
+  become: false
+
+  tasks:
+    - name: 'READY | Wait for sshd (EC2Launch installs the launch key minutes after boot)'
+      ansible.builtin.raw: 'echo ready'
+      register: '__ssh_ready__'
+      retries: 90
+      delay: 10
+      until: (__ssh_ready__.rc | default(1)) == 0
+      ignore_unreachable: true
+
+    - name: 'READY | Wait for EC2Launch provisioning to complete'
+      ansible.builtin.raw: '"C:\Program Files\Amazon\EC2Launch\EC2Launch.exe" status -b'
+
+    - name: 'READY | Set PowerShell as the OpenSSH default shell'
+      # The sshd restart drops this task's own session — the verify below is the real check.
+      ansible.builtin.raw: >-
+        powershell -NoProfile -NonInteractive -Command
+        "Set-ItemProperty -Path 'HKLM:\SOFTWARE\OpenSSH' -Name DefaultShell
+        -Value 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe';
+        Restart-Service sshd"
+      failed_when: false
+
+    - name: 'READY | Verify the default shell is PowerShell'
+      # A PowerShell-only expression: fails under cmd, answers the path once the flip landed.
+      ansible.builtin.raw: '(Get-ItemProperty "HKLM:\SOFTWARE\OpenSSH").DefaultShell'
+      register: '__default_shell__'
+      retries: 12
+      delay: 5
+      until: "'powershell.exe' in (__default_shell__.stdout | default('') | lower)"
+      ignore_unreachable: true
+#endregion --- [ Play: Windows Readiness ] ---------------------------------------------------- #
+
+
 - name: 'PLAY | WSUS Server (WID-backed, ephemeral AWS)'
   hosts: 'wsus_servers'
   # TD-001: playbook-level gathering routes to the Windows setup module; with facts
@@ -113,10 +156,42 @@
           # the ephemeral PoC has no reachable upstream; the role only SAVES the downstream
           # topology config (no connectivity check), same as the dev VM.
           upstream_server: 'wsus-upstream.corp.local'
-          # Artifact bucket, derived from the IMDS account lookup above — never from a runner
-          # environment variable. The '-ansible' suffix is the platform's Layer-0 bucket naming
+          # Artifact bucket. The '-ansible' suffix is the platform's Layer-0 bucket naming
           # convention (the state bucket is '<account-id>-terraform' the same way); it must
           # match the <artifact-bucket> value materialized into the IAM sources.
           bucket: "{{ aws_account_id }}-ansible"
     #endregion --- [ Roles: Windows Server Update Service ] ----------------------------------- #
   #endregion --- [ Roles ] -------------------------------------------------------------------- #
+
+
+  #region ------ [ Post-Tasks: End-to-End Proof ] ---------------------------------------------- #
+  # The 'test' in deploy-test-destroy: independent of the roles above, prove WSUS actually
+  # serves, on the disks the deploy layer handed it. Any throw fails the play (and the run).
+  post_tasks:
+    - name: 'PROVE | WSUS serves on 8530 with WID on E:, content on F:, IIS artifacts on G:'
+      ansible.windows.win_shell: |
+        $ErrorActionPreference = 'Stop'
+        foreach ($name in @('WsusService', 'W3SVC', 'MSSQL$MICROSOFT##WID')) {
+          $svc = Get-Service -Name $name
+          if ($svc.Status -ne 'Running') { throw "service $name is $($svc.Status), not Running" }
+        }
+        foreach ($pair in @(@('E', 'WSUSDB'), @('F', 'WSUSDATA'), @('G', 'WSUSIIS'))) {
+          $vol = Get-Volume -DriveLetter $pair[0]
+          if ($vol.FileSystemLabel -cne $pair[1]) {
+            throw "volume $($pair[0]): label '$($vol.FileSystemLabel)' != '$($pair[1])'"
+          }
+        }
+        if (-not (Test-Path 'E:\WID\Data\SUSDB.mdf')) { throw 'SUSDB.mdf not relocated to E:\WID\Data' }
+        if (-not (Test-Path 'F:\WSUS\WSUSContent')) { throw 'content root F:\WSUS\WSUSContent missing' }
+        $wsus = Get-WsusServer -Name localhost -PortNumber 8530
+        $null = $wsus.GetStatus()
+        $resp = Invoke-WebRequest -UseBasicParsing -Uri 'http://localhost:8530/ClientWebService/client.asmx'
+        if ($resp.StatusCode -ne 200) { throw "ClientWebService answered $($resp.StatusCode)" }
+        Write-Output 'PROOF: WSUS serving on 8530, WID on E:, content on F:, IIS artifacts on G:'
+      register: '__proof__'
+      changed_when: false
+
+    - name: 'PROVE | Report'
+      ansible.builtin.debug:
+        msg: "{{ __proof__.stdout_lines | last }}"
+  #endregion --- [ Post-Tasks: End-to-End Proof ] ---------------------------------------------- #
