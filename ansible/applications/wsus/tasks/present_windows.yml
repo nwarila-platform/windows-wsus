@@ -899,8 +899,15 @@
     # pinned leaf, binds it to tls.port in IIS, and wsusutil configuressl flips client-facing
     # endpoints to HTTPS. Trust distribution stays out of scope.
 
+    # The block conditional is re-evaluated for every task it covers, including tasks inside the
+    # delivery role below — where the lazy `config` binding resolves against that role's own name
+    # and fails. Pin the flag as a host fact so the inherited conditional stays resolvable.
+    - name: 'MAIN | Resolve The TLS Enablement Flag'
+      ansible.builtin.set_fact:
+        __tls_enabled__: '{{ config.tls.enabled | bool }}'
+
     - name: 'MAIN | Deliver, Validate, Import, And Bind The TLS Certificate'
-      when: config.tls.enabled | bool
+      when: __tls_enabled__
       block:
         - name: 'MAIN | Resolve The Pinned TLS Identity'
           ansible.builtin.set_fact:
