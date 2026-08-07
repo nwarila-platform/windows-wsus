@@ -155,11 +155,12 @@
           bucket: "{{ aws_account_id }}-ansible"
           # TLS: the controller delivers the CA-issued PFX (+ password) from bucket at the
           # role's tls.pfx_key, imports it, binds 8531, and runs wsusutil configuressl for
-          # dns_name. Set thumbprint to pin an already-imported certificate and skip the
-          # delivery; trust distribution is deliberately out of scope here.
+          # dns_name. thumbprint is trust-but-verify: the imported certificate must match
+          # it, or the play fails — a modified or swapped S3 object cannot serve. Trust
+          # distribution is deliberately out of scope here.
           tls:
             enabled: true
             dns_name: 'wsus.nwarila.internal'
-            thumbprint: ''
+            thumbprint: '56FC0FC5BA6868BD7F1A5A03B8AE98AA5F0D867E'
     #endregion --- [ Roles: Windows Server Update Service ] ----------------------------------- #
   #endregion --- [ Roles ] -------------------------------------------------------------------- #

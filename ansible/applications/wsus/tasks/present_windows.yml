@@ -686,8 +686,9 @@
     # downloads both through the read-only artifact-reader role (s3_artifact_delivery get) —
     # the target never holds an S3 credential — then copies the PFX up, imports it with the
     # password as a no_log argument, binds it to tls.port in IIS, and wsusutil configuressl
-    # flips the client-facing endpoints to HTTPS. tls.thumbprint pins an already-imported
-    # certificate and skips the delivery entirely. Trust distribution stays out of scope.
+    # flips the client-facing endpoints to HTTPS. tls.thumbprint is TRUST-BUT-VERIFY: when
+    # set, the imported certificate must match it, proving the S3 object was not modified or
+    # swapped since the pin was recorded. Trust distribution stays out of scope.
 
     - name: 'MAIN | Resolve The Controller Staging Directory'
       when: config.tls.enabled | bool
@@ -695,7 +696,7 @@
         __tls_staging__: "{{ lookup('ansible.builtin.env', 'RUNNER_TEMP') | default('/tmp', true) }}"
 
     - name: 'MAIN | Download The TLS Certificate And Password To The Controller'
-      when: (config.tls.enabled | bool) and not (config.tls.thumbprint | default('') | trim | length)
+      when: config.tls.enabled | bool
       ansible.builtin.include_role:
         name: 's3_artifact_delivery'
         tasks_from: 'get'
@@ -711,13 +712,13 @@
             destination: "{{ __tls_staging__ }}/wsus-tls.pfx.password"
 
     - name: 'MAIN | Copy The Certificate To The Target'
-      when: (config.tls.enabled | bool) and not (config.tls.thumbprint | default('') | trim | length)
+      when: config.tls.enabled | bool
       ansible.windows.win_copy:
         src: "{{ __tls_staging__ }}/wsus-tls.pfx"
         dest: 'C:\Windows\Temp\wsus-tls.pfx'
 
     - name: 'MAIN | Import The Certificate Into The Machine Store'
-      when: (config.tls.enabled | bool) and not (config.tls.thumbprint | default('') | trim | length)
+      when: config.tls.enabled | bool
       ansible.windows.win_certificate_store:
         path: 'C:\Windows\Temp\wsus-tls.pfx'
         # Read on the CONTROLLER and passed as an in-memory, no_log module argument — the
@@ -733,18 +734,29 @@
       register: '__tls_import__'
 
     - name: 'MAIN | Remove The Copied Certificate From The Target'
-      when: (config.tls.enabled | bool) and not (config.tls.thumbprint | default('') | trim | length)
+      when: config.tls.enabled | bool
       ansible.windows.win_file:
         path: 'C:\Windows\Temp\wsus-tls.pfx'
         state: 'absent'
 
+    # TRUST BUT VERIFY: the pin proves the delivered object is the certificate the operator
+    # recorded — a swapped or modified PFX in the bucket fails here, before anything binds.
+    - name: 'MAIN | Verify The Delivered Certificate Against The Pinned Thumbprint'
+      when: (config.tls.enabled | bool) and (config.tls.thumbprint | default('') | trim | length > 0)
+      ansible.builtin.assert:
+        that:
+          - (config.tls.thumbprint | trim | upper) in (__tls_import__.thumbprints | map('upper') | list)
+        fail_msg: >-
+          The certificate delivered from s3://{{ config.bucket }}/{{ config.tls.pfx_key }}
+          does not match tls.thumbprint {{ config.tls.thumbprint | trim | upper }} — the
+          object may have been modified or replaced. Imported thumbprint(s):
+          {{ __tls_import__.thumbprints | join(', ') }}.
+        quiet: true
+
     - name: 'MAIN | Resolve The Certificate Thumbprint'
       when: config.tls.enabled | bool
       ansible.builtin.set_fact:
-        __tls_thumbprint__: >-
-          {{ (config.tls.thumbprint | trim)
-          if (config.tls.thumbprint | default('') | trim | length)
-          else (__tls_import__.thumbprints | first) }}
+        __tls_thumbprint__: "{{ __tls_import__.thumbprints | first }}"
 
     - name: 'MAIN | Bind The Certificate To The WSUS HTTPS Endpoint'
       when: config.tls.enabled | bool

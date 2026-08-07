@@ -50,8 +50,9 @@ wsus_defaults:
     # FQDN wsusutil configuressl writes into the client-facing URLs; must match the
     # certificate subject. Empty => the machine's computer name.
     dns_name: ''
-    # Pin an ALREADY-IMPORTED LocalMachine\My certificate by thumbprint and skip the fetch
-    # entirely. Empty => deliver and import the PFX below.
+    # TRUST-BUT-VERIFY pin: expected SHA-1 thumbprint of the delivered certificate. When
+    # set, the import must match it — proving the S3 object was not modified or swapped
+    # since the pin was recorded. Empty skips the check (delivery still runs).
     thumbprint: ''
     # HTTPS port WSUS serves on.
     port: 8531
