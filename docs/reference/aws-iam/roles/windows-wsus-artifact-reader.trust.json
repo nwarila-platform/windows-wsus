@@ -6,8 +6,8 @@
       "Effect": "Allow",
       "Principal": {
         "AWS": [
-          "arn:aws:iam::<account-id>:role/github_nwarila-platform_windows-wsus-admin",
-          "arn:aws:iam::<account-id>:role/github_nwarila-platform_windows-wsus"
+          "arn:aws:iam::<account-id>:role/github_nwarila-platform_windows-wsus",
+          "arn:aws:iam::<account-id>:role/github_nwarila-platform_windows-wsus-admin"
         ]
       },
       "Action": "sts:AssumeRole"
