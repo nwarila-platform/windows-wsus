@@ -46,13 +46,14 @@ ACCOUNT="$(aws sts get-caller-identity --profile "${PROFILE}" --query Account --
 REPO_ID="$(gh api "repos/${OWNER}/${REPO}" --jq .id)" || die "GitHub repo ${OWNER}/${REPO} not found"
 KMS_KEY="$(aws kms describe-key --key-id alias/aws/ebs --profile "${PROFILE}" --region "${REGION}" \
            --query 'KeyMetadata.KeyId' --output text)" || die 'alias/aws/ebs unresolved'
-# The account holds MORE THAN ONE VPC, so a blind Vpcs[0]/Subnets[0] pick is a coin toss —
-# and the subnet pinned here must equal the one the deploy workflow renders into the tfvars
-# (its AWS_DEPLOY_SUBNET_ID repository variable) or RunInstances denies. Take explicit
-# overrides; fall back to the first-listed only for a single-VPC account.
-VPC_ID="${BOOTSTRAP_VPC_ID:-$(aws ec2 describe-vpcs --profile "${PROFILE}" --region "${REGION}" --query 'Vpcs[0].VpcId' --output text)}"
-SUBNET_ID="${BOOTSTRAP_SUBNET_ID:-$(aws ec2 describe-subnets --profile "${PROFILE}" --region "${REGION}" \
-  --filters "Name=vpc-id,Values=${VPC_ID}" --query 'sort_by(Subnets,&AvailabilityZone)[0].SubnetId' --output text)}"
+# The deploy subnet's single source of truth is the terraform template — the same file the
+# deploy workflow renders — so the IAM subnet pin and the tfvars can never disagree. The VPC
+# is derived FROM that subnet (the account holds more than one VPC; a blind Vpcs[0] pick is a
+# coin toss).
+SUBNET_ID="$(grep -oE 'subnet-[0-9a-f]+' "${ROOT}/terraform/environments/aws-test.tfvars.tmpl" | head -1)"
+[ -n "${SUBNET_ID}" ] || die 'no subnet_id found in terraform/environments/aws-test.tfvars.tmpl'
+VPC_ID="$(aws ec2 describe-subnets --subnet-ids "${SUBNET_ID}" --profile "${PROFILE}" --region "${REGION}" \
+  --query 'Subnets[0].VpcId' --output text)" || die "subnet ${SUBNET_ID} not found in ${REGION}"
 # The org's shared EC2 key pair (secure-wazuh pattern); override only if a per-repo pair is
 # ever minted. Its private half is the AWS_EC2_SSH_PRIVATE_KEY Actions secret.
 KEY_PAIR="${BOOTSTRAP_KEY_PAIR_NAME:-nwarila-ec2-key}"

@@ -230,37 +230,25 @@ jobs:
           terraform_wrapper: false
 
       # ------------------------------------------------------------------------------------- #
-      # Render the deploy inputs: the pinned deploy subnet, its AZ, the runner's egress /32
+      # Render the deploy input: the runner's egress /32. Subnet/AZ are hard-coded in the
+      # template, which is the single source of truth bootstrap-iam.sh also materializes from.
       # ------------------------------------------------------------------------------------- #
-      - name: Discover deploy inputs and render tfvars
+      - name: Render tfvars
         run: |
           set -euo pipefail
-          # The deploy subnet is a REPOSITORY VARIABLE, not discovered: the account holds more
-          # than one VPC, so any blind pick is a coin toss, and the launch policy pins one
-          # subnet ARN — the tfvars and the IAM materialization must name the SAME subnet or
-          # RunInstances denies. The literals gate keeps the id out of the repo tree; a repo
-          # variable is its documented home. bootstrap-iam.sh takes the same value via
-          # BOOTSTRAP_SUBNET_ID.
-          subnet_id="${AWS_DEPLOY_SUBNET_ID:?repository variable AWS_DEPLOY_SUBNET_ID is unset — set it to the deploy subnet id}"
-          az="$(aws ec2 describe-subnets --subnet-ids "${subnet_id}" \
-            --query 'Subnets[0].AvailabilityZone' --output text)"
           # The SG ingress is scoped to this runner's own egress address — the instance is
           # reachable over SSH from this job and nowhere else.
           runner_ip="$(curl -fsS https://checkip.amazonaws.com | tr -d '[:space:]')"
           if ! printf '%s' "${runner_ip}" | grep -Eq '^[0-9]{1,3}(\.[0-9]{1,3}){3}$'; then
             printf 'runner egress IP looks wrong: %s\n' "${runner_ip}" >&2; exit 1
           fi
-          sed -e "s|__SUBNET_ID__|${subnet_id}|g" \
-              -e "s|__AVAILABILITY_ZONE__|${az}|g" \
-              -e "s|__RUNNER_CIDR__|${runner_ip}/32|g" \
+          sed -e "s|__RUNNER_CIDR__|${runner_ip}/32|g" \
               terraform/environments/aws-test.tfvars.tmpl > "${RUNNER_TEMP}/aws-test.tfvars"
           # Fail-closed on partial substitution, same philosophy as the IAM materialized gate.
           if grep -n '__' "${RUNNER_TEMP}/aws-test.tfvars"; then
             echo 'unsubstituted __TOKEN__ survived the render' >&2; exit 1
           fi
-          printf 'rendered tfvars: subnet=%s az=%s runner=%s/32\n' "${subnet_id}" "${az}" "${runner_ip}"
-        env:
-          AWS_DEPLOY_SUBNET_ID: ${{ vars.AWS_DEPLOY_SUBNET_ID }}
+          printf 'rendered tfvars: runner=%s/32\n' "${runner_ip}"
 
       - name: Terraform init
         id: tf-init

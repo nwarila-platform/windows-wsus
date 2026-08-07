@@ -19,12 +19,11 @@ framework owns the how, this repo owns only the what.
 role) does, per run:
 
 1. Checks out the framework at the pin and asserts `git rev-parse HEAD` matches it.
-2. Resolves the runtime tokens: the deploy subnet from the **`AWS_DEPLOY_SUBNET_ID`
-   repository variable** (the account holds more than one VPC, so discovery cannot be blind,
-   and the value must equal the subnet the IAM was materialized with — `bootstrap-iam.sh`
-   takes the same value via `BOOTSTRAP_SUBNET_ID`), its AZ, and the runner's egress IP as a
-   `/32` for the SSH ingress rule.
-3. Renders `aws-test.tfvars.tmpl` into `$RUNNER_TEMP` and fails if any `__` token survives.
+2. Renders the one runtime token — the runner's egress IP as a `/32` for the SSH ingress
+   rule — into `aws-test.tfvars.tmpl`'s untracked copy, failing if any `__` token survives.
+   The deploy subnet/AZ are **hard-coded in the template**, which is the single source of
+   truth: `bootstrap-iam.sh` parses `subnet_id` out of it (and derives the VPC from the
+   subnet) to materialize the IAM pin, so the tfvars and the launch policy cannot disagree.
 4. `terraform -chdir=<framework>/terraform init` with partial backend config:
    bucket `<account-id>-terraform`, key `nwarila-platform/windows-wsus/aws-poc.tfstate`,
    region `us-east-1`. `encrypt` and `use_lockfile` come from the framework's `backend.tf`;

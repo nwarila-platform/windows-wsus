@@ -3,13 +3,17 @@
 # --- [ Description ] ----------------------------------------------------------------------- #
 #
 # Variable input for the pinned aws-terraform-framework (SHA in .terraform-framework-pin).
-# This is a TEMPLATE, not a tfvars file: the three double-underscore tokens are rendered at
-# run time by .github/workflows/aws-deploy.yml (the deploy subnet from the AWS_DEPLOY_SUBNET_ID
-# repository variable — the account has more than one VPC, so discovery cannot be blind — its
-# AZ, and the runner's egress /32) into an untracked copy under $RUNNER_TEMP. The render step
+# This is a TEMPLATE, not a tfvars file: the ONE double-underscore token (the CI runner's
+# egress /32 for the SSH ingress rule) is rendered at run time by
+# .github/workflows/aws-deploy.yml into an untracked copy under $RUNNER_TEMP. The render step
 # fails if any token survives substitution — same fail-closed philosophy as the IAM
 # substitution gate. Keep literal double underscores out of comments; the check is a
 # whole-file grep on purpose.
+#
+# The deploy subnet is HARD-CODED here and this file is the single source of truth for it:
+# bootstrap-iam.sh parses subnet_id out of this template to materialize the IAM subnet pin,
+# so the tfvars and the launch policy can never disagree. (The literals gate bans environment
+# ids only under docs/reference/aws-iam/ — committing the subnet here is deliberate.)
 #
 # Every value here must stay inside the deploy role's launch boundary
 # (docs/reference/aws-iam/README.md): t3.medium/t3.large only, gp3 encrypted <= 64 GiB,
@@ -40,8 +44,8 @@ all_systems = [
   {
     region               = "us_east_1"
     hostname             = "wsus-poc-01"
-    availability_zone    = "__AVAILABILITY_ZONE__"
-    subnet_id            = "__SUBNET_ID__"
+    availability_zone    = "us-east-1a"
+    subnet_id            = "subnet-0e1c8aae192deff26"
     # The org's shared EC2 key pair (secure-wazuh pattern) — its private half is the
     # AWS_EC2_SSH_PRIVATE_KEY Actions secret. No per-repo key material is minted.
     key_name             = "nwarila-ec2-key"
