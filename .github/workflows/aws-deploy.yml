@@ -406,7 +406,9 @@ jobs:
             destination=()
             raw="${raw//$'\t'/$'\n'}"
             while IFS= read -r item; do
-              [ -n "${item}" ] && destination+=("${item}")
+              if [ -n "${item}" ]; then
+                destination+=("${item}")
+              fi
             done <<< "${raw}"
           }
 

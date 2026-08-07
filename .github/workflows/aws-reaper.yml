@@ -171,7 +171,9 @@ jobs:
           candidate_text="$(printf '%s\n' "${!observed_runs[@]}" | sed '/^$/d' | sort -n)"
           candidate_runs=()
           while IFS= read -r candidate_run; do
-            [ -n "${candidate_run}" ] && candidate_runs+=("${candidate_run}")
+            if [ -n "${candidate_run}" ]; then
+              candidate_runs+=("${candidate_run}")
+            fi
           done <<< "${candidate_text}"
 
           split_text_array() {
@@ -180,7 +182,9 @@ jobs:
             destination=()
             raw="${raw//$'\t'/$'\n'}"
             while IFS= read -r item; do
-              [ -n "${item}" ] && destination+=("${item}")
+              if [ -n "${item}" ]; then
+                destination+=("${item}")
+              fi
             done <<< "${raw}"
           }
 
