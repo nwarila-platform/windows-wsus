@@ -229,18 +229,53 @@ jobs:
           GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
         run: |
           set -euo pipefail
-          tag="Name=tag:nwarila:management:repository-id,Values=${GITHUB_REPOSITORY_ID}"
-          instances="$(aws ec2 describe-instances --filters "${tag}" \
-            "Name=instance-state-name,Values=pending,running,stopping,stopped,shutting-down" \
+
+          # Everything this repository creates carries its repository-id tag.
+          owned_by_this_repo="Name=tag:nwarila:management:repository-id,Values=${GITHUB_REPOSITORY_ID}"
+          survivors=0
+
+          count="$(aws ec2 describe-instances \
+            --filters "${owned_by_this_repo}" "Name=instance-state-name,Values=pending,running,stopping,stopped,shutting-down" \
             --query 'length(Reservations[].Instances[])' --output text)"
-          volumes="$(aws ec2 describe-volumes --filters "${tag}" --query 'length(Volumes)' --output text)"
-          interfaces="$(aws ec2 describe-network-interfaces --filters "${tag}" --query 'length(NetworkInterfaces)' --output text)"
-          addresses="$(aws ec2 describe-addresses --filters "${tag}" --query 'length(Addresses)' --output text)"
-          groups="$(aws ec2 describe-security-groups --filters "${tag}" --query 'length(SecurityGroups)' --output text)"
-          echo "instances=${instances} volumes=${volumes} interfaces=${interfaces} addresses=${addresses} security-groups=${groups}"
-          total=$(( instances + volumes + interfaces + addresses + groups ))
-          if [ "${total}" -ne 0 ]; then
-            echo "!! ${total} resource(s) tagged to this repository survived the destroy" >&2
+          if [ "${count}" != "0" ]; then
+            echo "!! ${count} EC2 instance(s) still exist" >&2
+            survivors=1
+          fi
+
+          count="$(aws ec2 describe-volumes \
+            --filters "${owned_by_this_repo}" \
+            --query 'length(Volumes)' --output text)"
+          if [ "${count}" != "0" ]; then
+            echo "!! ${count} EBS volume(s) still exist" >&2
+            survivors=1
+          fi
+
+          count="$(aws ec2 describe-network-interfaces \
+            --filters "${owned_by_this_repo}" \
+            --query 'length(NetworkInterfaces)' --output text)"
+          if [ "${count}" != "0" ]; then
+            echo "!! ${count} network interface(s) still exist" >&2
+            survivors=1
+          fi
+
+          count="$(aws ec2 describe-addresses \
+            --filters "${owned_by_this_repo}" \
+            --query 'length(Addresses)' --output text)"
+          if [ "${count}" != "0" ]; then
+            echo "!! ${count} Elastic IP(s) still exist" >&2
+            survivors=1
+          fi
+
+          count="$(aws ec2 describe-security-groups \
+            --filters "${owned_by_this_repo}" \
+            --query 'length(SecurityGroups)' --output text)"
+          if [ "${count}" != "0" ]; then
+            echo "!! ${count} security group(s) still exist" >&2
+            survivors=1
+          fi
+
+          if [ "${survivors}" -ne 0 ]; then
+            echo "Resources tagged to this repository survived the destroy — investigate before re-running." >&2
             exit 1
           fi
-          echo 'destroyed clean'
+          echo "Destroyed clean: no instances, volumes, network interfaces, Elastic IPs, or security groups remain."
