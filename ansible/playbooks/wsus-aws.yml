@@ -33,14 +33,26 @@
   gather_facts: false
   become: false
 
+  vars:
+    # The same connection the inventory composes, spelled out for the controller-side probe
+    # below (an unreachable `raw` task is never retried by retries/until, so the WAIT must run
+    # on the controller, where a failing ssh is an ordinary command failure).
+    __ssh_probe__: >-
+      ssh {{ ansible_ssh_common_args }} -i {{ ansible_ssh_private_key_file }}
+      -o BatchMode=yes -o ConnectTimeout=10
+      {{ ansible_user }}@{{ ansible_host }} exit
+
   tasks:
-    - name: 'READY | Wait for sshd (EC2Launch installs the launch key minutes after boot)'
-      ansible.builtin.raw: 'echo ready'
+    - name: 'READY | Wait for the SSM-SSH path (agent registered, sshd up, launch key installed)'
+      delegate_to: 'localhost'
+      ansible.builtin.command:
+        cmd: "{{ __ssh_probe__ }}"
       register: '__ssh_ready__'
       retries: 90
       delay: 10
-      until: (__ssh_ready__.rc | default(1)) == 0
-      ignore_unreachable: true
+      until: __ssh_ready__.rc == 0
+      failed_when: __ssh_ready__.rc != 0
+      changed_when: false
 
     - name: 'READY | Wait for EC2Launch provisioning to complete'
       ansible.builtin.raw: '"C:\Program Files\Amazon\EC2Launch\EC2Launch.exe" status -b'
@@ -54,14 +66,22 @@
         Restart-Service sshd"
       failed_when: false
 
+    - name: 'READY | Wait for sshd to return after the restart'
+      delegate_to: 'localhost'
+      ansible.builtin.command:
+        cmd: "{{ __ssh_probe__ }}"
+      register: '__sshd_back__'
+      retries: 12
+      delay: 5
+      until: __sshd_back__.rc == 0
+      failed_when: __sshd_back__.rc != 0
+      changed_when: false
+
     - name: 'READY | Verify the default shell is PowerShell'
       # A PowerShell-only expression: fails under cmd, answers the path once the flip landed.
       ansible.builtin.raw: '(Get-ItemProperty "HKLM:\SOFTWARE\OpenSSH").DefaultShell'
       register: '__default_shell__'
-      retries: 12
-      delay: 5
-      until: "'powershell.exe' in (__default_shell__.stdout | default('') | lower)"
-      ignore_unreachable: true
+      failed_when: "'powershell.exe' not in (__default_shell__.stdout | default('') | lower)"
 #endregion --- [ Play: Windows Readiness ] ---------------------------------------------------- #
 
 
