@@ -720,10 +720,14 @@
       when: (config.tls.enabled | bool) and not (config.tls.thumbprint | default('') | trim | length)
       ansible.windows.win_certificate_store:
         path: 'C:\Windows\Temp\wsus-tls.pfx'
+        # Read on the CONTROLLER and passed as an in-memory, no_log module argument — the
+        # password never exists as a file on the target.
         password: "{{ lookup('ansible.builtin.file', __tls_staging__ ~ '/wsus-tls.pfx.password') | trim }}"
         store_location: 'LocalMachine'
         store_name: 'My'
         key_storage: 'machine'
+        # The imported private key cannot be re-exported from the store.
+        key_exportable: false
         state: 'present'
       no_log: true
       register: '__tls_import__'
