@@ -7,7 +7,7 @@
 #
 #   * The OIDC trust pins THIS FILE's path in job_workflow_ref — every stage lives here, and
 #     a rename fails the credential exchange loudly.
-#   * Reachability: EIP + SSH from this runner's own /32 (SG has no other ingress, no egress).
+#   * Reachability: EIP + key-authenticated SSH (the SG's only ingress; egress is empty).
 #     readiness_gate=false because the framework's gate dials the private ip; the Ansible
 #     stage waits for sshd/EC2Launch itself, then flips DefaultShell to PowerShell.
 #   * Credentials re-exchange per stage (MaxSessionDuration < job runtime); a destroy with
@@ -124,21 +124,13 @@ jobs:
             -backend-config="key=${STATE_KEY}" \
             -backend-config="region=${AWS_REGION}"
 
-      # Renders the one tfvars token (this runner's /32, the SG's only ingress) then applies.
       # Converges from clean OR from a killed predecessor's leftover state.
       - name: Terraform apply
         timeout-minutes: 30
         run: |
           set -euo pipefail
-          runner_ip="$(curl -fsS https://checkip.amazonaws.com | tr -d '[:space:]')"
-          printf '%s' "${runner_ip}" | grep -Eq '^[0-9]{1,3}(\.[0-9]{1,3}){3}$' \
-            || { printf 'runner egress IP looks wrong: %s\n' "${runner_ip}" >&2; exit 1; }
-          sed "s|__RUNNER_CIDR__|${runner_ip}/32|g" \
-            terraform/environments/aws-test.tfvars.tmpl > "${RUNNER_TEMP}/aws-test.tfvars"
-          grep -n '__' "${RUNNER_TEMP}/aws-test.tfvars" \
-            && { echo 'unsubstituted token survived the render' >&2; exit 1; } || true
           terraform -chdir="${TF_DIR}" apply -input=false -auto-approve -lock-timeout=120s \
-            -var-file="${RUNNER_TEMP}/aws-test.tfvars"
+            -var-file="${GITHUB_WORKSPACE}/terraform/environments/aws-test.tfvars"
 
       # Fresh hour for the longest stage: the play's disk resolver describes EBS mid-run.
       - name: Refresh AWS credentials before configure (OIDC)
@@ -272,7 +264,7 @@ jobs:
         run: |
           set -euo pipefail
           terraform -chdir="${TF_DIR}" destroy -input=false -auto-approve -lock-timeout=300s \
-            -var-file="${RUNNER_TEMP}/aws-test.tfvars"
+            -var-file="${GITHUB_WORKSPACE}/terraform/environments/aws-test.tfvars"
           tag="Name=tag:nwarila:management:repository-id,Values=${GITHUB_REPOSITORY_ID}"
           fails=0
           check() { # label query...

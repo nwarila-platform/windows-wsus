@@ -10,7 +10,7 @@ framework owns the how, this repo owns only the what.
 
 | File | Purpose |
 |---|---|
-| `environments/aws-test.tfvars.tmpl` | The one ephemeral system (`wsus-poc-01`) as framework `all_systems` input; three `__TOKEN__` values rendered per run |
+| `environments/aws-test.tfvars` | The one ephemeral system (`wsus-poc-01`) as framework `all_systems` input; passed to terraform verbatim |
 | `../.terraform-framework-pin` | 40-char commit SHA of the framework (currently `fa3908c…` = release **2.2.0**; pin the SHA, not a tag — release tags land after the fact) |
 
 ## How a deploy runs
@@ -19,11 +19,10 @@ framework owns the how, this repo owns only the what.
 role) does, per run:
 
 1. Checks out the framework at the pin and asserts `git rev-parse HEAD` matches it.
-2. Renders the one runtime token — the runner's egress IP as a `/32` for the SSH ingress
-   rule — into `aws-test.tfvars.tmpl`'s untracked copy, failing if any `__` token survives.
-   The deploy subnet/AZ are **hard-coded in the template**, which is the single source of
-   truth: `bootstrap-iam.sh` parses `subnet_id` out of it (and derives the VPC from the
-   subnet) to materialize the IAM pin, so the tfvars and the launch policy cannot disagree.
+2. Passes `environments/aws-test.tfvars` to terraform verbatim. That file is the single
+   source of truth for the deploy subnet: `bootstrap-iam.sh` parses `subnet_id` out of it
+   (and derives the VPC from the subnet) to materialize the IAM pin, so the tfvars and the
+   launch policy cannot disagree.
 4. `terraform -chdir=<framework>/terraform init` with partial backend config:
    bucket `<account-id>-terraform`, key `nwarila-platform/windows-wsus/aws-poc.tfstate`,
    region `us-east-1`. `encrypt` and `use_lockfile` come from the framework's `backend.tf`;
@@ -38,9 +37,9 @@ role) does, per run:
 - **Reachability is the EIP:** the framework attaches pre-created ENIs, a launch path AWS
   never auto-assigns a public IP to, and the account has no NAT and no VPC endpoints — so the
   EIP (~$0.005/h while the instance lives) is the runner's only path in AND the instance's
-  only route anywhere. The SG admits SSH from the runner's per-run `/32` only and allows no
-  egress. The deploy subnet must route through an internet gateway; the deploy role cannot
-  probe that (`ec2:DescribeRouteTables` is not granted).
+  only route anywhere. The SG admits key-authenticated SSH only and allows no egress. The
+  deploy subnet must route through an internet gateway; the deploy role cannot probe that
+  (`ec2:DescribeRouteTables` is not granted).
 - The org-shared `nwarila-ec2-key` key pair exists (secure-wazuh pattern). Its private half is
   the `AWS_EC2_SSH_PRIVATE_KEY` Actions secret — used only by CI's own readiness/Ansible SSH
   stages, never by Terraform (`readiness_gate = false`, `readiness_private_key_paths = {}`).

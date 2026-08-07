@@ -1,19 +1,14 @@
 # =========================================================================================== #
-# File: 'terraform/environments/aws-test.tfvars.tmpl'
+# File: 'terraform/environments/aws-test.tfvars'
 # --- [ Description ] ----------------------------------------------------------------------- #
 #
 # Variable input for the pinned aws-terraform-framework (SHA in .terraform-framework-pin).
-# This is a TEMPLATE, not a tfvars file: the ONE double-underscore token (the CI runner's
-# egress /32 for the SSH ingress rule) is rendered at run time by
-# .github/workflows/aws-deploy.yml into an untracked copy under $RUNNER_TEMP. The render step
-# fails if any token survives substitution — same fail-closed philosophy as the IAM
-# substitution gate. Keep literal double underscores out of comments; the check is a
-# whole-file grep on purpose.
+# Plain tfvars, no templating: the workflow passes this file to terraform verbatim.
 #
-# The deploy subnet is HARD-CODED here and this file is the single source of truth for it:
-# bootstrap-iam.sh parses subnet_id out of this template to materialize the IAM subnet pin,
-# so the tfvars and the launch policy can never disagree. (The literals gate bans environment
-# ids only under docs/reference/aws-iam/ — committing the subnet here is deliberate.)
+# This file is the single source of truth for the deploy subnet: bootstrap-iam.sh parses
+# subnet_id out of it to materialize the IAM subnet pin, so the tfvars and the launch policy
+# can never disagree. (The literals gate bans environment ids only under
+# docs/reference/aws-iam/ — committing the subnet here is deliberate.)
 #
 # Every value here must stay inside the deploy role's launch boundary
 # (docs/reference/aws-iam/README.md): t3.medium/t3.large only, gp3 encrypted <= 64 GiB,
@@ -22,8 +17,8 @@
 # REACHABILITY: the framework attaches a PRE-CREATED ENI, and AWS never auto-assigns a public
 # IP to that launch path — so without the EIP below the instance would have no route to
 # anything (no NAT, no VPC endpoints in this account) and nothing could reach it. The EIP
-# (~$0.005/h for the instance's short life) plus an ingress rule scoped to the CI runner's
-# own /32 is the entire exposure. Egress is EMPTY: WSUS here syncs from nothing — no
+# (~$0.005/h for the instance's short life) plus a key-auth-only SSH port is the entire
+# exposure. Egress is EMPTY: WSUS here syncs from nothing — no
 # Microsoft Update, no website — and the OpenSSH bootstrap pulls its key from link-local
 # IMDS, which security groups never see.
 #
@@ -42,10 +37,10 @@ readiness_private_key_paths = {}
 
 all_systems = [
   {
-    region               = "us_east_1"
-    hostname             = "wsus-poc-01"
-    availability_zone    = "us-east-1a"
-    subnet_id            = "subnet-0e1c8aae192deff26"
+    region            = "us_east_1"
+    hostname          = "wsus-poc-01"
+    availability_zone = "us-east-1a"
+    subnet_id         = "subnet-0e1c8aae192deff26"
     # The org's shared EC2 key pair (secure-wazuh pattern) — its private half is the
     # AWS_EC2_SSH_PRIVATE_KEY Actions secret. No per-repo key material is minted.
     key_name             = "nwarila-ec2-key"
@@ -55,11 +50,11 @@ all_systems = [
     refresh              = false
     # t3.large, not t3.medium: WSUS postinstall + SUSDB work on 4 GiB regularly pushes past the
     # CI stage budget. Both types are inside the launch policy's type lock.
-    instance_type        = "t3.large"
-    readiness_user       = null
-    readiness_gate       = false
-    imds_hop_limit       = 1
-    set_state            = null
+    instance_type  = "t3.large"
+    readiness_user = null
+    readiness_gate = false
+    imds_hop_limit = 1
+    set_state      = null
 
     tags = {
       Function = "wsus"
@@ -76,8 +71,8 @@ all_systems = [
     }
 
     # The same three RAW data disks the lab baseline provides (VM-LIFECYCLE.md §1): the deploy
-    # layer owns the hardware, the composed play's windows_disk_manager formats it. Function
-    # tags are the join key for the workflow's volume-id -> Windows disk identity mapping.
+    # layer owns the hardware, the composed play's windows_disk_manager formats it. The
+    # Function tags are the identities the role resolves each disk by (resolve_aws.yml).
     ebs_block_devices = [
       {
         iops         = null
@@ -115,17 +110,17 @@ all_systems = [
         private_ip      = null
         security_groups = []
         # Non-null ingress + egress => the framework creates and attaches wsus-poc-01-eni-0-sg.
-        # Ingress is ONLY SSH from the CI runner's own egress address, discovered per run.
+        # Ingress is SSH only, key-authenticated, on an instance that lives ~90 minutes.
         # Egress [] = no outbound at all: WSUS syncs from nothing in this PoC, the bootstrap's
         # key fetch is link-local IMDS (invisible to SGs), and SSH replies ride the stateful
-        # inbound connection. The tightest posture the flow permits.
+        # inbound connection.
         ingress = [
           {
-            description                  = "SSH from the CI runner only"
+            description                  = "SSH (key auth only; ephemeral instance)"
             ip_protocol                  = "tcp"
             from_port                    = 22
             to_port                      = 22
-            cidr_ipv4                    = "__RUNNER_CIDR__"
+            cidr_ipv4                    = "0.0.0.0/0"
             cidr_ipv6                    = null
             prefix_list_id               = null
             referenced_security_group_id = null
