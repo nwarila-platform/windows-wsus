@@ -103,18 +103,21 @@ jobs:
           terraform_version: '1.15.1'
           terraform_wrapper: false
 
-      # Also renders the tfvars: the framework refuses a /0 ingress CIDR (its world-open
-      # ingress ban), so the SSH rule must name this runner's own address, discovered per run.
-      # Rendering here means destroy (gated on this step) can always rely on the file.
+      # The framework refuses a /0 ingress CIDR (its world-open ingress ban), so the SSH rule
+      # must name this runner's own address, discovered fresh every run.
+      - name: Render tfvars (SSH open to this runner only)
+        run: |
+          set -euo pipefail
+          runner_ip="$(curl -fsS https://checkip.amazonaws.com | tr -d '[:space:]')"
+          sed "s|__RUNNER_CIDR__|${runner_ip}/32|" \
+            terraform/environments/aws-test.tfvars.tmpl > "${RUNNER_TEMP}/aws-test.tfvars"
+
       - name: Terraform init
         id: tf-init
         env:
           AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
         run: |
           set -euo pipefail
-          runner_ip="$(curl -fsS https://checkip.amazonaws.com | tr -d '[:space:]')"
-          sed "s|__RUNNER_CIDR__|${runner_ip}/32|" \
-            terraform/environments/aws-test.tfvars.tmpl > "${RUNNER_TEMP}/aws-test.tfvars"
           terraform -chdir="${TF_DIR}" init -input=false \
             -backend-config="bucket=${AWS_ACCOUNT_ID}-terraform" \
             -backend-config="key=${STATE_KEY}" \
@@ -146,26 +149,25 @@ jobs:
           role-session-name: aws-deploy-configure-${{ github.run_id }}
           role-duration-seconds: 3600
 
-      # Readiness, configuration and the WSUS proof all live in the playbook; the dynamic
-      # inventory (ansible/inventory/aws_ec2.yml) finds the instance by its Function tag.
-      # This step just prepares the controller: toolchain, SSH key, compose overlay.
-      - name: Run Ansible
-        timeout-minutes: 110
-        env:
-          ANSIBLE_CONFIG: ${{ github.workspace }}/.frameworks/ansible-framework/ansible.cfg
-          AWS_EC2_SSH_PRIVATE_KEY: ${{ secrets.AWS_EC2_SSH_PRIVATE_KEY }}
-          # Imported by the play's pre-tasks — same value the OIDC role ARN is built from.
-          AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+      - name: Install Ansible
         run: |
           set -euo pipefail
           python3 -m pip install --quiet --no-cache-dir "ansible-core${ANSIBLE_CORE_SPEC}" boto3 botocore
           ansible-galaxy collection install ansible.windows community.windows amazon.aws
 
+      - name: Install the SSH key
+        env:
+          AWS_EC2_SSH_PRIVATE_KEY: ${{ secrets.AWS_EC2_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
           install -d -m 0700 "${HOME}/.ssh"
           install -m 0600 /dev/stdin "${HOME}/.ssh/nwarila-ec2-key.pem" <<< "${AWS_EC2_SSH_PRIVATE_KEY}"
 
-          # Compose overlay: this repo's roles onto the pinned framework tree. Refuse a
-          # framework-TRACKED role path so an overlay can never replace framework-owned code.
+      # This repo's roles overlay onto the pinned framework tree. A framework-TRACKED role
+      # path is refused so an overlay can never replace framework-owned code.
+      - name: Compose the Ansible tree
+        run: |
+          set -euo pipefail
           framework_dir="${GITHUB_WORKSPACE}/.frameworks/ansible-framework"
           for role_source in "${GITHUB_WORKSPACE}"/ansible/applications/*; do
             role_name="$(basename "${role_source}")"
@@ -175,7 +177,17 @@ jobs:
             rsync -a --delete "${role_source}/" "${framework_dir}/applications/${role_name}/"
           done
 
-          cd "${framework_dir}"
+      # Readiness, configuration and the WSUS proof all live in the playbook; the dynamic
+      # inventory (ansible/inventory/aws_ec2.yml) finds the instance by its Function tag.
+      - name: Run the WSUS playbook
+        timeout-minutes: 100
+        env:
+          ANSIBLE_CONFIG: ${{ github.workspace }}/.frameworks/ansible-framework/ansible.cfg
+          # Imported by the play's pre-tasks — same value the OIDC role ARN is built from.
+          AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          cd "${GITHUB_WORKSPACE}/.frameworks/ansible-framework"
           ansible-playbook -i "${GITHUB_WORKSPACE}/ansible/inventory/aws_ec2.yml" \
             "${GITHUB_WORKSPACE}/ansible/playbooks/wsus-aws.yml" -e env=test
 
@@ -189,10 +201,8 @@ jobs:
           role-session-name: aws-deploy-destroy-${{ github.run_id }}
           role-duration-seconds: 3600
 
-      # Gated on INIT, not apply: a failed apply still leaves state to tear down. Ends with
-      # the cost alarm — resources a hard-killed apply never recorded in state are invisible
-      # to destroy, but the identity tag finds them; remediation is an operator call.
-      - name: Terraform destroy (ephemeral, always)
+      # Gated on INIT, not apply: a failed apply still leaves state to tear down.
+      - name: Terraform destroy (always)
         if: always() && steps.tf-init.outcome == 'success'
         timeout-minutes: 30
         env:
@@ -208,21 +218,29 @@ jobs:
             -var "owner=${GITHUB_REPOSITORY_OWNER}" \
             -var "commit_sha=$(git rev-parse HEAD)" \
             -var "run_id=${GITHUB_RUN_ID}"
+
+      # The cost alarm. terraform destroy can only remove what its state recorded; a resource
+      # created moments before a hard kill can exist with no state entry. Every resource this
+      # repo creates carries its repository-id tag, so count everything tagged and fail the
+      # run if the count is not zero. Cleanup of a stray is an operator decision.
+      - name: Verify nothing survived
+        if: always() && steps.tf-init.outcome == 'success'
+        env:
+          GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
+        run: |
+          set -euo pipefail
           tag="Name=tag:nwarila:management:repository-id,Values=${GITHUB_REPOSITORY_ID}"
-          fails=0
-          check() { # label query...
-            local label="$1"; shift
-            local n; n="$("$@" --output text)"
-            [ "${n}" = "0" ] || { echo "!! ${n} ${label} survived" >&2; fails=1; }
-          }
-          check 'instance(s)' aws ec2 describe-instances --filters "${tag}" \
+          instances="$(aws ec2 describe-instances --filters "${tag}" \
             "Name=instance-state-name,Values=pending,running,stopping,stopped,shutting-down" \
-            --query 'length(Reservations[].Instances[])'
-          check 'volume(s)' aws ec2 describe-volumes --filters "${tag}" --query 'length(Volumes)'
-          check 'ENI(s)' aws ec2 describe-network-interfaces --filters "${tag}" \
-            --query 'length(NetworkInterfaces)'
-          check 'Elastic IP(s)' aws ec2 describe-addresses --filters "${tag}" --query 'length(Addresses)'
-          check 'security group(s)' aws ec2 describe-security-groups --filters "${tag}" \
-            --query 'length(SecurityGroups)'
-          [ "${fails}" = "0" ] && echo 'destroyed clean — no tagged resources survived'
-          exit "${fails}"
+            --query 'length(Reservations[].Instances[])' --output text)"
+          volumes="$(aws ec2 describe-volumes --filters "${tag}" --query 'length(Volumes)' --output text)"
+          interfaces="$(aws ec2 describe-network-interfaces --filters "${tag}" --query 'length(NetworkInterfaces)' --output text)"
+          addresses="$(aws ec2 describe-addresses --filters "${tag}" --query 'length(Addresses)' --output text)"
+          groups="$(aws ec2 describe-security-groups --filters "${tag}" --query 'length(SecurityGroups)' --output text)"
+          echo "instances=${instances} volumes=${volumes} interfaces=${interfaces} addresses=${addresses} security-groups=${groups}"
+          total=$(( instances + volumes + interfaces + addresses + groups ))
+          if [ "${total}" -ne 0 ]; then
+            echo "!! ${total} resource(s) tagged to this repository survived the destroy" >&2
+            exit 1
+          fi
+          echo 'destroyed clean'
