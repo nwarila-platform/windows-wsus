@@ -794,6 +794,10 @@
       register: '__tls_binding__'
       changed_when: "__tls_binding__.stdout | trim == 'changed'"
 
+    # Microsoft's documented order: set Require-SSL on the five client-facing virtual
+    # directories FIRST, then wsusutil configuressl registers the https URL. The URL it
+    # prints is the authoritative verification — it only reports https once the flags are
+    # genuinely set (proven live: with flags unset it echoed http://...:8530).
     - name: 'MAIN | Require SSL On The Client-Facing WSUS Endpoints (wsusutil configuressl)'
       when: config.tls.enabled | bool
       ansible.windows.win_shell: |
@@ -801,25 +805,23 @@
         Import-Module WebAdministration
         $dns = $env:TLS_DNS_NAME
         if (-not $dns) { $dns = $env:COMPUTERNAME }
-        # Verify the effect configuressl actually has: RequireSSL flags on the client-facing
-        # virtual directories. (Registry probes vary by WSUS build, and a name-based
-        # Get-WsusServer over SSL trips certificate-name validation against localhost.)
-        $vdir = 'IIS:\Sites\WSUS Administration\ClientWebService'
-        $flags = [string](Get-WebConfigurationProperty -PSPath $vdir -Filter 'system.webServer/security/access' -Name 'sslFlags')
-        if ($flags -match 'Ssl') {
-            Write-Output 'nochange'
-            exit 0
+        $vdirs = @('ApiRemoting30', 'ClientWebService', 'DSSAuthWebService', 'ServerSyncWebService', 'SimpleAuthWebService')
+        $changed = $false
+        foreach ($name in $vdirs) {
+            $psPath = Join-Path 'IIS:\Sites\WSUS Administration' $name
+            $value = (Get-WebConfigurationProperty -PSPath $psPath -Filter 'system.webServer/security/access' -Name 'sslFlags').Value
+            $text = [string]$value
+            if ($text -ne 'Ssl' -and $text -ne '8') {
+                Set-WebConfigurationProperty -PSPath $psPath -Filter 'system.webServer/security/access' -Name 'sslFlags' -Value 'Ssl'
+                $changed = $true
+            }
         }
         $wsusutil = Join-Path $env:ProgramFiles 'Update Services\Tools\wsusutil.exe'
         $out = & $wsusutil configuressl $dns 2>&1
-        if ($LASTEXITCODE -ne 0) {
-            throw ('wsusutil configuressl failed rc=' + $LASTEXITCODE + ' output=' + ($out -join ' '))
-        }
-        $flags = [string](Get-WebConfigurationProperty -PSPath $vdir -Filter 'system.webServer/security/access' -Name 'sslFlags')
-        if ($flags -notmatch 'Ssl') {
-            throw ('ClientWebService sslFlags still [' + $flags + '] after configuressl; output=' + ($out -join ' '))
-        }
-        Write-Output 'changed'
+        $text = ($out -join ' ')
+        if ($LASTEXITCODE -ne 0) { throw ('wsusutil configuressl failed rc=' + $LASTEXITCODE + ' output=' + $text) }
+        if ($text -notmatch 'https://') { throw ('configuressl still reports a non-SSL URL: ' + $text) }
+        if ($changed) { Write-Output 'changed' } else { Write-Output 'nochange' }
       environment:
         TLS_DNS_NAME: "{{ config.tls.dns_name | default('') }}"
       register: '__tls_configuressl__'
