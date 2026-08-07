@@ -5,8 +5,11 @@
 # recorded, and a run killed hard enough never reaches its own destroy — so every 15 minutes
 # this workflow tears down ANYTHING still carrying this repository's identity tag.
 #
-#   * It shares aws-deploy.yml's concurrency group, so it can never fire while a deploy is
-#     mid-flight; it waits its turn, then reaps whatever that run left behind.
+#   * It runs in its OWN concurrency group and instead GUARDS on the lifecycle: a pending
+#     deploy in a shared group would be replaced (cancelled) by every reaper tick —
+#     cancel-in-progress:false only protects RUNNING jobs, a pathology proven live when a
+#     tick cancelled a queued required-check run. The guard step skips the sweep whenever any
+#     lifecycle run is active or queued.
 #   * The OIDC trust lists this file's path in job_workflow_ref alongside aws-deploy.yml —
 #     renaming either file breaks its credential exchange loudly.
 #   * Schedules run from the default branch only, and a clean account is a fast no-op.
@@ -19,9 +22,8 @@ on:
   workflow_dispatch:
 permissions: {}
 
-# Same group as aws-deploy.yml: one AWS boundary, never two runs touching it at once.
 concurrency:
-  group: aws-deploy-${{ github.repository }}
+  group: aws-reaper-${{ github.repository }}
   cancel-in-progress: false
 
 jobs:
@@ -33,12 +35,28 @@ jobs:
       id-token: write
       contents: read
       issues: write
+      actions: read
     env:
       AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
       DEPLOY_ROLE: github_nwarila-platform_windows-wsus
 
     steps:
+      # Never sweep while a deploy is live: an active run's freshly created resources carry
+      # the same tag and would be torn down mid-configure. Queued counts too — it will be
+      # creating resources moments from now.
+      - name: Check for an active lifecycle run
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          active="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/aws-deploy.yml/runs?status=in_progress&per_page=1" --jq '.total_count')"
+          queued="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/aws-deploy.yml/runs?status=queued&per_page=1" --jq '.total_count')"
+          echo "busy=$(( active + queued ))" >> "${GITHUB_OUTPUT}"
+          echo "lifecycle runs active or queued: $(( active + queued ))"
+
       - name: Configure AWS credentials (OIDC)
+        if: steps.gate.outputs.busy == '0'
         uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
         with:
           role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ env.DEPLOY_ROLE }}
@@ -50,6 +68,7 @@ jobs:
       # attached to them), then network interfaces, Elastic IPs, volumes, security groups.
       # Every command is scoped by the repository's tag.
       - name: Tear down anything still standing
+        if: steps.gate.outputs.busy == '0'
         env:
           GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
         run: |
