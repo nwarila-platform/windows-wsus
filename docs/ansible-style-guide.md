@@ -9,7 +9,7 @@
 ## 1. Repo & composition model — SEEDED (kickoff 2026-07-15)
 
 - One single-purpose role per application repo; the repo composes into a
-  version-pinned `ansible-framework` checkout at execution time (`.framework-pin`,
+  version-pinned `ansible-framework` checkout at execution time (`.github/ansible-framework-pin`,
   `scripts/compose-and-run.sh`). Roles must be drop-in compatible with the framework's
   `applications/` namespace (`roles_path` resolution by bare name).
 - The framework is the chassis: `ansible.cfg`, lint configs, loader contract, CI

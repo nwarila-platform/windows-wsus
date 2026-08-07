@@ -34,8 +34,8 @@ on:
       - scripts/check-iam-literals.sh
       - scripts/test-iam-policies.sh
       - terraform/**
-      - .terraform-framework-pin
-      - .framework-pin
+      - .github/terraform-framework-pin
+      - .github/ansible-framework-pin
       - .github/workflows/aws-deploy.yml
 permissions: {}
 
@@ -80,8 +80,8 @@ jobs:
       - name: Read framework pins
         id: pins
         run: |
-          echo "terraform=$(cat .terraform-framework-pin)" >> "$GITHUB_OUTPUT"
-          echo "ansible=$(cat .framework-pin)" >> "$GITHUB_OUTPUT"
+          echo "terraform=$(cat .github/terraform-framework-pin)" >> "$GITHUB_OUTPUT"
+          echo "ansible=$(cat .github/ansible-framework-pin)" >> "$GITHUB_OUTPUT"
 
       - name: Checkout aws-terraform-framework (pinned)
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0

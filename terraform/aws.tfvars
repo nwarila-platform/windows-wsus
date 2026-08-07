@@ -2,7 +2,7 @@
 # File: 'terraform/aws.tfvars'
 # --- [ Description ] ----------------------------------------------------------------------- #
 #
-# Variable input for the pinned aws-terraform-framework (SHA in .terraform-framework-pin).
+# Variable input for the pinned aws-terraform-framework (SHA in .github/terraform-framework-pin).
 # Plain tfvars — the workflow passes this file to terraform verbatim.
 #
 # This file is the single source of truth for the deploy subnet: bootstrap-iam.sh parses
