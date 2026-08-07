@@ -5,8 +5,8 @@ ansible-core==2.21.2
 ansible-lint==26.6.0
 attrs==26.1.0
 black==26.5.1
-boto3==1.43.53
-botocore==1.43.53
+boto3==1.43.64
+botocore==1.43.64
 bracex==3.0.1
 cffi==2.1.1
 click==8.4.2
