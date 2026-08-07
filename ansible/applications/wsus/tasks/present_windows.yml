@@ -798,21 +798,27 @@
       when: config.tls.enabled | bool
       ansible.windows.win_shell: |
         $ErrorActionPreference = 'Stop'
+        Import-Module WebAdministration
         $dns = $env:TLS_DNS_NAME
         if (-not $dns) { $dns = $env:COMPUTERNAME }
-        # configuressl records UsingSSL in the Setup key; that is the idempotency signal — a
-        # name-based Get-WsusServer probe would trip over certificate-name validation instead.
-        $setupKey = 'HKLM:\SOFTWARE\Microsoft\Update Services\Server\Setup'
-        $setup = Get-ItemProperty $setupKey
-        if ($setup.UsingSSL -eq 1) {
+        # Verify the effect configuressl actually has: RequireSSL flags on the client-facing
+        # virtual directories. (Registry probes vary by WSUS build, and a name-based
+        # Get-WsusServer over SSL trips certificate-name validation against localhost.)
+        $vdir = 'IIS:\Sites\WSUS Administration\ClientWebService'
+        $flags = [string](Get-WebConfigurationProperty -PSPath $vdir -Filter 'system.webServer/security/access' -Name 'sslFlags')
+        if ($flags -match 'Ssl') {
             Write-Output 'nochange'
             exit 0
         }
         $wsusutil = Join-Path $env:ProgramFiles 'Update Services\Tools\wsusutil.exe'
-        & $wsusutil configuressl $dns | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw ('wsusutil configuressl failed with ' + $LASTEXITCODE) }
-        $setup = Get-ItemProperty $setupKey
-        if ($setup.UsingSSL -ne 1) { throw 'UsingSSL did not persist after configuressl' }
+        $out = & $wsusutil configuressl $dns 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            throw ('wsusutil configuressl failed rc=' + $LASTEXITCODE + ' output=' + ($out -join ' '))
+        }
+        $flags = [string](Get-WebConfigurationProperty -PSPath $vdir -Filter 'system.webServer/security/access' -Name 'sslFlags')
+        if ($flags -notmatch 'Ssl') {
+            throw ('ClientWebService sslFlags still [' + $flags + '] after configuressl; output=' + ($out -join ' '))
+        }
         Write-Output 'changed'
       environment:
         TLS_DNS_NAME: "{{ config.tls.dns_name | default('') }}"
