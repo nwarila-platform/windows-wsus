@@ -1,33 +1,45 @@
 # =========================================================================================== #
 # AWS Deploy — windows-wsus
 # ------------------------------------------------------------------------------------------- #
-# WHAT THIS DOES TODAY, AND WHAT IT DOES NOT
+# WHAT THIS DOES
 #
-# This workflow proves the AWS deploy BOUNDARY works. It does not yet deploy, because two inputs
-# do not exist: terraform/ is a skeleton with no resources, and no EC2 key pair has been created
-# (a key pair carries private key material whose custody is an operator decision). Adding the
-# terraform apply / ansible / destroy stages is the next piece of work; the trust, the roles and
-# the policies they exercise are already live and tested.
+# The full ephemeral lifecycle, every run: prove the deploy boundary, then terraform apply the
+# one PoC system through the PINNED aws-terraform-framework, configure it with the composed
+# Ansible play (wsus-aws.yml), prove WSUS is actually serving, and ALWAYS destroy — pass or
+# fail. Terraform here is DATA-ONLY: this repo ships terraform/environments/aws-test.tfvars.tmpl
+# and NO .tf files; the resource logic is the framework checkout at .terraform-framework-pin,
+# exactly as the Ansible side composes the pinned ansible-framework at .framework-pin.
 #
-# It exists NOW rather than later for a specific reason. The OIDC trust pins this file's PATH in
-# `job_workflow_ref`. Until this file existed, that condition named a workflow that had never been
-# written, so no CI job in this repository could assume the deploy role at all — and nothing
-# detected that, because the trust is syntactically valid either way. scripts/check-iam-literals.sh
-# now fails when a trust pins a workflow that does not exist, and this file is what makes it pass
-# honestly rather than by weakening the check.
+# The boundary-proof steps (OIDC exchange, identity assert, discovery grants, sibling deny)
+# remain the prologue: a trust or policy regression still fails loudly HERE, before any money
+# is spent. The OIDC trust pins THIS FILE's path in `job_workflow_ref`, which is why every
+# lifecycle stage lives in this one workflow — a second workflow (or a reusable one, which
+# rewrites job_workflow_ref to the reusable file's path) cannot assume the deploy role at all.
 #
-# WHY THE ASSERTIONS BELOW MATTER
+# WHY THE LIFECYCLE IS SHAPED THIS WAY
 #
-# Every claim about this repository's IAM has so far been proven by `iam simulate-principal-policy`
-# run as an ADMIN credential against the deploy role's ARN. That is sound, but it is not the same as
-# the deploy role actually authenticating and acting. This workflow closes that gap: it performs a
-# real OIDC exchange, asserts the resulting identity is exactly the intended role, and then
-# exercises the read-only discovery calls the deploy genuinely needs. A trust or policy regression
-# fails here loudly, in CI, on the change that caused it.
-#
-# The role deliberately CANNOT run scripts/test-iam-policies.sh: simulate-custom-policy and
-# access-analyzer are not in its grants, and adding them to make a test pass would widen the
-# boundary to accommodate the test. That suite stays an operator-run check.
+# * ZERO-INBOUND: the instance has no public address and a no-ingress security group. Every
+#   hop from the runner — readiness, disk mapping, Ansible, proof — is SSH tunnelled through
+#   an SSM session (ProxyCommand `aws ssm start-session --document-name AWS-StartSSHSession`),
+#   authenticated with the launch key (AWS_EC2_SSH_PRIVATE_KEY = private half of
+#   windows-wsus-poc-key). The deploy IAM's tag-gated session grants exist for exactly this;
+#   the SSM VPC endpoints the agent registers through are Layer-0 infrastructure.
+# * readiness_gate=false in the tfvars: the framework's own gate dials the instance directly,
+#   which nothing outside the VPC can do. The readiness wait lives here instead, over SSM-SSH.
+#   The framework's Windows bootstrap deliberately leaves the OpenSSH DefaultShell as cmd; the
+#   play's contract requires PowerShell, so this workflow flips it after its readiness check.
+# * Disk identities are declared by Function tag, resolved by the ROLE: EBS volume ids exist
+#   only after apply, so the play declares `function: WSUSDB` etc. and windows_disk_manager's
+#   resolve_aws.yml (pinned via .framework-pin) maps tag -> attached volume -> Nitro serial ->
+#   physical disk itself — one controller-side describe per host, same as linux_disk_manager.
+#   That resolver is why the controller installs boto3 + amazon.aws below.
+# * Credentials are re-exchanged mid-job: the roles' MaxSessionDuration is 3600s and a full
+#   lifecycle outlives it. The re-exchange before apply and again before destroy keeps every
+#   AWS-touching stage inside a fresh hour; a destroy with dead credentials would strand paid
+#   resources.
+# * One fixed state key: the concurrency group serializes every run, and the reap step at the
+#   top destroys whatever partial state a killed predecessor left, so per-PR keys would only
+#   accumulate orphaned state objects the IAM (correctly) refuses to delete.
 # =========================================================================================== #
 name: AWS Deploy
 
@@ -52,21 +64,26 @@ on:
       - scripts/check-iam-literals.sh
       - scripts/test-iam-policies.sh
       - terraform/**
+      # The two framework pins ARE the deploy: bumping either must re-prove the lifecycle.
+      - .terraform-framework-pin
+      - .framework-pin
       # Must track this workflow's own filename: a stale entry here means changes to the
       # deploy workflow never trigger their own proof.
       - .github/workflows/aws-deploy.yml
 # Least privilege at the workflow level; the job elevates only what it needs.
 permissions: {}
 
-# One deploy boundary, one shared AWS account. Serialize so two runs cannot race the same identity.
+# One deploy boundary, one shared AWS account, one state key. Serialize so two runs cannot
+# race the same identity or the same state.
 concurrency:
   group: aws-deploy-${{ github.repository }}
   cancel-in-progress: false
 
 jobs:
   aws-deploy:
-    name: AWS (deploy boundary proof)
+    name: AWS (ephemeral deploy-test-destroy)
     runs-on: ubuntu-latest
+    timeout-minutes: 180
     # Fork pull requests never reach this job. The organization setting that would mint an ID token
     # to a fork PR MUST remain disabled — that platform default is the load-bearing control here,
     # and this guard is the second layer, not the first.
@@ -77,6 +94,17 @@ jobs:
     env:
       AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
       EXPECTED_ROLE: github_nwarila-platform_windows-wsus
+      TF_DIR: .frameworks/aws-terraform-framework/terraform
+      STATE_KEY: nwarila-platform/windows-wsus/aws-poc.tfstate
+      WSUS_HOSTNAME: wsus-poc-01
+      # Matches the pinned ansible-framework's requirements-dev.txt spec.
+      ANSIBLE_CORE_SPEC: '>=2.21.2,<2.22'
+      # Deployment identity: drives the framework's provider default_tags, which satisfy every
+      # create-time nwarila:management:repository-id condition in the deploy policies.
+      TF_VAR_resource_metadata: >-
+        {"repository":"${{ github.repository }}","repository_id":"${{ github.repository_id }}",
+        "stack":"aws-poc","owner":"${{ github.repository_owner }}",
+        "commit_sha":"${{ github.sha }}","run_id":"${{ github.run_id }}"}
 
     steps:
       - name: Checkout
@@ -93,6 +121,9 @@ jobs:
           role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ env.EXPECTED_ROLE }}
           aws-region: ${{ env.AWS_REGION }}
           role-session-name: aws-deploy-${{ github.run_id }}
+          # The role's MaxSessionDuration — the boundary-proof stages fit well inside it, and
+          # later stages re-exchange rather than stretch it.
+          role-duration-seconds: 3600
 
       - name: Assert the assumed identity is exactly the deploy role
         run: |
@@ -117,6 +148,10 @@ jobs:
                                      --max-items 1 --query 'length(Images)' --output text >/dev/null
           aws ec2 describe-instance-types --instance-types t3.medium \
                                      --query 'length(InstanceTypes)' --output text >/dev/null
+          # The SSM read the runner later leans on to know the instance registered — the whole
+          # zero-inbound transport stands on it, so prove the grant with the boundary.
+          aws ssm describe-instance-information \
+                                     --query 'length(InstanceInformationList)' --output text >/dev/null
           aws iam get-instance-profile --instance-profile-name windows-wsus-poc-profile \
                                      --query 'InstanceProfile.Roles[0].RoleName' --output text >/dev/null
           echo 'discovery grants intact'
@@ -139,3 +174,398 @@ jobs:
             *UnauthorizedOperation*|*AccessDenied*) echo 'lifecycle boundary enforced' ;;
             *) printf 'expected an authorization failure, got: %s\n' "${out}" >&2; exit 1 ;;
           esac
+
+      # ------------------------------------------------------------------------------------- #
+      # Framework checkouts — both pinned by committed SHA files, both asserted after fetch
+      # ------------------------------------------------------------------------------------- #
+      - name: Resolve framework pins
+        id: pins
+        run: |
+          set -euo pipefail
+          tf_sha="$(tr -d '[:space:]' < .terraform-framework-pin)"
+          ansible_sha="$(tr -d '[:space:]' < .framework-pin)"
+          for sha in "${tf_sha}" "${ansible_sha}"; do
+            if ! printf '%s' "${sha}" | grep -Eq '^[0-9a-f]{40}$'; then
+              printf 'pin is not a full lowercase 40-char SHA: %s\n' "${sha}" >&2; exit 1
+            fi
+          done
+          printf 'tf_sha=%s\n' "${tf_sha}" >> "${GITHUB_OUTPUT}"
+          printf 'ansible_sha=%s\n' "${ansible_sha}" >> "${GITHUB_OUTPUT}"
+
+      - name: Checkout aws-terraform-framework (pinned)
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          repository: nwarila-platform/aws-terraform-framework
+          ref: ${{ steps.pins.outputs.tf_sha }}
+          path: .frameworks/aws-terraform-framework
+          persist-credentials: false
+
+      - name: Checkout ansible-framework (pinned)
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          repository: nwarila-platform/ansible-framework
+          ref: ${{ steps.pins.outputs.ansible_sha }}
+          path: .frameworks/ansible-framework
+          persist-credentials: false
+
+      - name: Assert framework checkouts match the pins
+        run: |
+          set -euo pipefail
+          # Same discipline as the identity assert: prove the checkout, don't assume it.
+          for pair in \
+            ".frameworks/aws-terraform-framework=${{ steps.pins.outputs.tf_sha }}" \
+            ".frameworks/ansible-framework=${{ steps.pins.outputs.ansible_sha }}"; do
+            dir="${pair%%=*}"; want="${pair##*=}"
+            got="$(git -C "${dir}" rev-parse HEAD)"
+            if [ "${got}" != "${want}" ]; then
+              printf '%s is at %s, pin says %s\n' "${dir}" "${got}" "${want}" >&2; exit 1
+            fi
+          done
+          echo 'framework pins verified'
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          # The framework's required_version is EXACT (= 1.15.1); anything else fails init.
+          terraform_version: '1.15.1'
+          terraform_wrapper: false
+
+      # ------------------------------------------------------------------------------------- #
+      # Render the deploy inputs: the pinned deploy subnet, its AZ, the VPC CIDR (SG egress)
+      # ------------------------------------------------------------------------------------- #
+      - name: Discover deploy inputs and render tfvars
+        run: |
+          set -euo pipefail
+          # Deterministic subnet selection, IDENTICAL to bootstrap-iam.sh: sort by AZ, take the
+          # first. The launch policy pins one subnet ARN, so the subnet this step picks and the
+          # one the IAM was materialized with must be the same or RunInstances denies.
+          subnet_id="$(aws ec2 describe-subnets --query 'sort_by(Subnets,&AvailabilityZone)[0].SubnetId' --output text)"
+          az="$(aws ec2 describe-subnets --query 'sort_by(Subnets,&AvailabilityZone)[0].AvailabilityZone' --output text)"
+          # Egress boundary: 443 inside the VPC only, which is where the SSM endpoints live.
+          vpc_cidr="$(aws ec2 describe-vpcs --query 'Vpcs[0].CidrBlock' --output text)"
+          if ! printf '%s' "${vpc_cidr}" | grep -Eq '^[0-9./]+$'; then
+            printf 'VPC CIDR looks wrong: %s\n' "${vpc_cidr}" >&2; exit 1
+          fi
+          sed -e "s|__SUBNET_ID__|${subnet_id}|g" \
+              -e "s|__AVAILABILITY_ZONE__|${az}|g" \
+              -e "s|__VPC_CIDR__|${vpc_cidr}|g" \
+              terraform/environments/aws-test.tfvars.tmpl > "${RUNNER_TEMP}/aws-test.tfvars"
+          # Fail-closed on partial substitution, same philosophy as the IAM materialized gate.
+          if grep -n '__' "${RUNNER_TEMP}/aws-test.tfvars"; then
+            echo 'unsubstituted __TOKEN__ survived the render' >&2; exit 1
+          fi
+          printf 'rendered tfvars: subnet=%s az=%s vpc_cidr=%s\n' "${subnet_id}" "${az}" "${vpc_cidr}"
+
+      - name: Terraform init
+        id: tf-init
+        run: |
+          set -euo pipefail
+          terraform -chdir="${TF_DIR}" init -input=false \
+            -backend-config="bucket=${AWS_ACCOUNT_ID}-terraform" \
+            -backend-config="key=${STATE_KEY}" \
+            -backend-config="region=${AWS_REGION}"
+        env:
+          AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+
+      - name: Reap partial state from a killed predecessor
+        timeout-minutes: 25
+        run: |
+          set -euo pipefail
+          # A hard-killed run leaves resources recorded in state with nothing to clean them.
+          # The concurrency group guarantees no live run shares this key, so any state content
+          # at this point is debris: destroy it BEFORE building anew.
+          leftovers="$(terraform -chdir="${TF_DIR}" state list 2>/dev/null || true)"
+          if [ -n "${leftovers}" ]; then
+            printf 'destroying leftover state from a previous run:\n%s\n' "${leftovers}"
+            terraform -chdir="${TF_DIR}" destroy -input=false -auto-approve -lock-timeout=120s \
+              -var-file="${RUNNER_TEMP}/aws-test.tfvars"
+          else
+            echo 'state is clean'
+          fi
+
+      # Fresh hour of credentials for plan+apply+configure: the boundary proof and a worst-case
+      # reap can eat most of the first session, and an expiry mid-apply strands resources.
+      - name: Refresh AWS credentials before apply (OIDC)
+        uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d13d05 # v4.2.1
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ env.EXPECTED_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: aws-deploy-apply-${{ github.run_id }}
+          role-duration-seconds: 3600
+
+      - name: Terraform plan
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          terraform -chdir="${TF_DIR}" plan -input=false -lock-timeout=120s \
+            -var-file="${RUNNER_TEMP}/aws-test.tfvars" -out="${RUNNER_TEMP}/tfplan"
+
+      - name: Terraform apply
+        id: tf-apply
+        timeout-minutes: 25
+        run: |
+          set -euo pipefail
+          terraform -chdir="${TF_DIR}" apply -input=false -lock-timeout=120s "${RUNNER_TEMP}/tfplan"
+
+      - name: Read outputs and wait for SSM registration
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          terraform -chdir="${TF_DIR}" output -json aws_instances > "${RUNNER_TEMP}/aws_instances.json"
+          instance_id="$(python3 -c 'import json,sys; print(list(json.load(open(sys.argv[1])).values())[0]["instance_id"])' \
+            "${RUNNER_TEMP}/aws_instances.json")"
+          printf 'INSTANCE_ID=%s\n' "${instance_id}" >> "${GITHUB_ENV}"
+          printf 'instance: %s\n' "${instance_id}"
+          # The session transport needs the plugin locally and the agent registered remotely.
+          # Registration rides the instance's own 443 to the in-VPC SSM endpoints — the first
+          # end-to-end proof that the zero-inbound network path actually stands.
+          curl -fsS -o "${RUNNER_TEMP}/session-manager-plugin.deb" \
+            https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb
+          sudo dpkg -i "${RUNNER_TEMP}/session-manager-plugin.deb" >/dev/null
+          for _ in $(seq 1 60); do
+            ping="$(aws ssm describe-instance-information \
+              --filters "Key=InstanceIds,Values=${instance_id}" \
+              --query 'InstanceInformationList[0].PingStatus' --output text 2>/dev/null || true)"
+            if [ "${ping}" = "Online" ]; then echo 'SSM agent Online'; exit 0; fi
+            sleep 10
+          done
+          echo 'SSM agent never registered — endpoint path or instance profile broken' >&2; exit 1
+
+      # ------------------------------------------------------------------------------------- #
+      # Readiness over SSM-SSH, then flip the OpenSSH DefaultShell to PowerShell
+      # ------------------------------------------------------------------------------------- #
+      - name: Wait for Windows readiness over SSM-SSH
+        timeout-minutes: 20
+        env:
+          AWS_EC2_SSH_PRIVATE_KEY: ${{ secrets.AWS_EC2_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          install -m 0600 /dev/stdin "${RUNNER_TEMP}/key.pem" <<< "${AWS_EC2_SSH_PRIVATE_KEY}"
+          ssh_cmd() {
+            ssh -i "${RUNNER_TEMP}/key.pem" -o BatchMode=yes -o ConnectTimeout=10 \
+                -o ServerAliveInterval=15 -o StrictHostKeyChecking=accept-new \
+                -o UserKnownHostsFile="${RUNNER_TEMP}/known_hosts" \
+                -o ProxyCommand="aws ssm start-session --target %h --document-name AWS-StartSSHSession --parameters portNumber=%p --region ${AWS_REGION}" \
+                "Administrator@${INSTANCE_ID}" "$@"
+          }
+          # 1. Wait for sshd + the launch public key: the bootstrap user_data installs it
+          #    minutes after the instance reports running.
+          for _ in $(seq 1 90); do
+            if ssh_cmd 'exit 0' 2>/dev/null; then break; fi
+            sleep 10
+          done
+          ssh_cmd 'exit 0' || { echo 'sshd never became reachable over SSM' >&2; exit 1; }
+          # 2. Wait for EC2Launch to finish provisioning — the same command the framework's own
+          #    readiness gate would run if it could reach the instance.
+          ssh_cmd '"C:\Program Files\Amazon\EC2Launch\EC2Launch.exe" status -b'
+          # 3. DefaultShell: the framework bootstrap deliberately leaves cmd; the play contract
+          #    (ansible_shell_type: powershell) requires PowerShell. The sshd restart tears down
+          #    our own connection, so tolerate the drop and verify by running a PowerShell-only
+          #    construct in a fresh session. Single quotes inside the double-quoted -Command
+          #    survive cmd untouched; Set-ItemProperty creates the value when absent.
+          flip="Set-ItemProperty -Path 'HKLM:\SOFTWARE\OpenSSH' -Name DefaultShell"
+          flip="${flip} -Value 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe';"
+          flip="${flip} Restart-Service sshd"
+          ssh_cmd "powershell -NoProfile -NonInteractive -Command \"${flip}\"" || true
+          for _ in $(seq 1 12); do
+            if ssh_cmd '(Get-ItemProperty "HKLM:\SOFTWARE\OpenSSH").DefaultShell' 2>/dev/null | grep -qi 'powershell.exe'; then
+              echo 'DefaultShell is PowerShell; instance ready'; exit 0
+            fi
+            sleep 5
+          done
+          echo 'DefaultShell flip did not take' >&2; exit 1
+
+      # ------------------------------------------------------------------------------------- #
+      # Ansible — compose the pinned framework + this repo's role, then configure
+      # ------------------------------------------------------------------------------------- #
+      - name: Setup Python (controller)
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Install ansible-core and collections
+        run: |
+          set -euo pipefail
+          # boto3/botocore power windows_disk_manager's controller-side resolve_aws describe
+          # (delegate_to localhost under ansible_playbook_python — this interpreter).
+          python -m pip install --no-cache-dir "ansible-core${ANSIBLE_CORE_SPEC}" boto3 botocore
+          ansible-galaxy collection install ansible.windows community.windows amazon.aws
+
+      - name: Compose overlay (framework base + this repo's roles)
+        run: |
+          set -euo pipefail
+          # The guarded half of scripts/compose-and-run.sh (its clone/revert/exec halves are
+          # lab-only). Validate EVERY candidate before any rsync mutates the framework tree, and
+          # refuse a framework-TRACKED role path so an overlay can never silently replace
+          # framework-owned code. If a guard changes here, change it in compose-and-run.sh too.
+          framework_dir="${GITHUB_WORKSPACE}/.frameworks/ansible-framework"
+          shopt -s nullglob
+          role_sources=("${GITHUB_WORKSPACE}"/ansible/applications/*)
+          shopt -u nullglob
+          [ "${#role_sources[@]}" -gt 0 ] || { echo '!! no role sources' >&2; exit 1; }
+          validated=()
+          for role_source in "${role_sources[@]}"; do
+            role_name="$(basename "${role_source}")"
+            [[ "${role_name}" =~ ^[a-z][a-z0-9_]*$ ]] || { echo "!! bad role name ${role_name}" >&2; exit 1; }
+            [ ! -L "${role_source}" ] || { echo "!! symlinked role ${role_source}" >&2; exit 1; }
+            [ -d "${role_source}" ] || { echo "!! not a directory ${role_source}" >&2; exit 1; }
+            [ -f "${role_source}/tasks/main.yml" ] || { echo "!! missing tasks/main.yml in ${role_source}" >&2; exit 1; }
+            if [ -n "$(git -C "${framework_dir}" ls-files -- "applications/${role_name}/")" ]; then
+              echo "!! refusing framework-tracked role path applications/${role_name}" >&2; exit 1
+            fi
+            validated+=("${role_name}")
+          done
+          for role_name in "${validated[@]}"; do
+            rsync -a --delete \
+              "${GITHUB_WORKSPACE}/ansible/applications/${role_name}/" \
+              "${framework_dir}/applications/${role_name}/"
+            echo ">> overlaid ${role_name}"
+          done
+
+      - name: Generate ephemeral inventory
+        run: |
+          set -euo pipefail
+          # Mirrors ansible/inventory/vmware.yml's group shape; the "address" is the INSTANCE
+          # ID because every hop tunnels through an SSM session (ProxyCommand), and the key is
+          # the launch key CI already holds. accept-new reuses the host key pinned during the
+          # readiness wait (shared known_hosts file). The ProxyCommand inherits the runner's
+          # AWS env credentials — refreshed immediately before the play below.
+          cat > "${RUNNER_TEMP}/inventory.yml" <<EOF
+          wsus_servers:
+            hosts:
+              ${WSUS_HOSTNAME}:
+                ansible_host: '${INSTANCE_ID}'
+            vars:
+              ansible_user: 'Administrator'
+              ansible_connection: 'ssh'
+              ansible_shell_type: 'powershell'
+              ansible_ssh_private_key_file: '${RUNNER_TEMP}/key.pem'
+              ansible_ssh_common_args: >-
+                -o StrictHostKeyChecking=accept-new
+                -o UserKnownHostsFile=${RUNNER_TEMP}/known_hosts
+                -o ProxyCommand="aws ssm start-session --target %h --document-name AWS-StartSSHSession --parameters portNumber=%p --region ${AWS_REGION}"
+          EOF
+
+      # Fresh hour for the longest stage: every NEW SSM session the play opens authenticates
+      # with the runner's ambient credentials, and the play alone can outlive a session minted
+      # before plan/apply.
+      - name: Refresh AWS credentials before configure (OIDC)
+        uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d13d05 # v4.2.1
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ env.EXPECTED_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: aws-deploy-configure-${{ github.run_id }}
+          role-duration-seconds: 3600
+
+      - name: Run wsus-aws.yml (composed)
+        timeout-minutes: 75
+        env:
+          ANSIBLE_CONFIG: ${{ github.workspace }}/.frameworks/ansible-framework/ansible.cfg
+        run: |
+          set -euo pipefail
+          cd "${GITHUB_WORKSPACE}/.frameworks/ansible-framework"
+          ansible-playbook -i "${RUNNER_TEMP}/inventory.yml" \
+            "${GITHUB_WORKSPACE}/ansible/playbooks/wsus-aws.yml" \
+            -e env=test
+
+      # ------------------------------------------------------------------------------------- #
+      # PROOF — WSUS is actually serving, on the disks the deploy layer handed it
+      # ------------------------------------------------------------------------------------- #
+      - name: E2E proof (services + volumes + WSUS answers)
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          ssh -i "${RUNNER_TEMP}/key.pem" -o BatchMode=yes \
+              -o UserKnownHostsFile="${RUNNER_TEMP}/known_hosts" \
+              -o ProxyCommand="aws ssm start-session --target %h --document-name AWS-StartSSHSession --parameters portNumber=%p --region ${AWS_REGION}" \
+              "Administrator@${INSTANCE_ID}" 'powershell -NoProfile -NonInteractive -Command -' <<'PS'
+          $ErrorActionPreference = 'Stop'
+          foreach ($name in @('WsusService', 'W3SVC', 'MSSQL$MICROSOFT##WID')) {
+            $svc = Get-Service -Name $name
+            if ($svc.Status -ne 'Running') { throw "service $name is $($svc.Status), not Running" }
+          }
+          foreach ($pair in @(@('E', 'WSUSDB'), @('F', 'WSUSDATA'), @('G', 'WSUSIIS'))) {
+            $vol = Get-Volume -DriveLetter $pair[0]
+            if ($vol.FileSystemLabel -cne $pair[1]) {
+              throw "volume $($pair[0]): label '$($vol.FileSystemLabel)' != '$($pair[1])'"
+            }
+          }
+          if (-not (Test-Path 'E:\WID\Data\SUSDB.mdf')) { throw 'SUSDB.mdf not relocated to E:\WID\Data' }
+          if (-not (Test-Path 'F:\WSUS\WSUSContent')) { throw 'content root F:\WSUS\WSUSContent missing' }
+          $wsus = Get-WsusServer -Name localhost -PortNumber 8530
+          $null = $wsus.GetStatus()
+          $resp = Invoke-WebRequest -UseBasicParsing -Uri 'http://localhost:8530/ClientWebService/client.asmx'
+          if ($resp.StatusCode -ne 200) { throw "ClientWebService answered $($resp.StatusCode)" }
+          Write-Output 'PROOF: WSUS serving on 8530, WID on E:, content on F:, IIS artifacts on G:'
+          PS
+
+      # ------------------------------------------------------------------------------------- #
+      # DESTROY — always, pass or fail. Fresh credentials first: the originals are dead by now.
+      # ------------------------------------------------------------------------------------- #
+      - name: Refresh AWS credentials before destroy (OIDC)
+        if: always() && steps.tf-init.outcome == 'success'
+        uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d13d05 # v4.2.1
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ env.EXPECTED_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: aws-deploy-destroy-${{ github.run_id }}
+          role-duration-seconds: 3600
+
+      - name: Diagnostics on failure
+        if: failure() && steps.tf-apply.outcome == 'success'
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/diagnostics"
+          terraform -chdir="${TF_DIR}" show -no-color > "${RUNNER_TEMP}/diagnostics/terraform-show.txt" || true
+          instance_id="$(python3 -c 'import json,sys; print(list(json.load(open(sys.argv[1])).values())[0]["instance_id"])' \
+            "${RUNNER_TEMP}/aws_instances.json" 2>/dev/null || true)"
+          if [ -n "${instance_id}" ]; then
+            aws ec2 get-console-output --instance-id "${instance_id}" --output text \
+              > "${RUNNER_TEMP}/diagnostics/console-output.txt" || true
+          fi
+
+      - name: Upload diagnostics
+        if: failure() && steps.tf-apply.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: aws-deploy-diagnostics-${{ github.run_id }}
+          path: ${{ runner.temp }}/diagnostics/
+          retention-days: 5
+          if-no-files-found: ignore
+
+      - name: Terraform destroy (ephemeral, always)
+        if: always() && steps.tf-init.outcome == 'success'
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          # Gated on INIT (not apply) succeeding: a failed or killed apply still leaves state
+          # that must be torn down. -lock-timeout rides out a lock the killed step held.
+          terraform -chdir="${TF_DIR}" destroy -input=false -auto-approve -lock-timeout=300s \
+            -var-file="${RUNNER_TEMP}/aws-test.tfvars"
+
+      - name: Assert nothing tagged to this repository survived
+        if: always() && steps.tf-init.outcome == 'success'
+        run: |
+          set -euo pipefail
+          # The loud cost alarm. State-orphaned resources (created in a hard-killed apply that
+          # never wrote them to state) are invisible to terraform destroy; the identity tag
+          # finds them anyway. Failing the job here is the point — remediation is an operator
+          # decision, not an automated delete-by-tag.
+          tag="Name=tag:nwarila:management:repository-id,Values=${GITHUB_REPOSITORY_ID}"
+          fails=0
+          n="$(aws ec2 describe-instances --filters "${tag}" \
+                 "Name=instance-state-name,Values=pending,running,stopping,stopped,shutting-down" \
+                 --query 'length(Reservations[].Instances[])' --output text)"
+          [ "${n}" = "0" ] || { echo "!! ${n} instance(s) survived" >&2; fails=1; }
+          n="$(aws ec2 describe-volumes --filters "${tag}" --query 'length(Volumes)' --output text)"
+          [ "${n}" = "0" ] || { echo "!! ${n} volume(s) survived" >&2; fails=1; }
+          n="$(aws ec2 describe-network-interfaces --filters "${tag}" \
+                 --query 'length(NetworkInterfaces)' --output text)"
+          [ "${n}" = "0" ] || { echo "!! ${n} ENI(s) survived" >&2; fails=1; }
+          n="$(aws ec2 describe-security-groups --filters "${tag}" \
+                 --query 'length(SecurityGroups)' --output text)"
+          [ "${n}" = "0" ] || { echo "!! ${n} security group(s) survived" >&2; fails=1; }
+          [ "${fails}" = "0" ] && echo 'no tagged resources survived the destroy'
+          exit "${fails}"
+        env:
+          GITHUB_REPOSITORY_ID: ${{ github.repository_id }}

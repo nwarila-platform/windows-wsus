@@ -1,0 +1,142 @@
+# =========================================================================================== #
+# File: 'terraform/environments/aws-test.tfvars.tmpl'
+# --- [ Description ] ----------------------------------------------------------------------- #
+#
+# Variable input for the pinned aws-terraform-framework (SHA in .terraform-framework-pin).
+# This is a TEMPLATE, not a tfvars file: the three double-underscore tokens are discovered at
+# run time by .github/workflows/aws-deploy.yml (the deploy subnet — sorted by AZ, first — its
+# AZ, and the VPC CIDR) and substituted into an untracked copy under $RUNNER_TEMP. The render
+# step fails if any token survives substitution — same fail-closed philosophy as the IAM
+# substitution gate. Keep literal double underscores out of comments; the check is a
+# whole-file grep on purpose.
+#
+# Every value here must stay inside the deploy role's launch boundary
+# (docs/reference/aws-iam/README.md): t3.medium/t3.large only, gp3 encrypted <= 64 GiB,
+# IMDSv2 with hop limit 1, the pinned key pair, and the pinned VPC/subnet.
+#
+# ZERO-INBOUND, NO PUBLIC ADDRESS: WSUS here syncs from nothing and serves nothing external,
+# so the instance carries no public IP and its security group allows no ingress at all. The
+# runner reaches it exclusively through SSM (AWS-StartSSHSession over the SSM VPC endpoints —
+# the exact capability the deploy IAM's session grants exist for). Egress is 443 to the VPC
+# CIDR only: enough for the SSM agent to reach the in-VPC endpoints, nothing else.
+#
+# readiness_gate is FALSE by design: the framework's gate dials the instance directly, which
+# nothing outside the VPC can do. The workflow performs its own readiness wait over SSM-SSH,
+# then sets the OpenSSH DefaultShell to PowerShell (the framework's bootstrap deliberately
+# leaves cmd).
+#
+# =========================================================================================== #
+
+environment = "test"
+
+# Empty on purpose: no framework readiness gate runs (readiness_gate = false below), so no
+# private-key path is needed by Terraform. CI holds the key only for its own SSH stages.
+readiness_private_key_paths = {}
+
+all_systems = [
+  {
+    region               = "us_east_1"
+    hostname             = "wsus-poc-01"
+    availability_zone    = "__AVAILABILITY_ZONE__"
+    subnet_id            = "__SUBNET_ID__"
+    key_name             = "windows-wsus-poc-key"
+    iam_instance_profile = "windows-wsus-poc-profile"
+    aws_kms_alias        = "aws/ebs"
+    ami                  = "windows_server_2025_base"
+    refresh              = false
+    # t3.large, not t3.medium: WSUS postinstall + SUSDB work on 4 GiB regularly pushes past the
+    # CI stage budget. Both types are inside the launch policy's type lock.
+    instance_type        = "t3.large"
+    readiness_user       = null
+    readiness_gate       = false
+    imds_hop_limit       = 1
+    set_state            = null
+
+    tags = {
+      Function = "wsus"
+      Backup   = false
+    }
+
+    root_block_device = {
+      delete_on_termination = true
+      iops                  = null
+      tags                  = {}
+      throughput            = null
+      volume_type           = "gp3"
+      volume_size           = "50"
+    }
+
+    # The same three RAW data disks the lab baseline provides (VM-LIFECYCLE.md §1): the deploy
+    # layer owns the hardware, the composed play's windows_disk_manager formats it. Function
+    # tags are the join key for the workflow's volume-id -> Windows disk identity mapping.
+    ebs_block_devices = [
+      {
+        iops         = null
+        snapshot_id  = null
+        skip_destroy = false
+        tags         = { Function = "WSUSDB" }
+        throughput   = null
+        volume_type  = "gp3"
+        volume_size  = "20"
+      },
+      {
+        iops         = null
+        snapshot_id  = null
+        skip_destroy = false
+        tags         = { Function = "WSUSDATA" }
+        throughput   = null
+        volume_type  = "gp3"
+        volume_size  = "30"
+      },
+      {
+        iops         = null
+        snapshot_id  = null
+        skip_destroy = false
+        tags         = { Function = "WSUSIIS" }
+        throughput   = null
+        volume_type  = "gp3"
+        volume_size  = "20"
+      }
+    ]
+
+    network_interfaces = [
+      {
+        description     = "wsus-poc-01 CI firewall"
+        interface_type  = null
+        private_ip      = null
+        security_groups = []
+        # Non-null ingress + egress => the framework creates and attaches wsus-poc-01-eni-0-sg.
+        # Ingress [] is the whole point: NOTHING dials this instance — SSM sessions are
+        # outbound from the agent's point of view, so even the runner's SSH rides the
+        # instance's own 443 connection to the ssmmessages endpoint. Egress is 443 to the VPC
+        # CIDR only (the SSM interface endpoints); WSUS needs no website (no Microsoft Update
+        # sync in this PoC) and the OpenSSH bootstrap pulls its key from link-local IMDS.
+        ingress = []
+        egress = [
+          {
+            description                  = "HTTPS to the in-VPC SSM endpoints only"
+            ip_protocol                  = "tcp"
+            from_port                    = 443
+            to_port                      = 443
+            cidr_ipv4                    = "__VPC_CIDR__"
+            cidr_ipv6                    = null
+            prefix_list_id               = null
+            referenced_security_group_id = null
+          }
+        ]
+        tags = {}
+      }
+    ]
+
+    # No public address of any kind — see the header. The deploy IAM holds no EIP actions,
+    # and that is now load-bearing, not residual.
+    associate_public_ip = false
+  }
+]
+
+all_databases      = []
+all_load_balancers = []
+
+# resource_metadata is injected by the workflow as TF_VAR_resource_metadata; it drives the
+# provider default_tags that satisfy every create-time nwarila:management:repository-id
+# condition in the deploy policies. Never hardcode it here.

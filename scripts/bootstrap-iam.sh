@@ -2,7 +2,7 @@
 # =========================================================================================== #
 # bootstrap-iam.sh — materialize and apply this repository's AWS IAM
 # ------------------------------------------------------------------------------------------- #
-# Creates the deploy boundary this repository declares: five customer-managed policies, three
+# Creates the deploy boundary this repository declares: eight customer-managed policies, four
 # roles, and the EC2 instance profile. Idempotent — re-running reconciles rather than duplicates,
 # so it is safe to run after editing a source document.
 #
@@ -18,8 +18,10 @@
 #
 # Substitution values are resolved from the live account and the live GitHub repository, never
 # hand-typed: the account from sts, the repository id from the GitHub API, the EBS key from the
-# alias, and the VPC/subnet from the deploy environment. A key pair is NOT created here — it
-# carries private key material whose custody is an operator decision.
+# alias, and the VPC/subnet from the deploy environment. The one exception is the artifact
+# bucket — a Layer-0 output nothing in this account uniquely identifies — which must be passed
+# as BOOTSTRAP_ARTIFACT_BUCKET (the gate fails closed without it). A key pair is NOT created
+# here — it carries private key material whose custody is an operator decision.
 # =========================================================================================== #
 set -uo pipefail
 
@@ -45,14 +47,22 @@ REPO_ID="$(gh api "repos/${OWNER}/${REPO}" --jq .id)" || die "GitHub repo ${OWNE
 KMS_KEY="$(aws kms describe-key --key-id alias/aws/ebs --profile "${PROFILE}" --region "${REGION}" \
            --query 'KeyMetadata.KeyId' --output text)" || die 'alias/aws/ebs unresolved'
 VPC_ID="$(aws ec2 describe-vpcs --profile "${PROFILE}" --region "${REGION}" --query 'Vpcs[0].VpcId' --output text)"
-SUBNET_ID="$(aws ec2 describe-subnets --profile "${PROFILE}" --region "${REGION}" --query 'Subnets[0].SubnetId' --output text)"
+# Deterministic, not Subnets[0]: describe-subnets order is arbitrary, and the account's default
+# VPC carries one subnet per AZ. The IAM subnet pin and the deploy workflow's discovery step
+# MUST resolve the same subnet, so both sort by AZ and take the first (us-east-1a).
+SUBNET_ID="$(aws ec2 describe-subnets --profile "${PROFILE}" --region "${REGION}" --query 'sort_by(Subnets,&AvailabilityZone)[0].SubnetId' --output text)"
 KEY_PAIR="${REPO}-poc-key"
 # The OIDC subject GitHub actually emits embeds the OWNER id as well as the repository id
 # (proven by CloudTrail). Resolve it rather than hard-coding it.
 OWNER_ID="$(gh api "orgs/${OWNER}" --jq .id)" || die "cannot resolve owner id for ${OWNER}"
+# Layer-0 output, not derivable from this account (see the substitution contract: the bucket
+# name grants nothing by itself — the object-key prefix inside the policies is load-bearing).
+ARTIFACT_BUCKET="${BOOTSTRAP_ARTIFACT_BUCKET:-}"
+[ -n "${ARTIFACT_BUCKET}" ] || die 'BOOTSTRAP_ARTIFACT_BUCKET is unset — the artifact policies cannot materialize (Layer-0 output; see README substitution contract)'
 say 'repository id' "${REPO_ID}"
 say 'vpc / subnet' "${VPC_ID} / ${SUBNET_ID}"
 say 'ebs key' "${KMS_KEY}"
+say 'artifact bucket' "${ARTIFACT_BUCKET}"
 
 echo "== materialize =="
 mkdir -p "${WORK}/policies" "${WORK}/roles"
@@ -60,7 +70,8 @@ cp "${IAM_DIR}/policies/"*.json "${WORK}/policies/"
 cp "${IAM_DIR}/roles/"*.json    "${WORK}/roles/"
 sed -i "s|<account-id>|${ACCOUNT}|g; s|<repository-id>|${REPO_ID}|g; s|<region>|${REGION}|g;
         s|<vpc-id>|${VPC_ID}|g; s|<subnet-id>|${SUBNET_ID}|g; s|<ebs-kms-key-id>|${KMS_KEY}|g;
-        s|<key-pair-name>|${KEY_PAIR}|g; s|<owner-id>|${OWNER_ID}|g" "${WORK}"/policies/*.json "${WORK}"/roles/*.json
+        s|<key-pair-name>|${KEY_PAIR}|g; s|<owner-id>|${OWNER_ID}|g;
+        s|<artifact-bucket>|${ARTIFACT_BUCKET}|g" "${WORK}"/policies/*.json "${WORK}"/roles/*.json
 
 "${ROOT}/scripts/check-iam-literals.sh" --materialized "${WORK}" >/dev/null \
   || die 'the materialized tree failed the substitution gate — do not apply'
@@ -86,22 +97,30 @@ done
 CI_ROLE="github_${OWNER}_${REPO}"
 ADMIN_ROLE="github_${OWNER}_${REPO}-admin"
 POC_ROLE="${REPO}-poc-role"
+READER_ROLE="${REPO}-artifact-reader"
 POC_PROFILE="${REPO}-poc-profile"
-# policy file -> applied name (file basename IS the applied name, per this repo's convention)
+# policy file -> applied name (file basename IS the applied name, per this repo's convention).
+# Classification mirrors the README role-to-policy table EXACTLY, and fails closed on a policy
+# source it has never seen: the old everything-else-is-deploy default silently attached the
+# artifact policies to the CI role, over-granting it S3 write and sts:AssumeRole.
 mapfile -t POLICIES < <(cd "${WORK}/policies" && ls *.json | sed 's/\.json$//')
-DEPLOY_POLICIES=(); STATE_POLICY=''
+DEPLOY_POLICIES=(); ADMIN_ONLY_POLICIES=(); STATE_POLICY=''; READER_POLICY=''
 for p in "${POLICIES[@]}"; do
     case "${p}" in
         github_*) STATE_POLICY="${p}" ;;
-        *) DEPLOY_POLICIES+=("${p}") ;;
+        *_artifact-read) READER_POLICY="${p}" ;;
+        *_artifact-folder|*_artifact-assume) ADMIN_ONLY_POLICIES+=("${p}") ;;
+        *_deploy-*) DEPLOY_POLICIES+=("${p}") ;;
+        *) die "unclassified policy source '${p}' — extend the classification case deliberately (README role-to-policy table first)" ;;
     esac
 done
+[ -n "${READER_POLICY}" ] || die 'artifact-read policy source not found'
 
 echo "== plan =="
 exists_policy() { aws iam get-policy --policy-arn "arn:aws:iam::${ACCOUNT}:policy/$1" --profile "${PROFILE}" >/dev/null 2>&1; }
 exists_role()   { aws iam get-role --role-name "$1" --profile "${PROFILE}" >/dev/null 2>&1; }
 for p in "${POLICIES[@]}"; do say "policy ${p}" "$(exists_policy "${p}" && echo 'exists → new version' || echo 'CREATE')"; done
-for r in "${CI_ROLE}" "${ADMIN_ROLE}" "${POC_ROLE}"; do say "role ${r}" "$(exists_role "${r}" && echo 'exists → update trust' || echo 'CREATE')"; done
+for r in "${CI_ROLE}" "${ADMIN_ROLE}" "${POC_ROLE}" "${READER_ROLE}"; do say "role ${r}" "$(exists_role "${r}" && echo 'exists → update trust' || echo 'CREATE')"; done
 say "instance profile ${POC_PROFILE}" "$(aws iam get-instance-profile --instance-profile-name "${POC_PROFILE}" --profile "${PROFILE}" >/dev/null 2>&1 && echo exists || echo CREATE)"
 
 # ---- drift mode ------------------------------------------------------------------------------
@@ -131,7 +150,8 @@ sys.exit(0 if l['Statement']==s['Statement'] else 1)" "${WORK}/live.json" "${WOR
     done
     for pair in "${CI_ROLE}:github_${OWNER}_${REPO}.trust.json" \
                 "${ADMIN_ROLE}:github_${OWNER}_${REPO}-admin.trust.json" \
-                "${POC_ROLE}:${REPO}-poc-role.trust.json"; do
+                "${POC_ROLE}:${REPO}-poc-role.trust.json" \
+                "${READER_ROLE}:${REPO}-artifact-reader.trust.json"; do
         role="${pair%%:*}"; tf="${pair#*:}"
         if ! exists_role "${role}"; then say "role ${role}" 'ABSENT LIVE'; drift=1; continue; fi
         aws iam get-role --role-name "${role}" --profile "${PROFILE}" --query Role.AssumeRolePolicyDocument --output json > "${WORK}/live.json"
@@ -187,6 +207,9 @@ apply_role() { # role-name trust-file
 apply_role "${CI_ROLE}"    "${WORK}/roles/github_${OWNER}_${REPO}.trust.json"
 apply_role "${ADMIN_ROLE}" "${WORK}/roles/github_${OWNER}_${REPO}-admin.trust.json"
 apply_role "${POC_ROLE}"   "${WORK}/roles/${REPO}-poc-role.trust.json"
+# AFTER the CI/admin roles: the reader trust names both as principals, and IAM resolves
+# principal ARNs at write time — a dangling principal fails the create.
+apply_role "${READER_ROLE}" "${WORK}/roles/${REPO}-artifact-reader.trust.json"
 
 attach() {
     aws iam attach-role-policy --role-name "$1" --policy-arn "$2" --profile "${PROFILE}" >/dev/null 2>&1 \
@@ -200,6 +223,13 @@ done
 # Terraform state without it.
 attach "${CI_ROLE}"    "arn:aws:iam::${ACCOUNT}:policy/${STATE_POLICY}"
 attach "${ADMIN_ROLE}" "arn:aws:iam::${ACCOUNT}:policy/${STATE_POLICY}"
+# artifact path per the README role-to-policy table: folder+assume are ADMIN-ONLY (the CI role
+# gets neither — it must not write TLS material or assume the reader), read goes to the
+# controller-assumed reader role and nowhere else.
+for p in "${ADMIN_ONLY_POLICIES[@]}"; do
+    attach "${ADMIN_ROLE}" "arn:aws:iam::${ACCOUNT}:policy/${p}"
+done
+attach "${READER_ROLE}" "arn:aws:iam::${ACCOUNT}:policy/${READER_POLICY}"
 attach "${POC_ROLE}"   'arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore'
 say 'attachments' 'reconciled'
 

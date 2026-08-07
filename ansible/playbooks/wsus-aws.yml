@@ -1,0 +1,129 @@
+# =========================================================================================== #
+# File: 'ansible/playbooks/wsus-aws.yml'
+# --- [ Description ] ----------------------------------------------------------------------- #
+#
+# AWS variant of wsus.yml: provisions the declared Windows data disks on the EPHEMERAL EC2
+# instance, then deploys the WSUS (WID-backed) role. Runs from the COMPOSED tree only — in CI,
+# .github/workflows/aws-deploy.yml overlays the role into the pinned ansible-framework
+# checkout and executes this playbook against the generated SSM-SSH inventory (zero-inbound:
+# the "host" is the instance id, tunnelled via AWS-StartSSHSession).
+#
+# Differences from wsus.yml, and nothing else:
+#   * windows_disk_manager.platform is 'aws' (vendor assert: 'Amazon EC2').
+#   * Disk identities are declared by EBS `function` tag, not by literal unique_id: EBS
+#     volume ids only exist after terraform apply, so the role resolves each Function tag
+#     itself (windows_disk_manager/tasks/resolve_aws.yml — one controller-side describe per
+#     host, Nitro serial == volume-id match), exactly like linux_disk_manager. The Function
+#     tag values here must match the ebs_block_devices tags in
+#     terraform/environments/aws-test.tfvars.tmpl.
+#
+# TD-001 workarounds are carried identically to wsus.yml; remove both together when the
+# local wsus loader is synchronized with the upstream Windows-aware loader.
+#
+# =========================================================================================== #
+---
+- name: 'PLAY | WSUS Server (WID-backed, ephemeral AWS)'
+  hosts: 'wsus_servers'
+  # TD-001: playbook-level gathering routes to the Windows setup module; with facts
+  # already present, the loader skips its own ansible.builtin.setup call. The disk-manager's
+  # platform/vendor assert also needs ansible_facts.system_vendor, which only gathering fills.
+  gather_facts: true
+  # TD-001: framework chassis ansible.cfg sets become=sudo (POSIX-only). The admin
+  # account over SSH already holds an elevated token on Windows.
+  become: false
+
+  vars:
+    # Platform convention: 'env' is the operator-facing extra-var; 'ENV' is the
+    # play-var the loader validates (mirrors the wazuh central playbooks).
+    ENV: "{{ env }}"
+
+
+  #region ------ [ Pre-Tasks ] ---------------------------------------------------------------- #
+  pre_tasks:
+
+    #region ------ [ Pre-Tasks: Initalize Packages:{} ] --------------------------------------- #
+    # TD-001: the loader's package_facts task is Python-only and would hard-fail on Windows.
+    # Seeding an empty dict satisfies its 'when' guard. NEVER set the name 'ansible_facts'.
+    - name: 'PRE | Seed empty package facts (loader Windows gap)'
+      when: ansible_facts.packages is not defined
+      ansible.builtin.set_fact:
+        packages: {}
+        cacheable: true
+    #endregion --- [ Pre-Tasks: Initalize Packages:{} ] --------------------------------------- #
+
+    #region ------ [ Pre-Tasks: Load AWS Account Information ] -------------------------------- #
+    # The role's contract forbids reaching into the runner's environment: every configuration
+    # value flows through the 'wsus:' override dict. Account-derived values (the bucket) are
+    # therefore looked up HERE, from the instance's own IMDSv2 identity document — no
+    # controller credential, no runner variable, and the hop-limit-1 IMDS is only reachable
+    # from the instance itself.
+    - name: 'PRE | Acquire IMDSv2 session token'
+      ansible.windows.win_uri:
+        url: 'http://169.254.169.254/latest/api/token'
+        method: 'PUT'
+        headers:
+          X-aws-ec2-metadata-token-ttl-seconds: '300'
+        return_content: true
+      register: '__imds_token__'
+
+    - name: 'PRE | Load the instance identity document'
+      ansible.windows.win_uri:
+        url: 'http://169.254.169.254/latest/dynamic/instance-identity/document'
+        method: 'GET'
+        headers:
+          X-aws-ec2-metadata-token: "{{ __imds_token__.content }}"
+        return_content: true
+      register: '__identity_document__'
+
+    - name: 'PRE | Publish AWS account facts'
+      ansible.builtin.set_fact:
+        aws_account_id: "{{ (__identity_document__.content | from_json).accountId }}"
+        aws_region: "{{ (__identity_document__.content | from_json).region }}"
+    #endregion --- [ Pre-Tasks: Load AWS Account Information ] -------------------------------- #
+
+  #endregion --- [ Pre-Tasks ] ---------------------------------------------------------------- #
+
+
+  #region ------ [ Roles ] -------------------------------------------------------------------- #
+  roles:
+    #region ------ [ Roles: Windows Disk Manager ] -------------------------------------------- #
+    # Guest disk provisioning is delegated to the framework role. Drive letters must match
+    # wsus_defaults.data_disks because wsus consumes the volumes by letter; each `function`
+    # names the EBS volume's Function tag (declared in the terraform template) and the role
+    # resolves it to the attached disk itself — no injected identities.
+    - role: 'windows_disk_manager'
+      vars:
+        windows_disk_manager:
+          platform: 'aws'
+          disks:
+            - function: 'WSUSDB'
+              drive_letter: 'E'
+              label: 'WSUSDB'
+              allocation_unit: 65536
+            - function: 'WSUSDATA'
+              drive_letter: 'F'
+              label: 'WSUSDATA'
+              allocation_unit: 4096
+            - function: 'WSUSIIS'
+              drive_letter: 'G'
+              label: 'WSUSIIS'
+              allocation_unit: 4096
+    #endregion --- [ Roles: Windows Disk Manager ] -------------------------------------------- #
+    #region ------ [ Roles: Windows Server Update Service ] ----------------------------------- #
+    - role: 'wsus'
+      vars:
+        wsus:
+          # TD-001: disable the local loader's POSIX temp-dir; the WSUS role does not consume
+          # the loader-provided staging directory.
+          temp_dir: false
+          # Upstream WSUS server (C11d): REQUIRED input (validate.yml asserts it). PLACEHOLDER —
+          # the ephemeral PoC has no reachable upstream; the role only SAVES the downstream
+          # topology config (no connectivity check), same as the dev VM.
+          upstream_server: 'wsus-upstream.corp.local'
+          # Artifact bucket, derived from the IMDS account lookup above — never from a runner
+          # environment variable. The '-ansible' suffix is the platform's Layer-0 bucket naming
+          # convention (the state bucket is '<account-id>-terraform' the same way); it must
+          # match the <artifact-bucket> value materialized into the IAM sources.
+          bucket: "{{ aws_account_id }}-ansible"
+    #endregion --- [ Roles: Windows Server Update Service ] ----------------------------------- #
+  #endregion --- [ Roles ] -------------------------------------------------------------------- #
