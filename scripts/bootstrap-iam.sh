@@ -160,9 +160,17 @@ sys.exit(0 if l['Statement']==s['Statement'] else 1)" "${WORK}/live.json" "${WOR
         role="${pair%%:*}"; tf="${pair#*:}"
         if ! exists_role "${role}"; then say "role ${role}" 'ABSENT LIVE'; drift=1; continue; fi
         aws iam get-role --role-name "${role}" --profile "${PROFILE}" --query Role.AssumeRolePolicyDocument --output json > "${WORK}/live.json"
+        # IAM stores multi-value principals/conditions as unordered sets and returns them in
+        # arbitrary order, so string lists are compared order-insensitively.
         if python3 -S -c "
 import json,sys
-sys.exit(0 if json.load(open(sys.argv[1]))['Statement']==json.load(open(sys.argv[2]))['Statement'] else 1)" \
+def norm(x):
+    if isinstance(x,dict): return {k:norm(v) for k,v in x.items()}
+    if isinstance(x,list):
+        xs=[norm(v) for v in x]
+        return sorted(xs) if all(isinstance(v,str) for v in xs) else xs
+    return x
+sys.exit(0 if norm(json.load(open(sys.argv[1]))['Statement'])==norm(json.load(open(sys.argv[2]))['Statement']) else 1)" \
             "${WORK}/live.json" "${WORK}/roles/${tf}"; then
             say "trust ${role}" 'in sync'
         else
