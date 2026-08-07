@@ -23,12 +23,13 @@
 # =========================================================================================== #
 ---
 #region ------ [ Play: Windows Readiness ] ---------------------------------------------------- #
-# Runs BEFORE any Windows module can work: the instance boots with the OpenSSH DefaultShell
-# as cmd (the framework's bootstrap deliberately leaves it — see its user_data), and
-# ansible_shell_type is powershell. Every task here is `raw` — the one module that sends a
-# plain command line regardless of shell — so this play can wait for sshd, wait for EC2Launch
-# to finish provisioning, and flip the default shell to PowerShell for the real play below.
-- name: 'PLAY | Wait for Windows readiness (sshd, EC2Launch, PowerShell default shell)'
+# Runs BEFORE any Windows module can work: wait for sshd (EC2Launch installs the launch key
+# minutes after boot) and for EC2Launch itself to finish provisioning. The OpenSSH
+# DefaultShell stays cmd — the boot default, which passes ansible's module bootstrap argv
+# through verbatim (a PowerShell login shell re-parses it and breaks -EncodedCommand; proven
+# live, run 31185575215). Nothing in the roles needs a PowerShell login shell: win_* modules
+# execute inside their own PowerShell wrapper regardless.
+- name: 'PLAY | Wait for Windows readiness (sshd, EC2Launch)'
   hosts: 'wsus_servers'
   gather_facts: false
   become: false
@@ -56,21 +57,6 @@
 
     - name: 'READY | Wait for EC2Launch provisioning to complete'
       ansible.builtin.raw: '"C:\Program Files\Amazon\EC2Launch\EC2Launch.exe" status -b'
-
-    # reg.exe on purpose: it parses identically under cmd (the boot default shell) and
-    # PowerShell, so both the set and the verify are shell-agnostic — and sshd reads
-    # DefaultShell per NEW session, so no service restart is needed: the next play's first
-    # connection already lands in PowerShell.
-    - name: 'READY | Set PowerShell as the OpenSSH default shell'
-      ansible.builtin.raw: >-
-        reg add "HKLM\SOFTWARE\OpenSSH" /v DefaultShell /t REG_SZ
-        /d "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" /f
-
-    - name: 'READY | Verify the default shell is PowerShell'
-      ansible.builtin.raw: 'reg query "HKLM\SOFTWARE\OpenSSH" /v DefaultShell'
-      register: '__default_shell__'
-      changed_when: false
-      failed_when: "'powershell.exe' not in (__default_shell__.stdout | default('') | lower)"
 #endregion --- [ Play: Windows Readiness ] ---------------------------------------------------- #
 
 
