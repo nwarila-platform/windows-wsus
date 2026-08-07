@@ -69,7 +69,9 @@ all_systems = [
       tags                  = {}
       throughput            = null
       volume_type           = "gp3"
-      volume_size           = "50"
+      # The AMI's native size — application data lives on the E:/F:/G: volumes, so padding
+      # the ephemeral root is pure cost.
+      volume_size = "30"
     }
 
     # The same three RAW data disks the lab baseline provides (VM-LIFECYCLE.md §1): the deploy
