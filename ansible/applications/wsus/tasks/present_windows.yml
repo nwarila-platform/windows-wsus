@@ -808,11 +808,14 @@
         $vdirs = @('ApiRemoting30', 'ClientWebService', 'DSSAuthWebService', 'ServerSyncWebService', 'SimpleAuthWebService')
         $changed = $false
         foreach ($name in $vdirs) {
-            $psPath = Join-Path 'IIS:\Sites\WSUS Administration' $name
-            $value = (Get-WebConfigurationProperty -PSPath $psPath -Filter 'system.webServer/security/access' -Name 'sslFlags').Value
+            # The access section is locked at the apphost level (overrideModeDefault=Deny), so
+            # the setting must live in applicationHost.config via a location path — the same
+            # storage the IIS console uses for its Require SSL checkbox.
+            $location = 'WSUS Administration/' + $name
+            $value = (Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Location $location -Filter 'system.webServer/security/access' -Name 'sslFlags').Value
             $text = [string]$value
             if ($text -ne 'Ssl' -and $text -ne '8') {
-                Set-WebConfigurationProperty -PSPath $psPath -Filter 'system.webServer/security/access' -Name 'sslFlags' -Value 'Ssl'
+                Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Location $location -Filter 'system.webServer/security/access' -Name 'sslFlags' -Value 'Ssl'
                 $changed = $true
             }
         }
