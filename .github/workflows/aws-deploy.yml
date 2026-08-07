@@ -79,22 +79,19 @@ jobs:
           role-session-name: aws-deploy-${{ github.run_id }}
           role-duration-seconds: 3600
 
-      - name: Resolve framework pins
+      # actions/checkout cannot read a file into ref:, so the pinned SHAs pass through step
+      # outputs. A bad SHA fails the checkout itself.
+      - name: Read framework pins
         id: pins
         run: |
-          set -euo pipefail
-          for pin in .terraform-framework-pin .framework-pin; do
-            sha="$(tr -d '[:space:]' < "${pin}")"
-            printf '%s' "${sha}" | grep -Eq '^[0-9a-f]{40}$' \
-              || { printf '%s is not a full lowercase SHA: %s\n' "${pin}" "${sha}" >&2; exit 1; }
-            printf '%s=%s\n' "$(basename "${pin}" | tr -d '.' | tr - _)" "${sha}" >> "${GITHUB_OUTPUT}"
-          done
+          echo "terraform=$(cat .terraform-framework-pin)" >> "$GITHUB_OUTPUT"
+          echo "ansible=$(cat .framework-pin)" >> "$GITHUB_OUTPUT"
 
       - name: Checkout aws-terraform-framework (pinned)
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
           repository: nwarila-platform/aws-terraform-framework
-          ref: ${{ steps.pins.outputs.terraformframeworkpin }}
+          ref: ${{ steps.pins.outputs.terraform }}
           path: .frameworks/aws-terraform-framework
           persist-credentials: false
 
@@ -102,7 +99,7 @@ jobs:
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
           repository: nwarila-platform/ansible-framework
-          ref: ${{ steps.pins.outputs.frameworkpin }}
+          ref: ${{ steps.pins.outputs.ansible }}
           path: .frameworks/ansible-framework
           persist-credentials: false
 
