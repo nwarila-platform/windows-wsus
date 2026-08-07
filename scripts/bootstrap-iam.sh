@@ -46,12 +46,16 @@ ACCOUNT="$(aws sts get-caller-identity --profile "${PROFILE}" --query Account --
 REPO_ID="$(gh api "repos/${OWNER}/${REPO}" --jq .id)" || die "GitHub repo ${OWNER}/${REPO} not found"
 KMS_KEY="$(aws kms describe-key --key-id alias/aws/ebs --profile "${PROFILE}" --region "${REGION}" \
            --query 'KeyMetadata.KeyId' --output text)" || die 'alias/aws/ebs unresolved'
-VPC_ID="$(aws ec2 describe-vpcs --profile "${PROFILE}" --region "${REGION}" --query 'Vpcs[0].VpcId' --output text)"
-# Deterministic, not Subnets[0]: describe-subnets order is arbitrary, and the account's default
-# VPC carries one subnet per AZ. The IAM subnet pin and the deploy workflow's discovery step
-# MUST resolve the same subnet, so both sort by AZ and take the first (us-east-1a).
-SUBNET_ID="$(aws ec2 describe-subnets --profile "${PROFILE}" --region "${REGION}" --query 'sort_by(Subnets,&AvailabilityZone)[0].SubnetId' --output text)"
-KEY_PAIR="${REPO}-poc-key"
+# The account holds MORE THAN ONE VPC, so a blind Vpcs[0]/Subnets[0] pick is a coin toss —
+# and the subnet pinned here must equal the one the deploy workflow renders into the tfvars
+# (its AWS_DEPLOY_SUBNET_ID repository variable) or RunInstances denies. Take explicit
+# overrides; fall back to the first-listed only for a single-VPC account.
+VPC_ID="${BOOTSTRAP_VPC_ID:-$(aws ec2 describe-vpcs --profile "${PROFILE}" --region "${REGION}" --query 'Vpcs[0].VpcId' --output text)}"
+SUBNET_ID="${BOOTSTRAP_SUBNET_ID:-$(aws ec2 describe-subnets --profile "${PROFILE}" --region "${REGION}" \
+  --filters "Name=vpc-id,Values=${VPC_ID}" --query 'sort_by(Subnets,&AvailabilityZone)[0].SubnetId' --output text)}"
+# The org's shared EC2 key pair (secure-wazuh pattern); override only if a per-repo pair is
+# ever minted. Its private half is the AWS_EC2_SSH_PRIVATE_KEY Actions secret.
+KEY_PAIR="${BOOTSTRAP_KEY_PAIR_NAME:-nwarila-ec2-key}"
 # The OIDC subject GitHub actually emits embeds the OWNER id as well as the repository id
 # (proven by CloudTrail). Resolve it rather than hard-coding it.
 OWNER_ID="$(gh api "orgs/${OWNER}" --jq .id)" || die "cannot resolve owner id for ${OWNER}"

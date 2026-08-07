@@ -135,6 +135,27 @@ polish; each one is a finding both auditors raised.
   measure ~2.6 KB and ~3.3 KB, and the role has ten managed-policy slots of which this uses four.
   Attach both; they are one boundary in two documents. Do not recombine them.
 
+## Elastic IP grants (added 2026-08-07)
+
+The full ephemeral lifecycle runs from a GitHub-hosted runner. The terraform framework attaches
+pre-created ENIs, a launch path AWS never auto-assigns a public IP to — and the account has no
+NAT and no VPC endpoints — so without an EIP the instance is both unreachable and route-less.
+Four actions were added for it, all inside the existing identity boundary:
+
+- `ec2:AllocateAddress` (`-launch`, Sid `AllocateTaggedElasticIp`) requires the repo identity tag
+  **at create time** via `aws:RequestTag` — same shape as every other create in that policy. The
+  framework's provider `default_tags` supply the tag.
+- `ec2:AssociateAddress` / `ec2:DisassociateAddress` / `ec2:ReleaseAddress` (`-lifecycle`) are
+  `ec2:ResourceTag`-gated, deliberately **not** `IfExists`: at association time the EIP, instance
+  and ENI legs all already carry the tag, and an `IfExists` here is a fail-open waiting for an
+  untagged resource. A sibling's EIP is untouchable for the same reason a sibling's instance is.
+- `ec2:DescribeAddresses` / `ec2:DescribeAddressesAttribute` join the discovery describes (the
+  provider reads both; describe stays account-wide like every other describe).
+
+The exposure this buys is bounded by the security group, not by IAM: the workflow renders the SG
+ingress to the **runner's own egress /32, discovered per run**, and the egress rule set is empty
+— the instance can answer that one runner and originate nothing.
+
 ## What this clone deliberately drops
 
 Both auditors, independently, recommended that the Windows consumers drop the artifact-delivery path
@@ -162,11 +183,12 @@ governs who may manage the groups. Treat the rule set as code-reviewed, not poli
 
 ## Known residuals (accepted, recorded rather than hidden)
 
-- **Public IP association is not denied.** SSM is reached over the internet gateway from a public
-  subnet, so `ec2:AssociatePublicIpAddress: false` would block every run. The structural fix is a
-  private subnet with VPC endpoints, which is the recommended target for this repo; the role holds
-  no EIP, internet-gateway or route-table actions, so a private subnet cannot be re-opened from
-  inside this boundary.
+- **Public IP association is not denied — and since 2026-08-07 the role holds tag-gated EIP
+  actions** (see [Elastic IP grants](#elastic-ip-grants-added-2026-08-07)): the hosted-runner
+  lifecycle needs a public address on a pre-created-ENI launch in an account with no NAT and no
+  VPC endpoints. The structural fix remains a private subnet with VPC endpoints plus SSM
+  session transport; when that lands, remove the EIP statements with it. The role still holds
+  no internet-gateway or route-table actions.
 - **`security-group-rule/*` is region-scoped.** Every rule action also authorizes against the parent
   `security-group/*` leg, which is tag- and VPC-pinned, so a foreign rule cannot be reached without
   its foreign parent. EC2 exposes VPC context on the parent group, not the rule resource — this is

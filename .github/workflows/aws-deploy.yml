@@ -18,14 +18,15 @@
 #
 # WHY THE LIFECYCLE IS SHAPED THIS WAY
 #
-# * ZERO-INBOUND: the instance has no public address and a no-ingress security group. Every
-#   hop from the runner — readiness, disk mapping, Ansible, proof — is SSH tunnelled through
-#   an SSM session (ProxyCommand `aws ssm start-session --document-name AWS-StartSSHSession`),
-#   authenticated with the launch key (AWS_EC2_SSH_PRIVATE_KEY = private half of
-#   windows-wsus-poc-key). The deploy IAM's tag-gated session grants exist for exactly this;
-#   the SSM VPC endpoints the agent registers through are Layer-0 infrastructure.
-# * readiness_gate=false in the tfvars: the framework's own gate dials the instance directly,
-#   which nothing outside the VPC can do. The readiness wait lives here instead, over SSM-SSH.
+# * REACHABILITY IS AN EIP + A /32: the framework attaches pre-created ENIs, and AWS never
+#   auto-assigns a public IP to that launch path — with no NAT and no VPC endpoints in the
+#   account, an address-less instance would be unreachable AND route-less. associate_public_ip
+#   binds an EIP (~$0.005/h for the instance's short life); the SG admits only SSH from this
+#   runner's own egress /32, discovered per run, and allows NO egress at all. Every hop —
+#   readiness, Ansible, proof — is direct SSH as Administrator with the launch key
+#   (AWS_EC2_SSH_PRIVATE_KEY = the org's shared nwarila-ec2-key, secure-wazuh pattern).
+# * readiness_gate=false in the tfvars: the framework's own gate dials the instance's PRIVATE
+#   ip, which a hosted runner can never reach. The readiness wait lives here, against the EIP.
 #   The framework's Windows bootstrap deliberately leaves the OpenSSH DefaultShell as cmd; the
 #   play's contract requires PowerShell, so this workflow flips it after its readiness check.
 # * Disk identities are declared by Function tag, resolved by the ROLE: EBS volume ids exist
@@ -148,10 +149,8 @@ jobs:
                                      --max-items 1 --query 'length(Images)' --output text >/dev/null
           aws ec2 describe-instance-types --instance-types t3.medium \
                                      --query 'length(InstanceTypes)' --output text >/dev/null
-          # The SSM read the runner later leans on to know the instance registered — the whole
-          # zero-inbound transport stands on it, so prove the grant with the boundary.
-          aws ssm describe-instance-information \
-                                     --query 'length(InstanceInformationList)' --output text >/dev/null
+          # The EIP read the runner later leans on to find the instance's public address.
+          aws ec2 describe-addresses --query 'length(Addresses)' --output text >/dev/null
           aws iam get-instance-profile --instance-profile-name windows-wsus-poc-profile \
                                      --query 'InstanceProfile.Roles[0].RoleName' --output text >/dev/null
           echo 'discovery grants intact'
@@ -231,30 +230,37 @@ jobs:
           terraform_wrapper: false
 
       # ------------------------------------------------------------------------------------- #
-      # Render the deploy inputs: the pinned deploy subnet, its AZ, the VPC CIDR (SG egress)
+      # Render the deploy inputs: the pinned deploy subnet, its AZ, the runner's egress /32
       # ------------------------------------------------------------------------------------- #
       - name: Discover deploy inputs and render tfvars
         run: |
           set -euo pipefail
-          # Deterministic subnet selection, IDENTICAL to bootstrap-iam.sh: sort by AZ, take the
-          # first. The launch policy pins one subnet ARN, so the subnet this step picks and the
-          # one the IAM was materialized with must be the same or RunInstances denies.
-          subnet_id="$(aws ec2 describe-subnets --query 'sort_by(Subnets,&AvailabilityZone)[0].SubnetId' --output text)"
-          az="$(aws ec2 describe-subnets --query 'sort_by(Subnets,&AvailabilityZone)[0].AvailabilityZone' --output text)"
-          # Egress boundary: 443 inside the VPC only, which is where the SSM endpoints live.
-          vpc_cidr="$(aws ec2 describe-vpcs --query 'Vpcs[0].CidrBlock' --output text)"
-          if ! printf '%s' "${vpc_cidr}" | grep -Eq '^[0-9./]+$'; then
-            printf 'VPC CIDR looks wrong: %s\n' "${vpc_cidr}" >&2; exit 1
+          # The deploy subnet is a REPOSITORY VARIABLE, not discovered: the account holds more
+          # than one VPC, so any blind pick is a coin toss, and the launch policy pins one
+          # subnet ARN — the tfvars and the IAM materialization must name the SAME subnet or
+          # RunInstances denies. The literals gate keeps the id out of the repo tree; a repo
+          # variable is its documented home. bootstrap-iam.sh takes the same value via
+          # BOOTSTRAP_SUBNET_ID.
+          subnet_id="${AWS_DEPLOY_SUBNET_ID:?repository variable AWS_DEPLOY_SUBNET_ID is unset — set it to the deploy subnet id}"
+          az="$(aws ec2 describe-subnets --subnet-ids "${subnet_id}" \
+            --query 'Subnets[0].AvailabilityZone' --output text)"
+          # The SG ingress is scoped to this runner's own egress address — the instance is
+          # reachable over SSH from this job and nowhere else.
+          runner_ip="$(curl -fsS https://checkip.amazonaws.com | tr -d '[:space:]')"
+          if ! printf '%s' "${runner_ip}" | grep -Eq '^[0-9]{1,3}(\.[0-9]{1,3}){3}$'; then
+            printf 'runner egress IP looks wrong: %s\n' "${runner_ip}" >&2; exit 1
           fi
           sed -e "s|__SUBNET_ID__|${subnet_id}|g" \
               -e "s|__AVAILABILITY_ZONE__|${az}|g" \
-              -e "s|__VPC_CIDR__|${vpc_cidr}|g" \
+              -e "s|__RUNNER_CIDR__|${runner_ip}/32|g" \
               terraform/environments/aws-test.tfvars.tmpl > "${RUNNER_TEMP}/aws-test.tfvars"
           # Fail-closed on partial substitution, same philosophy as the IAM materialized gate.
           if grep -n '__' "${RUNNER_TEMP}/aws-test.tfvars"; then
             echo 'unsubstituted __TOKEN__ survived the render' >&2; exit 1
           fi
-          printf 'rendered tfvars: subnet=%s az=%s vpc_cidr=%s\n' "${subnet_id}" "${az}" "${vpc_cidr}"
+          printf 'rendered tfvars: subnet=%s az=%s runner=%s/32\n' "${subnet_id}" "${az}" "${runner_ip}"
+        env:
+          AWS_DEPLOY_SUBNET_ID: ${{ vars.AWS_DEPLOY_SUBNET_ID }}
 
       - name: Terraform init
         id: tf-init
@@ -307,34 +313,31 @@ jobs:
           set -euo pipefail
           terraform -chdir="${TF_DIR}" apply -input=false -lock-timeout=120s "${RUNNER_TEMP}/tfplan"
 
-      - name: Read outputs and wait for SSM registration
-        timeout-minutes: 15
+      - name: Read outputs and resolve the Elastic IP
         run: |
           set -euo pipefail
           terraform -chdir="${TF_DIR}" output -json aws_instances > "${RUNNER_TEMP}/aws_instances.json"
           instance_id="$(python3 -c 'import json,sys; print(list(json.load(open(sys.argv[1])).values())[0]["instance_id"])' \
             "${RUNNER_TEMP}/aws_instances.json")"
           printf 'INSTANCE_ID=%s\n' "${instance_id}" >> "${GITHUB_ENV}"
-          printf 'instance: %s\n' "${instance_id}"
-          # The session transport needs the plugin locally and the agent registered remotely.
-          # Registration rides the instance's own 443 to the in-VPC SSM endpoints — the first
-          # end-to-end proof that the zero-inbound network path actually stands.
-          curl -fsS -o "${RUNNER_TEMP}/session-manager-plugin.deb" \
-            https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb
-          sudo dpkg -i "${RUNNER_TEMP}/session-manager-plugin.deb" >/dev/null
-          for _ in $(seq 1 60); do
-            ping="$(aws ssm describe-instance-information \
-              --filters "Key=InstanceIds,Values=${instance_id}" \
-              --query 'InstanceInformationList[0].PingStatus' --output text 2>/dev/null || true)"
-            if [ "${ping}" = "Online" ]; then echo 'SSM agent Online'; exit 0; fi
-            sleep 10
-          done
-          echo 'SSM agent never registered — endpoint path or instance profile broken' >&2; exit 1
+          # aws_instances is deliberately private-side; the public address is the EIP the
+          # framework bound to eni-0, findable by the Name tag it stamps + our identity tag.
+          eip="$(aws ec2 describe-addresses \
+            --filters "Name=tag:Name,Values=${WSUS_HOSTNAME}" \
+                      "Name=tag:nwarila:management:repository-id,Values=${GITHUB_REPOSITORY_ID}" \
+            --query 'Addresses[0].PublicIp' --output text)"
+          if [ -z "${eip}" ] || [ "${eip}" = "None" ]; then
+            echo 'no Elastic IP found for the PoC instance' >&2; exit 1
+          fi
+          printf 'EIP=%s\n' "${eip}" >> "${GITHUB_ENV}"
+          printf 'instance %s at %s\n' "${instance_id}" "${eip}"
+        env:
+          GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
 
       # ------------------------------------------------------------------------------------- #
-      # Readiness over SSM-SSH, then flip the OpenSSH DefaultShell to PowerShell
+      # Readiness over the EIP, then flip the OpenSSH DefaultShell to PowerShell
       # ------------------------------------------------------------------------------------- #
-      - name: Wait for Windows readiness over SSM-SSH
+      - name: Wait for Windows readiness over SSH
         timeout-minutes: 20
         env:
           AWS_EC2_SSH_PRIVATE_KEY: ${{ secrets.AWS_EC2_SSH_PRIVATE_KEY }}
@@ -345,8 +348,7 @@ jobs:
             ssh -i "${RUNNER_TEMP}/key.pem" -o BatchMode=yes -o ConnectTimeout=10 \
                 -o ServerAliveInterval=15 -o StrictHostKeyChecking=accept-new \
                 -o UserKnownHostsFile="${RUNNER_TEMP}/known_hosts" \
-                -o ProxyCommand="aws ssm start-session --target %h --document-name AWS-StartSSHSession --parameters portNumber=%p --region ${AWS_REGION}" \
-                "Administrator@${INSTANCE_ID}" "$@"
+                "Administrator@${EIP}" "$@"
           }
           # 1. Wait for sshd + the launch public key: the bootstrap user_data installs it
           #    minutes after the instance reports running.
@@ -354,7 +356,7 @@ jobs:
             if ssh_cmd 'exit 0' 2>/dev/null; then break; fi
             sleep 10
           done
-          ssh_cmd 'exit 0' || { echo 'sshd never became reachable over SSM' >&2; exit 1; }
+          ssh_cmd 'exit 0' || { echo 'sshd never became reachable' >&2; exit 1; }
           # 2. Wait for EC2Launch to finish provisioning — the same command the framework's own
           #    readiness gate would run if it could reach the instance.
           ssh_cmd '"C:\Program Files\Amazon\EC2Launch\EC2Launch.exe" status -b'
@@ -425,30 +427,25 @@ jobs:
       - name: Generate ephemeral inventory
         run: |
           set -euo pipefail
-          # Mirrors ansible/inventory/vmware.yml's group shape; the "address" is the INSTANCE
-          # ID because every hop tunnels through an SSM session (ProxyCommand), and the key is
-          # the launch key CI already holds. accept-new reuses the host key pinned during the
-          # readiness wait (shared known_hosts file). The ProxyCommand inherits the runner's
-          # AWS env credentials — refreshed immediately before the play below.
+          # Mirrors ansible/inventory/vmware.yml's group shape; the address is the EIP and the
+          # key is the launch key CI already holds. accept-new reuses the host key pinned
+          # during the readiness wait (shared known_hosts file).
           cat > "${RUNNER_TEMP}/inventory.yml" <<EOF
           wsus_servers:
             hosts:
               ${WSUS_HOSTNAME}:
-                ansible_host: '${INSTANCE_ID}'
+                ansible_host: '${EIP}'
             vars:
               ansible_user: 'Administrator'
               ansible_connection: 'ssh'
               ansible_shell_type: 'powershell'
               ansible_ssh_private_key_file: '${RUNNER_TEMP}/key.pem'
-              ansible_ssh_common_args: >-
-                -o StrictHostKeyChecking=accept-new
-                -o UserKnownHostsFile=${RUNNER_TEMP}/known_hosts
-                -o ProxyCommand="aws ssm start-session --target %h --document-name AWS-StartSSHSession --parameters portNumber=%p --region ${AWS_REGION}"
+              ansible_ssh_common_args: '-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=${RUNNER_TEMP}/known_hosts'
           EOF
 
-      # Fresh hour for the longest stage: every NEW SSM session the play opens authenticates
-      # with the runner's ambient credentials, and the play alone can outlive a session minted
-      # before plan/apply.
+      # Fresh hour for the longest stage: windows_disk_manager's resolve_aws describe runs
+      # DURING the play under the runner's ambient credentials, and the play alone can outlive
+      # a session minted before plan/apply.
       - name: Refresh AWS credentials before configure (OIDC)
         uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d13d05 # v4.2.1
         with:
@@ -477,8 +474,7 @@ jobs:
           set -euo pipefail
           ssh -i "${RUNNER_TEMP}/key.pem" -o BatchMode=yes \
               -o UserKnownHostsFile="${RUNNER_TEMP}/known_hosts" \
-              -o ProxyCommand="aws ssm start-session --target %h --document-name AWS-StartSSHSession --parameters portNumber=%p --region ${AWS_REGION}" \
-              "Administrator@${INSTANCE_ID}" 'powershell -NoProfile -NonInteractive -Command -' <<'PS'
+              "Administrator@${EIP}" 'powershell -NoProfile -NonInteractive -Command -' <<'PS'
           $ErrorActionPreference = 'Stop'
           foreach ($name in @('WsusService', 'W3SVC', 'MSSQL$MICROSOFT##WID')) {
             $svc = Get-Service -Name $name
@@ -562,6 +558,8 @@ jobs:
           n="$(aws ec2 describe-network-interfaces --filters "${tag}" \
                  --query 'length(NetworkInterfaces)' --output text)"
           [ "${n}" = "0" ] || { echo "!! ${n} ENI(s) survived" >&2; fails=1; }
+          n="$(aws ec2 describe-addresses --filters "${tag}" --query 'length(Addresses)' --output text)"
+          [ "${n}" = "0" ] || { echo "!! ${n} Elastic IP(s) survived" >&2; fails=1; }
           n="$(aws ec2 describe-security-groups --filters "${tag}" \
                  --query 'length(SecurityGroups)' --output text)"
           [ "${n}" = "0" ] || { echo "!! ${n} security group(s) survived" >&2; fails=1; }

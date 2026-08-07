@@ -3,10 +3,11 @@
 # --- [ Description ] ----------------------------------------------------------------------- #
 #
 # Variable input for the pinned aws-terraform-framework (SHA in .terraform-framework-pin).
-# This is a TEMPLATE, not a tfvars file: the three double-underscore tokens are discovered at
-# run time by .github/workflows/aws-deploy.yml (the deploy subnet — sorted by AZ, first — its
-# AZ, and the VPC CIDR) and substituted into an untracked copy under $RUNNER_TEMP. The render
-# step fails if any token survives substitution — same fail-closed philosophy as the IAM
+# This is a TEMPLATE, not a tfvars file: the three double-underscore tokens are rendered at
+# run time by .github/workflows/aws-deploy.yml (the deploy subnet from the AWS_DEPLOY_SUBNET_ID
+# repository variable — the account has more than one VPC, so discovery cannot be blind — its
+# AZ, and the runner's egress /32) into an untracked copy under $RUNNER_TEMP. The render step
+# fails if any token survives substitution — same fail-closed philosophy as the IAM
 # substitution gate. Keep literal double underscores out of comments; the check is a
 # whole-file grep on purpose.
 #
@@ -14,16 +15,18 @@
 # (docs/reference/aws-iam/README.md): t3.medium/t3.large only, gp3 encrypted <= 64 GiB,
 # IMDSv2 with hop limit 1, the pinned key pair, and the pinned VPC/subnet.
 #
-# ZERO-INBOUND, NO PUBLIC ADDRESS: WSUS here syncs from nothing and serves nothing external,
-# so the instance carries no public IP and its security group allows no ingress at all. The
-# runner reaches it exclusively through SSM (AWS-StartSSHSession over the SSM VPC endpoints —
-# the exact capability the deploy IAM's session grants exist for). Egress is 443 to the VPC
-# CIDR only: enough for the SSM agent to reach the in-VPC endpoints, nothing else.
+# REACHABILITY: the framework attaches a PRE-CREATED ENI, and AWS never auto-assigns a public
+# IP to that launch path — so without the EIP below the instance would have no route to
+# anything (no NAT, no VPC endpoints in this account) and nothing could reach it. The EIP
+# (~$0.005/h for the instance's short life) plus an ingress rule scoped to the CI runner's
+# own /32 is the entire exposure. Egress is EMPTY: WSUS here syncs from nothing — no
+# Microsoft Update, no website — and the OpenSSH bootstrap pulls its key from link-local
+# IMDS, which security groups never see.
 #
-# readiness_gate is FALSE by design: the framework's gate dials the instance directly, which
-# nothing outside the VPC can do. The workflow performs its own readiness wait over SSM-SSH,
-# then sets the OpenSSH DefaultShell to PowerShell (the framework's bootstrap deliberately
-# leaves cmd).
+# readiness_gate is FALSE by design: the framework's gate dials the instance's PRIVATE ip,
+# which a GitHub-hosted runner cannot reach. The workflow performs its own readiness wait
+# against the EIP, then sets the OpenSSH DefaultShell to PowerShell (the framework's
+# bootstrap deliberately leaves cmd).
 #
 # =========================================================================================== #
 
@@ -39,7 +42,9 @@ all_systems = [
     hostname             = "wsus-poc-01"
     availability_zone    = "__AVAILABILITY_ZONE__"
     subnet_id            = "__SUBNET_ID__"
-    key_name             = "windows-wsus-poc-key"
+    # The org's shared EC2 key pair (secure-wazuh pattern) — its private half is the
+    # AWS_EC2_SSH_PRIVATE_KEY Actions secret. No per-repo key material is minted.
+    key_name             = "nwarila-ec2-key"
     iam_instance_profile = "windows-wsus-poc-profile"
     aws_kms_alias        = "aws/ebs"
     ami                  = "windows_server_2025_base"
@@ -106,31 +111,31 @@ all_systems = [
         private_ip      = null
         security_groups = []
         # Non-null ingress + egress => the framework creates and attaches wsus-poc-01-eni-0-sg.
-        # Ingress [] is the whole point: NOTHING dials this instance — SSM sessions are
-        # outbound from the agent's point of view, so even the runner's SSH rides the
-        # instance's own 443 connection to the ssmmessages endpoint. Egress is 443 to the VPC
-        # CIDR only (the SSM interface endpoints); WSUS needs no website (no Microsoft Update
-        # sync in this PoC) and the OpenSSH bootstrap pulls its key from link-local IMDS.
-        ingress = []
-        egress = [
+        # Ingress is ONLY SSH from the CI runner's own egress address, discovered per run.
+        # Egress [] = no outbound at all: WSUS syncs from nothing in this PoC, the bootstrap's
+        # key fetch is link-local IMDS (invisible to SGs), and SSH replies ride the stateful
+        # inbound connection. The tightest posture the flow permits.
+        ingress = [
           {
-            description                  = "HTTPS to the in-VPC SSM endpoints only"
+            description                  = "SSH from the CI runner only"
             ip_protocol                  = "tcp"
-            from_port                    = 443
-            to_port                      = 443
-            cidr_ipv4                    = "__VPC_CIDR__"
+            from_port                    = 22
+            to_port                      = 22
+            cidr_ipv4                    = "__RUNNER_CIDR__"
             cidr_ipv6                    = null
             prefix_list_id               = null
             referenced_security_group_id = null
           }
         ]
-        tags = {}
+        egress = []
+        tags   = {}
       }
     ]
 
-    # No public address of any kind — see the header. The deploy IAM holds no EIP actions,
-    # and that is now load-bearing, not residual.
-    associate_public_ip = false
+    # An Elastic IP on eni-0 — the only public-address path for a pre-created-ENI launch, and
+    # the runner's only way to the instance. Tag-gated in the deploy IAM
+    # (AllocateTaggedElasticIp / AssociateEipToOurResources).
+    associate_public_ip = true
   }
 ]
 

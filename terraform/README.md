@@ -19,9 +19,11 @@ framework owns the how, this repo owns only the what.
 role) does, per run:
 
 1. Checks out the framework at the pin and asserts `git rev-parse HEAD` matches it.
-2. Discovers the runtime tokens: the deploy subnet (**sorted by AZ, first** — the identical
-   deterministic rule `bootstrap-iam.sh` uses to materialize the IAM subnet pin), its AZ, and
-   the VPC CIDR for the egress-only security group rule.
+2. Resolves the runtime tokens: the deploy subnet from the **`AWS_DEPLOY_SUBNET_ID`
+   repository variable** (the account holds more than one VPC, so discovery cannot be blind,
+   and the value must equal the subnet the IAM was materialized with — `bootstrap-iam.sh`
+   takes the same value via `BOOTSTRAP_SUBNET_ID`), its AZ, and the runner's egress IP as a
+   `/32` for the SSH ingress rule.
 3. Renders `aws-test.tfvars.tmpl` into `$RUNNER_TEMP` and fails if any `__` token survives.
 4. `terraform -chdir=<framework>/terraform init` with partial backend config:
    bucket `<account-id>-terraform`, key `nwarila-platform/windows-wsus/aws-poc.tfstate`,
@@ -34,12 +36,13 @@ role) does, per run:
 
 ## Assumptions this layer does not (cannot) verify
 
-- **Zero-inbound reachability is Layer-0:** the instance has no public address and a
-  no-ingress SG, so every hop from the runner is SSH-over-SSM. That requires the `ssm`,
-  `ssmmessages` and `ec2messages` VPC interface endpoints to exist in the deploy VPC (the
-  agent registers through them — there is no NAT and no IGW-reachable address). The workflow
-  fails loudly at its SSM-registration wait if they are missing.
-- The `windows-wsus-poc-key` key pair exists (Layer-0, operator custody). Its private half is
+- **Reachability is the EIP:** the framework attaches pre-created ENIs, a launch path AWS
+  never auto-assigns a public IP to, and the account has no NAT and no VPC endpoints — so the
+  EIP (~$0.005/h while the instance lives) is the runner's only path in AND the instance's
+  only route anywhere. The SG admits SSH from the runner's per-run `/32` only and allows no
+  egress. The deploy subnet must route through an internet gateway; the deploy role cannot
+  probe that (`ec2:DescribeRouteTables` is not granted).
+- The org-shared `nwarila-ec2-key` key pair exists (secure-wazuh pattern). Its private half is
   the `AWS_EC2_SSH_PRIVATE_KEY` Actions secret — used only by CI's own readiness/Ansible SSH
   stages, never by Terraform (`readiness_gate = false`, `readiness_private_key_paths = {}`).
 
