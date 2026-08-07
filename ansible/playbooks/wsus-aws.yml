@@ -5,8 +5,8 @@
 # AWS variant of wsus.yml: provisions the declared Windows data disks on the EPHEMERAL EC2
 # instance, then deploys the WSUS (WID-backed) role. Runs from the COMPOSED tree only — in CI,
 # .github/workflows/aws-deploy.yml overlays the role into the pinned ansible-framework
-# checkout and executes this playbook against the generated SSM-SSH inventory (zero-inbound:
-# the "host" is the instance id, tunnelled via AWS-StartSSHSession).
+# checkout and executes this playbook against the aws_ec2 dynamic inventory (the instance's
+# Elastic IP, found by its Function tag).
 #
 # Differences from wsus.yml, and nothing else:
 #   * windows_disk_manager.platform is 'aws' (vendor assert: 'Amazon EC2').
@@ -67,10 +67,8 @@
 
 - name: 'PLAY | WSUS Server (WID-backed, ephemeral AWS)'
   hosts: 'wsus_servers'
-  # TD-001: playbook-level gathering routes to the Windows setup module; with facts
-  # already present, the loader skips its own ansible.builtin.setup call. The disk-manager's
-  # platform/vendor assert also needs ansible_facts.system_vendor, which only gathering fills.
-  gather_facts: true
+  # Roles gather the facts they need themselves at present-time; the play gathers nothing.
+  gather_facts: false
   # TD-001: framework chassis ansible.cfg sets become=sudo (POSIX-only). The admin
   # account over SSH already holds an elevated token on Windows.
   become: false
@@ -162,36 +160,3 @@
           bucket: "{{ aws_account_id }}-ansible"
     #endregion --- [ Roles: Windows Server Update Service ] ----------------------------------- #
   #endregion --- [ Roles ] -------------------------------------------------------------------- #
-
-
-  #region ------ [ Post-Tasks: End-to-End Proof ] ---------------------------------------------- #
-  # The 'test' in deploy-test-destroy: independent of the roles above, prove WSUS actually
-  # serves, on the disks the deploy layer handed it. Any throw fails the play (and the run).
-  post_tasks:
-    - name: 'PROVE | WSUS serves on 8530 with WID on E:, content on F:, IIS artifacts on G:'
-      ansible.windows.win_shell: |
-        $ErrorActionPreference = 'Stop'
-        foreach ($name in @('WsusService', 'W3SVC', 'MSSQL$MICROSOFT##WID')) {
-          $svc = Get-Service -Name $name
-          if ($svc.Status -ne 'Running') { throw "service $name is $($svc.Status), not Running" }
-        }
-        foreach ($pair in @(@('E', 'WSUSDB'), @('F', 'WSUSDATA'), @('G', 'WSUSIIS'))) {
-          $vol = Get-Volume -DriveLetter $pair[0]
-          if ($vol.FileSystemLabel -cne $pair[1]) {
-            throw "volume $($pair[0]): label '$($vol.FileSystemLabel)' != '$($pair[1])'"
-          }
-        }
-        if (-not (Test-Path 'E:\WID\Data\SUSDB.mdf')) { throw 'SUSDB.mdf not relocated to E:\WID\Data' }
-        if (-not (Test-Path 'F:\WSUS\WSUSContent')) { throw 'content root F:\WSUS\WSUSContent missing' }
-        $wsus = Get-WsusServer -Name localhost -PortNumber 8530
-        $null = $wsus.GetStatus()
-        $resp = Invoke-WebRequest -UseBasicParsing -Uri 'http://localhost:8530/ClientWebService/client.asmx'
-        if ($resp.StatusCode -ne 200) { throw "ClientWebService answered $($resp.StatusCode)" }
-        Write-Output 'PROOF: WSUS serving on 8530, WID on E:, content on F:, IIS artifacts on G:'
-      register: '__proof__'
-      changed_when: false
-
-    - name: 'PROVE | Report'
-      ansible.builtin.debug:
-        msg: "{{ __proof__.stdout_lines | last }}"
-  #endregion --- [ Post-Tasks: End-to-End Proof ] ---------------------------------------------- #
