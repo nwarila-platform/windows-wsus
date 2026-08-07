@@ -104,8 +104,12 @@ polish; each one is a finding both auditors raised.
 - **The SSO trust is bounded to the permission-set hash**, `AWSReservedSSO_github_nwarila-platform_`
   + sixteen `?` (R3-8). The source uses a trailing `*`, which also matches any future permission set
   named `github_nwarila-platform_<something>` — including a low-privilege one.
-- **`job_workflow_ref` is single-valued** (R3-2), so there is no array shape teaching a cloner to
-  *append* — an appended trust leaves the sibling repository trusted. Replace it wholesale.
+- **`job_workflow_ref` lists exactly this repository's two deploy-boundary workflows** —
+  `aws-deploy.yml` (the lifecycle) and `aws-reaper.yml` (the scheduled teardown safety net) —
+  and nothing else (R3-2). The rule for cloners is unchanged in spirit: never *append* to an
+  inherited list (an appended trust leaves the sibling repository trusted) — replace it
+  wholesale with your own repository's workflow paths, and keep every entry pointing at THIS
+  repository. check-iam-literals.sh verifies each listed workflow file exists.
   **`sub` deliberately lists BOTH subject forms.** GitHub emits the ID-embedded subject
   `repo:<owner>@<owner-id>/<repo>@<repository-id>:<context>` for repositories created after roughly
   2026-07-15 — proven from the CloudTrail `userName` on a real denied `AssumeRoleWithWebIdentity`,

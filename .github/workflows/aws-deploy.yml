@@ -5,28 +5,22 @@
 # Terraform is DATA-ONLY here (tfvars template, no .tf files); resources live in the pinned
 # aws-terraform-framework, configuration in the pinned ansible-framework + this repo's role.
 #
-#   * The OIDC trust pins THIS FILE's path in job_workflow_ref — every stage lives here, and
-#     a rename fails the credential exchange loudly. The reaper job below is in this file for
-#     the same reason: a separate workflow could never assume the deploy role.
+#   * The OIDC trust lists exactly two workflow paths — this file and aws-reaper.yml — so a
+#     rename of either fails its credential exchange loudly, and no other workflow can
+#     assume the deploy role.
 #   * Reachability: EIP + key-authenticated SSH (the SG's only ingress; egress is empty).
 #     readiness_gate=false because the framework's gate dials the private ip; the Ansible
 #     stage waits for sshd/EC2Launch itself, then flips DefaultShell to PowerShell.
 #   * Credentials re-exchange per stage (MaxSessionDuration < job runtime); a destroy with
 #     dead credentials strands paid resources.
-#   * One fixed state key; the concurrency group serializes runs, and apply converges from
-#     whatever state a killed predecessor left.
-#   * The REAPER runs every 15 minutes (from the default branch, as all schedules do) and
-#     tears down anything still carrying this repository's tag — the safety net for runs
-#     killed too hard to reach their own destroy. It shares the concurrency group, so it can
-#     never fire while a deploy is mid-flight.
+#   * One fixed state key; the concurrency group (shared with aws-reaper.yml) serializes
+#     runs, and apply converges from whatever state a killed predecessor left. Anything a
+#     hard-killed run leaves behind, the scheduled reaper tears down within 15 minutes.
 # =========================================================================================== #
 name: AWS Deploy
 
 on:
   workflow_dispatch:
-  schedule:
-    # The reaper cadence. Only the aws-reaper job runs on this trigger.
-    - cron: '*/15 * * * *'
   pull_request:
     # synchronize included so edits to an open PR re-prove; labeled excluded so a
     # triage-permission user cannot spend money.
@@ -53,11 +47,8 @@ jobs:
     name: AWS (ephemeral deploy-test-destroy)
     runs-on: ubuntu-latest
     timeout-minutes: 180
-    # Schedule runs belong to the reaper job. Fork PRs never reach the role; the org's
-    # no-ID-token-to-forks setting is layer one.
-    if: >-
-      github.event_name != 'schedule' &&
-      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    # Fork PRs never reach the role; the org's no-ID-token-to-forks setting is layer one.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     permissions:
       id-token: write
       contents: read
@@ -231,89 +222,3 @@ jobs:
             -var "owner=${GITHUB_REPOSITORY_OWNER}" \
             -var "commit_sha=$(git -C "${GITHUB_WORKSPACE}" rev-parse HEAD)" \
             -var "run_id=${GITHUB_RUN_ID}"
-
-  # ========================================================================================= #
-  # The reaper: scheduled safety net. terraform destroy can only remove what its state
-  # recorded, and a run killed hard enough never reaches destroy at all — so every 15 minutes
-  # this job tears down ANYTHING still carrying the repository's tag. It lives in this file
-  # because the OIDC trust admits no other workflow, and it shares the concurrency group so a
-  # live deploy always finishes (or fails) before the reaper looks.
-  # ========================================================================================= #
-  aws-reaper:
-    name: AWS (reaper — teardown anything still standing)
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    if: github.event_name == 'schedule'
-    permissions:
-      id-token: write
-      contents: read
-    env:
-      AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
-      DEPLOY_ROLE: github_nwarila-platform_windows-wsus
-
-    steps:
-      - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d13d05 # v4.2.1
-        with:
-          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ env.DEPLOY_ROLE }}
-          aws-region: ${{ env.AWS_REGION }}
-          role-session-name: aws-reaper-${{ github.run_id }}
-          role-duration-seconds: 3600
-
-      # Teardown order follows the dependency chain: instances first (everything else is
-      # attached to them), then network interfaces, Elastic IPs, volumes, security groups.
-      # Every command is scoped by the repository's tag; a clean account is a fast no-op.
-      - name: Tear down anything still standing
-        env:
-          GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
-        run: |
-          set -euo pipefail
-
-          owned_by_this_repo="Name=tag:nwarila:management:repository-id,Values=${GITHUB_REPOSITORY_ID}"
-
-          instance_ids="$(aws ec2 describe-instances \
-            --filters "${owned_by_this_repo}" "Name=instance-state-name,Values=pending,running,stopping,stopped" \
-            --query 'Reservations[].Instances[].InstanceId' --output text)"
-          if [ -n "${instance_ids}" ]; then
-            echo "terminating instance(s): ${instance_ids}"
-            aws ec2 terminate-instances --instance-ids ${instance_ids} > /dev/null
-            aws ec2 wait instance-terminated --instance-ids ${instance_ids}
-          fi
-
-          interface_ids="$(aws ec2 describe-network-interfaces \
-            --filters "${owned_by_this_repo}" "Name=status,Values=available" \
-            --query 'NetworkInterfaces[].NetworkInterfaceId' --output text)"
-          for interface_id in ${interface_ids}; do
-            echo "deleting network interface: ${interface_id}"
-            aws ec2 delete-network-interface --network-interface-id "${interface_id}"
-          done
-
-          allocation_ids="$(aws ec2 describe-addresses \
-            --filters "${owned_by_this_repo}" \
-            --query 'Addresses[].AllocationId' --output text)"
-          for allocation_id in ${allocation_ids}; do
-            echo "releasing Elastic IP: ${allocation_id}"
-            aws ec2 release-address --allocation-id "${allocation_id}"
-          done
-
-          volume_ids="$(aws ec2 describe-volumes \
-            --filters "${owned_by_this_repo}" "Name=status,Values=available" \
-            --query 'Volumes[].VolumeId' --output text)"
-          for volume_id in ${volume_ids}; do
-            echo "deleting volume: ${volume_id}"
-            aws ec2 delete-volume --volume-id "${volume_id}"
-          done
-
-          group_ids="$(aws ec2 describe-security-groups \
-            --filters "${owned_by_this_repo}" \
-            --query 'SecurityGroups[].GroupId' --output text)"
-          for group_id in ${group_ids}; do
-            echo "deleting security group: ${group_id}"
-            aws ec2 delete-security-group --group-id "${group_id}"
-          done
-
-          if [ -z "${instance_ids}${interface_ids}${allocation_ids}${volume_ids}${group_ids}" ]; then
-            echo "Nothing to reap: no resources tagged to this repository exist."
-          else
-            echo "Reaped. The account is clean again."
-          fi
