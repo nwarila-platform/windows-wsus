@@ -5,7 +5,7 @@
 - **Recorded:** 2026-07-15
 - **Where:** `ansible/applications/wsus/tasks/main.yml` is still the local v3.1.0
   loader. The pinned framework now supplies a v3.2.1 loader with Windows guards, but
-  changing `.framework-pin` does not replace this repository's overlaid loader.
+  changing `.github/ansible-framework-pin` does not replace this repository's overlaid loader.
 - **Local loader gaps on a Windows target over SSH and PowerShell:**
   1. `INIT | Loading Installed Package Facts` runs
      `ansible.builtin.package_facts`, which requires Python and hard-fails on Windows.

@@ -3,15 +3,15 @@
 **Type**: Reference (Diátaxis). This directory carries **data, not resources**: the repo ships
 no `.tf` files. The resource logic lives in
 [aws-terraform-framework](https://github.com/nwarila-platform/aws-terraform-framework), a
-*deployment root* checked out at the commit pinned in `.terraform-framework-pin` (repo root)
+*deployment root* checked out at the commit pinned in `.github/terraform-framework-pin`
 and driven with `-var-file` pointing back at this directory's `aws.tfvars`.
-Same consumption shape as the Ansible side (`.framework-pin` + compose), same reason: the
+Same consumption shape as the Ansible side (`.github/ansible-framework-pin` + compose), same reason: the
 framework owns the how, this repo owns only the what.
 
 | File | Purpose |
 |---|---|
 | `aws.tfvars` | The one ephemeral system (`wsus-poc-01`) as framework `all_systems` input; passed to terraform verbatim |
-| `../.terraform-framework-pin` | 40-char commit SHA of the framework (currently `fa3908c…` = release **2.2.0**; pin the SHA, not a tag — release tags land after the fact) |
+| `../.github/terraform-framework-pin` | 40-char commit SHA of the framework (its `main` after the flat-identity-variables PR #105); pin the SHA, not a tag — release tags land after the fact |
 
 ## How a deploy runs
 

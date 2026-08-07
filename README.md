@@ -7,7 +7,7 @@ This is a `nwarila-platform` single-purpose application repo: it contains one ro
 (`ansible/applications/wsus/`), its playbook, and inventory. At run time the role is
 composed into a version-pinned checkout of
 [ansible-framework](https://github.com/nwarila-platform/ansible-framework) — see
-`scripts/compose-and-run.sh` and `.framework-pin`.
+`scripts/compose-and-run.sh` and `.github/ansible-framework-pin`.
 
 ## Quickstart (lab)
 
