@@ -1014,29 +1014,46 @@
           when: __tls_store_probe__.stdout | trim != 'present'
           ansible.windows.win_shell: |
             $ErrorActionPreference = 'Stop'
-            $flags = [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::EphemeralKeySet
-            $cert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new(
-                $env:PFX_PATH, $env:PFX_PASSWORD, $flags)
-            $wantThumb = $env:TLS_THUMBPRINT.Replace(' ', '').ToUpperInvariant()
-            $gotThumb = $cert.Thumbprint.Replace(' ', '').ToUpperInvariant()
-            if (-not $cert.HasPrivateKey) { throw 'PFX leaf certificate has no private key' }
-            if ($gotThumb -ne $wantThumb) { throw "PFX thumbprint $gotThumb does not match pinned $wantThumb" }
-            $now = Get-Date
-            if ($cert.NotBefore -gt $now) { throw ('certificate is not active until ' + $cert.NotBefore.ToString('o')) }
-            $minimumExpiry = $now.AddDays([int]$env:MINIMUM_VALIDITY_DAYS)
-            if ($cert.NotAfter -lt $minimumExpiry) { throw ('certificate expires too soon: ' + $cert.NotAfter.ToString('o')) }
-            $certificateDns = $cert.GetNameInfo(
-                [System.Security.Cryptography.X509Certificates.X509NameType]::DnsName, $false
-            ).Trim().ToLowerInvariant()
-            $wantedDns = $env:TLS_DNS_NAME.Trim().ToLowerInvariant()
-            $dnsMatches = $certificateDns -eq $wantedDns
-            if (-not $dnsMatches -and $certificateDns.StartsWith('*.')) {
-                $suffix = $certificateDns.Substring(1)
-                $dnsMatches = $wantedDns.EndsWith($suffix) -and
-                    ($wantedDns.Split('.').Count -eq $certificateDns.Split('.').Count)
+            $storageFlags = [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]
+            try {
+                try {
+                    $cert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new(
+                        $env:PFX_PATH, $env:PFX_PASSWORD, $storageFlags::EphemeralKeySet)
+                } catch [System.Security.Cryptography.CryptographicException] {
+                    # .NET Framework rejects EphemeralKeySet for legacy CAPI-keyed PFXs; fall back
+                    # to a non-persisted machine-context load. Dispose below scrubs its key file.
+                    $cert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new(
+                        $env:PFX_PATH, $env:PFX_PASSWORD, $storageFlags::MachineKeySet)
+                }
+                try {
+                    $wantThumb = $env:TLS_THUMBPRINT.Replace(' ', '').ToUpperInvariant()
+                    $gotThumb = $cert.Thumbprint.Replace(' ', '').ToUpperInvariant()
+                    if (-not $cert.HasPrivateKey) { throw 'PFX leaf certificate has no private key' }
+                    if ($gotThumb -ne $wantThumb) { throw "PFX thumbprint $gotThumb does not match pinned $wantThumb" }
+                    $now = Get-Date
+                    if ($cert.NotBefore -gt $now) { throw ('certificate is not active until ' + $cert.NotBefore.ToString('o')) }
+                    $minimumExpiry = $now.AddDays([int]$env:MINIMUM_VALIDITY_DAYS)
+                    if ($cert.NotAfter -lt $minimumExpiry) { throw ('certificate expires too soon: ' + $cert.NotAfter.ToString('o')) }
+                    $certificateDns = $cert.GetNameInfo(
+                        [System.Security.Cryptography.X509Certificates.X509NameType]::DnsName, $false
+                    ).Trim().ToLowerInvariant()
+                    $wantedDns = $env:TLS_DNS_NAME.Trim().ToLowerInvariant()
+                    $dnsMatches = $certificateDns -eq $wantedDns
+                    if (-not $dnsMatches -and $certificateDns.StartsWith('*.')) {
+                        $suffix = $certificateDns.Substring(1)
+                        $dnsMatches = $wantedDns.EndsWith($suffix) -and
+                            ($wantedDns.Split('.').Count -eq $certificateDns.Split('.').Count)
+                    }
+                    if (-not $dnsMatches) { throw "certificate DNS name $certificateDns does not match $wantedDns" }
+                    Write-Output ('validated:' + $gotThumb)
+                } finally {
+                    $cert.Dispose()
+                }
+            } catch {
+                # Sanitized marker for the uncensored assert below; never includes the password.
+                Write-Output ('validation-error: ' + $_.Exception.GetType().FullName + ': ' + $_.Exception.Message)
+                exit 1
             }
-            if (-not $dnsMatches) { throw "certificate DNS name $certificateDns does not match $wantedDns" }
-            Write-Output ('validated:' + $gotThumb)
           environment:
             PFX_PATH: '{{ __tls_target_temp__.path }}\certificate.pfx'
             PFX_PASSWORD: '{{ __tls_pfx_password__ }}'
@@ -1045,6 +1062,19 @@
             MINIMUM_VALIDITY_DAYS: '{{ config.tls.minimum_validity_days }}'
           no_log: true
           changed_when: false
+          failed_when: false
+          register: __tls_validate__
+
+        # no_log censors the validator's own failure output. Its stdout carries only the
+        # sanitized markers above, so this separate task can surface the verdict readably.
+        - name: 'MAIN | Enforce The PFX Validation Verdict'
+          when: __tls_store_probe__.stdout | trim != 'present'
+          ansible.builtin.assert:
+            that:
+              - __tls_validate__.rc == 0
+              - __tls_validate__.stdout is search('^validated:')
+            fail_msg: 'PFX validation failed: {{ __tls_validate__.stdout | trim }}'
+            success_msg: '{{ __tls_validate__.stdout | trim }}'
 
         - name: 'MAIN | Import The Validated Certificate Into The Machine Store'
           when: __tls_store_probe__.stdout | trim != 'present'
