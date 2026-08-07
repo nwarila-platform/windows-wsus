@@ -46,8 +46,9 @@ ACCOUNT="$(aws sts get-caller-identity --profile "${PROFILE}" --query Account --
 REPO_ID="$(gh api "repos/${OWNER}/${REPO}" --jq .id)" || die "GitHub repo ${OWNER}/${REPO} not found"
 KMS_KEY="$(aws kms describe-key --key-id alias/aws/ebs --profile "${PROFILE}" --region "${REGION}" \
            --query 'KeyMetadata.KeyId' --output text)" || die 'alias/aws/ebs unresolved'
-# The deploy subnet's single source of truth is the terraform template — the same file the
-# deploy workflow renders — so the IAM subnet pin and the tfvars can never disagree. The VPC
+# The deploy subnet's single source of truth is terraform/aws.tfvars — the same file the
+# deploy workflow passes to terraform verbatim — so the IAM subnet pin and the tfvars can
+# never disagree. The VPC
 # is derived FROM that subnet (the account holds more than one VPC; a blind Vpcs[0] pick is a
 # coin toss).
 SUBNET_ID="$(grep -oE 'subnet-[0-9a-f]+' "${ROOT}/terraform/aws.tfvars" | head -1)"

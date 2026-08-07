@@ -18,7 +18,7 @@
      first, so the loader skips that task.
   4. The framework chassis sets POSIX `sudo` become defaults, so the Windows play
      must continue to set `become: false`.
-- **Workarounds in `ansible/playbooks/wsus.yml`:** playbook-level fact gathering,
+- **Workarounds in `ansible/playbooks/wsus-aws.yml`:** playbook-level fact gathering,
   `wsus.temp_dir: false`, a pre-task that seeds an empty
   `ansible_facts.packages`, and play-level `become: false`.
 - **Seed safety:** the pre-task uses

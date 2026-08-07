@@ -28,6 +28,7 @@ materialized copy **cannot** catch that, because the materialized copy is what i
 | `<vpc-id>` | the deploy VPC | Layer-0 bootstrap output | fail-closed if absent. **Verified 2026-07-29: this account has ONE VPC**, so every sibling materializes the same value — it is shared infrastructure, not a per-repo literal |
 | `<subnet-id>` | the deploy subnet | Layer-0 bootstrap output | as above — **one subnet account-wide**, shared by all siblings |
 | `<ebs-kms-key-id>` | the key `alias/aws/ebs` resolves to **in this account** | `aws kms describe-key --key-id alias/aws/ebs` | fail-closed. Account-wide and AWS-managed, so **siblings legitimately share the same key id** |
+| `<owner-id>` | the GitHub organization's numeric id | `gh api orgs/nwarila-platform --jq .id` | fail-closed — the ID-embedded OIDC `sub` form never matches |
 | `<key-pair-name>` | this repo's EC2 key pair | Layer-0 bootstrap output | fail-closed at launch |
 | `<artifact-bucket>` | the S3 bucket holding the deploy artifacts | the deploy plan / Layer-0 bootstrap output | fail-closed — `s3:GetObject` on a `<...>` bucket name is denied. **But see below: the object-key prefix, not the bucket, is what separates the siblings** |
 
@@ -81,7 +82,7 @@ out of git.
 The `-admin` role carries the state policy as well as the four deploy policies: a local
 `deploy -> test -> destroy` cannot read or write Terraform state without it, and the row above
 claims that capability. Detach the deploy policies when the local path is retired.
-`MaxSessionDuration` is 3600 seconds on all three roles — the AWS default, materialized as a
+`MaxSessionDuration` is 3600 seconds on all four roles — the AWS default, materialized as a
 role property rather than inside any document here.
 
 The instance role carries **exactly one** AWS-managed policy and no inline policy. It holds no S3
@@ -149,18 +150,24 @@ Four actions were added for it, all inside the existing identity boundary:
 - `ec2:AllocateAddress` (`-launch`, Sid `AllocateTaggedElasticIp`) requires the repo identity tag
   **at create time** via `aws:RequestTag` — same shape as every other create in that policy. The
   framework's provider `default_tags` supply the tag.
-- `ec2:AssociateAddress` / `ec2:DisassociateAddress` / `ec2:ReleaseAddress` (`-lifecycle`) are
-  `ec2:ResourceTag`-gated, deliberately **not** `IfExists`: at association time the EIP, instance
-  and ENI legs all already carry the tag, and an `IfExists` here is a fail-open waiting for an
-  untagged resource. A sibling's EIP is untouchable for the same reason a sibling's instance is.
+- `ec2:AssociateAddress` / `ec2:ReleaseAddress` (`-lifecycle`) are `ec2:ResourceTag`-gated,
+  deliberately **not** `IfExists`. `ec2:DisassociateAddress` alone is region-only (see the
+  residual below): Terraform disassociates by association-id, a request form EC2 resolves to no
+  taggable resource, so a tag condition there fails closed and blocks every destroy.
 - `ec2:DescribeAddresses` / `ec2:DescribeAddressesAttribute` join the discovery describes (the
   provider reads both; describe stays account-wide like every other describe).
 
-The exposure this buys is bounded by the security group, not by IAM: the workflow renders the SG
-ingress to the **runner's own egress /32, discovered per run**, and the egress rule set is empty
-— the instance can answer that one runner and originate nothing.
+The EIP is pure EGRESS enablement: the shipped security group allows **zero ingress** — the
+runner's SSH rides the SSM agent's own outbound 443 session — and egress is HTTPS only, which
+is what lets the agent register through the internet gateway. Nothing on the internet can dial
+the instance; the EIP just gives its outbound packets a route home.
 
 ## What this clone deliberately drops
+
+> **Superseded 2026-08-07:** the artifact path described below was re-added and is now LIVE —
+> the TLS certificate is delivered through `windows-wsus-artifact-reader` at configure time
+> (see the role-to-policy map). This section stays as the audit trail of the original
+> decision; the instance profile remains S3-free either way.
 
 Both auditors, independently, recommended that the Windows consumers drop the artifact-delivery path
 entirely. WSUS installs from a Windows Server role and Microsoft Update; it has no S3-delivered
@@ -179,7 +186,7 @@ findings applied first — rather than carrying the surface now for a need that 
 | Instance types | `t3.medium`, `t3.large` | Locked in the deploy plan. The source's `m6i.xlarge` is a 4-vCPU SIEM node; WSUS does not need it |
 | Volume cap | 64 GiB | Largest single volume is the ~50 GiB Windows root, plus headroom. The three data disks are 20 GiB WSUSDB / 30 GiB WSUSDATA / 20 GiB WSUSIIS. The source's 100 GiB over-grants ~5× against these |
 | IOPS / throughput | 3000 / 125 | gp3 defaults; `NumericLessThanEqualsIfExists` is intentional so an unspecified input inherits the default rather than failing |
-| Ingress | TCP 8530 / 8531 (WSUS HTTP/HTTPS) | The source's 1514/1515/443 are Wazuh agent and dashboard ports |
+| Ingress | **none** (SSH rides the SSM agent's outbound session) | The source's 1514/1515/443 are Wazuh agent and dashboard ports; this repo ships a zero-ingress group |
 | State prefix | `nwarila-platform/windows-wsus/` | Per repository, in Allows **and** Denies together |
 
 **IAM does not enforce the ingress ports.** Security-group *rules* are Terraform configuration; IAM
@@ -190,8 +197,8 @@ governs who may manage the groups. Treat the rule set as code-reviewed, not poli
 - **Public IP association is not denied — and since 2026-08-07 the role holds tag-gated EIP
   actions** (see [Elastic IP grants](#elastic-ip-grants-added-2026-08-07)): the hosted-runner
   lifecycle needs a public address on a pre-created-ENI launch in an account with no NAT and no
-  VPC endpoints. The structural fix remains a private subnet with VPC endpoints plus SSM
-  session transport; when that lands, remove the EIP statements with it. The role still holds
+  VPC endpoints. SSM session transport already ships; the remaining structural
+  fix is a private subnet with VPC interface endpoints, which would retire the EIP statements. The role still holds
   no internet-gateway or route-table actions.
 - **`security-group-rule/*` is region-scoped.** Every rule action also authorizes against the parent
   `security-group/*` leg, which is tag- and VPC-pinned, so a foreign rule cannot be reached without

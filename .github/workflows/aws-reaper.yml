@@ -32,6 +32,7 @@ jobs:
     permissions:
       id-token: write
       contents: read
+      issues: write
     env:
       AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
       DEPLOY_ROLE: github_nwarila-platform_windows-wsus
@@ -102,3 +103,15 @@ jobs:
           else
             echo "Reaped. The account is clean again."
           fi
+
+      # A failing reaper means potentially stranded paid resources with nobody watching —
+      # that must surface as an issue, not a silently red schedule.
+      - name: Open an issue on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh issue create --repo "${GITHUB_REPOSITORY}" \
+            --title "Reaper failed: run ${GITHUB_RUN_ID}" \
+            --body "The scheduled teardown failed — check for stranded resources: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"

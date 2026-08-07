@@ -1,5 +1,4 @@
 # composition build tree (framework checkout + overlaid role) — never committed
-.compose/
 
 # ansible scratch
 *.retry
@@ -22,4 +21,3 @@ temp-password*
 ROADMAP.md
 AGENTS.md
 .claude/
-docs/session-runbook.md

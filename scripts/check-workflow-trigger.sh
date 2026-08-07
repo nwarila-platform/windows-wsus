@@ -31,22 +31,15 @@ WF="${ROOT}/.github/workflows/aws-deploy.yml"
 # repository — which is the point.
 readonly -a REQUIRED_TYPES=(opened reopened ready_for_review synchronize)
 readonly -a FORBIDDEN_TYPES=(labeled unlabeled)
-readonly -a REQUIRED_PATHS=(
-    'ansible/**'
-    'docs/reference/aws-iam/**'
-    'scripts/check-iam-literals.sh'
-    'scripts/test-iam-policies.sh'
-    '.github/workflows/aws-deploy.yml'
-)
 
 fail() { printf 'check-workflow-trigger: FAIL — %s\n' "$1" >&2; exit 1; }
 [ -f "${WF}" ] || fail "no aws-deploy.yml at ${WF}"
 
 PY="$(command -v python3)"
-"${PY}" - "${WF}" "${REQUIRED_TYPES[*]}" "${FORBIDDEN_TYPES[*]}" "${REQUIRED_PATHS[*]}" <<'PYEOF'
+"${PY}" - "${WF}" "${REQUIRED_TYPES[*]}" "${FORBIDDEN_TYPES[*]}" <<'PYEOF'
 import sys
 
-wf, req_types, forbidden_types, req_paths = sys.argv[1:5]
+wf, req_types, forbidden_types = sys.argv[1:4]
 try:
     import yaml
 except ModuleNotFoundError:
@@ -78,8 +71,9 @@ else:
     block = block.group(1) if block else ""
     m = re.search(r"types:\s*\[([^\]]*)\]", block)
     types = [t.strip() for t in m.group(1).split(",")] if m else []
-    paths = re.findall(r"^\s+-\s+(\S+)\s*$", block, re.M)
+    paths = ["x"] if re.search(r"^\s+paths:", block, re.M) else []
     has_dispatch = "workflow_dispatch:" in block
+    on = {"schedule": None} if "schedule:" in block else {}
 
 # `types:` must be DECLARED, not inherited. An omitted key is the exact shape that caused the drift:
 # it inherits a default that happens to be close to correct, so nobody notices it is not the same
@@ -99,22 +93,20 @@ for t in forbidden_types.split():
             "TRIAGE-permission user, who could spend real money without holding write access. "
             "Manual re-runs go through workflow_dispatch.")
 
-for p in req_paths.split():
-    if p not in paths:
-        bad(f"paths must include '{p}' (missing).")
-
-# terraform must be covered somehow, but HOW legitimately differs: a repo carrying a
-# proxmox.tfvars alongside aws.tfvars must name aws.tfvars so a Proxmox edit cannot fire an AWS
-# deploy, while a repo with no Proxmox inputs keeps terraform/** so a first real tfvars is covered
-# the day it lands.
-if not any(p.startswith("terraform/") for p in paths):
-    bad("paths must cover terraform/ (either terraform/** or the specific AWS tfvars).")
+# EVERY pull request must run the full lifecycle: a paths filter would break the job's role
+# as a REQUIRED status check (an unmatched PR would wait forever on a check that never
+# reports), which is what unattended auto-merge stands on.
+if paths:
+    bad("pull_request must carry NO paths filter — every PR runs the proof so the job can be a required check.")
 
 if not has_dispatch:
     bad("workflow_dispatch must be present: it is the manual-execution path.")
+
+if "schedule" not in on:
+    bad("schedule must be present: the weekly unattended self-proof is the passive contract.")
 
 sys.exit(status)
 PYEOF
 rc=$?
 [ ${rc} -eq 0 ] || fail 'the aws-deploy.yml trigger does not match the org contract (see above).'
-printf 'check-workflow-trigger: OK — types declared explicitly, synchronize present, labeled absent, paths covered.\n'
+printf 'check-workflow-trigger: OK — types explicit, synchronize present, labeled absent, no paths filter, schedule present.\n'

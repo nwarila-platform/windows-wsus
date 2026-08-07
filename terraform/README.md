@@ -15,10 +15,10 @@ framework owns the how, this repo owns only the what.
 
 ## How a deploy runs
 
-`.github/workflows/aws-deploy.yml` (the only workflow the OIDC trust lets assume the deploy
-role) does, per run:
+`.github/workflows/aws-deploy.yml` (one of the two workflows the OIDC trust admits — the
+other is the reaper) does, per run:
 
-1. Checks out the framework at the pin and asserts `git rev-parse HEAD` matches it.
+1. Checks out the framework at the pinned commit (`actions/checkout` fails on a bad SHA).
 2. Passes `aws.tfvars` to terraform verbatim. That file is the single source of truth for
    the deploy subnet: `bootstrap-iam.sh` parses `subnet_id` out of it (and derives the VPC
    from the subnet) to materialize the IAM pin, so the tfvars and the launch policy cannot

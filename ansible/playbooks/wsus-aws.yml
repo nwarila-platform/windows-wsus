@@ -2,23 +2,19 @@
 # File: 'ansible/playbooks/wsus-aws.yml'
 # --- [ Description ] ----------------------------------------------------------------------- #
 #
-# AWS variant of wsus.yml: provisions the declared Windows data disks on the EPHEMERAL EC2
-# instance, then deploys the WSUS (WID-backed) role. Runs from the COMPOSED tree only — in CI,
+# Provisions the declared Windows data disks on the EPHEMERAL EC2 instance, then deploys the
+# WSUS (WID-backed) role. Runs from the COMPOSED tree only — in CI,
 # .github/workflows/aws-deploy.yml overlays the role into the pinned ansible-framework
 # checkout and executes this playbook against the aws_ec2 dynamic inventory (found by its
 # Function tag, reached as its instance id over SSH-in-SSM — zero inbound).
 #
-# Differences from wsus.yml, and nothing else:
-#   * windows_disk_manager.platform is 'aws' (vendor assert: 'Amazon EC2').
-#   * Disk identities are declared by EBS `function` tag, not by literal unique_id: EBS
-#     volume ids only exist after terraform apply, so the role resolves each Function tag
-#     itself (windows_disk_manager/tasks/resolve_aws.yml — one controller-side describe per
-#     host, Nitro serial == volume-id match), exactly like linux_disk_manager. The Function
-#     tag values here must match the ebs_block_devices tags in
-#     terraform/environments/aws-test.tfvars.tmpl.
-#
-# TD-001 workarounds are carried identically to wsus.yml; remove both together when the
-# local wsus loader is synchronized with the upstream Windows-aware loader.
+#   * windows_disk_manager.platform is 'aws' (vendor assert: 'Amazon EC2'). Disk identities
+#     are declared by EBS `function` tag — volume ids only exist after terraform apply, so
+#     the role resolves each tag itself (one controller-side describe per host, Nitro
+#     serial == volume-id match). The Function tag values here must match the
+#     ebs_block_devices tags in terraform/aws.tfvars.
+#   * TD-001 loader workarounds are carried in the pre-tasks below; remove them when the
+#     local wsus loader is synchronized with the upstream Windows-aware loader.
 #
 # =========================================================================================== #
 ---
@@ -147,7 +143,7 @@
           temp_dir: false
           # Upstream WSUS server (C11d): REQUIRED input (validate.yml asserts it). PLACEHOLDER —
           # the ephemeral PoC has no reachable upstream; the role only SAVES the downstream
-          # topology config (no connectivity check), same as the dev VM.
+          # topology config (no connectivity check).
           upstream_server: 'wsus-upstream.corp.local'
           # Artifact bucket. The '-ansible' suffix is the platform's Layer-0 bucket naming
           # convention (the state bucket is '<account-id>-terraform' the same way); it must

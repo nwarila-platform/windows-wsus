@@ -20,6 +20,7 @@ Defaults live under `wsus_defaults` (`defaults/main.yml`) and merge with
 
 | `wsus:` override key | Consumed as | Fixed target |
 |----------------------|-------------|--------------|
+| `bucket` | `config.bucket` | Artifact bucket holding the TLS PFX (+ password) at `tls.pfx_key`. **Required** whenever `tls.enabled` (the default) — no default exists. The playbook derives it from the controller-imported account id. |
 | `upstream_server` | `config.upstream_server` | Upstream WSUS server this host syncs from (downstream/replica topology; `SyncFromMicrosoftUpdate=false`). **Required** — `validate.yml` fails the play if empty/undefined. Hostname of the upstream WSUS; connection policy (port/SSL/replica) is in `sync.*` defaults below. |
 
 ### Disk provisioning
@@ -30,28 +31,24 @@ managed disk's stable identity, drive letter, label, and allocation unit. Run it
 
 ```yaml
 windows_disk_manager:
-  platform: 'vmware'
+  platform: 'aws'
   disks:
-    - unique_id: 'eui.6C7076230CC23C55000C2968C7AE5760'
+    - function: 'WSUSDB'
       drive_letter: 'E'
       label: 'WSUSDB'
       allocation_unit: 65536
-    - unique_id: 'eui.CF4AE05CEB88F43B000C29656D55634B'
+    - function: 'WSUSDATA'
       drive_letter: 'F'
       label: 'WSUSDATA'
       allocation_unit: 4096
-    - unique_id: 'eui.BC9F0ECE9FBC4B9A000C296303722FC1'
+    - function: 'WSUSIIS'
       drive_letter: 'G'
       label: 'WSUSIIS'
       allocation_unit: 4096
-
-roles:
-  - role: 'windows_disk_manager'
-  - role: 'wsus'
 ```
 
-The identities above are specific to the repository's VMware lab. Replace them with
-the target host's stable disk identities when using the role elsewhere.
+Each `function` names the EBS volume's Function tag declared in `terraform/aws.tfvars`;
+the role resolves the attached disk itself at run time.
 
 The letters in `wsus_defaults.data_disks`, or their effective `wsus:` overrides, must
 match the disk-manager declaration. The IIS letter must also match the drive prefixes
@@ -87,11 +84,11 @@ there is no mode flag.
 | `wsuspool.periodic_restart` | `00:00:00` | WsusPool periodic-restart interval (`hh:mm:ss`); `00:00:00` disables the default 29-hour recycle |
 | `wsuspool.idle_timeout` | `00:00:00` | WsusPool idle timeout (`hh:mm:ss`); `00:00:00` disables idle shutdown |
 | `wsuspool.pinging_enabled` | `false` | WsusPool worker-process pinging; `false` stops IIS killing a busy worker |
-| `tls.enabled` | `true` | Serve WSUS over HTTPS: resolve/create the certificate, bind it to `tls.port` in IIS, and run `wsusutil configuressl` so client-facing endpoints require SSL |
-| `tls.dns_name` | `''` | Certificate subject/SAN; empty means the machine's computer name |
-| `tls.thumbprint` | `''` | Pin an existing `LocalMachine\My` certificate; empty means find-or-create a self-signed one (empty means deliver+import the PFX from the bucket (trust distribution stays out of scope) |
+| `tls.enabled` | `true` | Serve WSUS over HTTPS: deliver + import the CA-issued PFX, bind it to `tls.port` in IIS, set Require-SSL on the five client-facing vdirs, and run `wsusutil configuressl` |
+| `tls.dns_name` | `''` | FQDN `configuressl` writes into the client-facing URLs; must match the certificate subject. Empty means the machine's computer name |
+| `tls.thumbprint` | `''` | Trust-but-verify pin: when set, the imported certificate must match this SHA-1 thumbprint — proving the S3 object was not modified or swapped. Empty skips the check (delivery still runs) |
 | `tls.port` | `8531` | HTTPS port WSUS serves on |
-| `tls.pfx_key` | `applications/windows-wsus/tls/wsus.pfx` | Object key (inside the playbook-supplied `bucket`) of the PFX inside the playbook-supplied `bucket`; its password sits beside it at `pfx_key` + `.password` |
+| `tls.pfx_key` | `applications/windows-wsus/tls/wsus.nwarila.internal.pfx` | Object key of the PFX inside the playbook-supplied `bucket`; its password sits beside it at `pfx_key` + `.password` |
 | `sync.update_languages` | `['en']` | Languages whose updates WSUS syncs and downloads. The role disables the all-languages default and restricts it to this set before the first sync. |
 | `sync.bootstrap_accept_timeout_sec` | `120` | Maximum seconds to confirm that the one-time category bootstrap sync was accepted. The role records a durable per-server marker and does not wait for the WAN-bound sync to complete. |
 | `sync.upstream_port` | `8530` | Port of the upstream WSUS server (`8530` HTTP or `8531` HTTPS) |

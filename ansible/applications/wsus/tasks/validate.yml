@@ -41,4 +41,32 @@
       downstream points at its upstream by name; declare upstream_server in the wsus: override dict.
     quiet: true
 
+- name: 'BEGIN | Assert TLS Delivery Inputs'
+  when:
+    - (state | default('present') | string | lower | trim) == 'present'
+    - config.tls.enabled | default(true) | bool
+  ansible.builtin.assert:
+    that:
+      - (config.bucket | default('') | string | trim) | length > 0
+      - (config.tls.pfx_key | default('') | string | trim) | length > 0
+    fail_msg: >-
+      TLS is enabled but wsus.bucket and/or wsus.tls.pfx_key is empty — the certificate
+      delivery would only fail later, mid-play, at the S3 fetch. Declare bucket in the wsus:
+      override dict (the playbook derives it from the imported account id) or set
+      tls.enabled: false deliberately.
+    quiet: true
+
+# A malformed pin would otherwise pass validation and fail only AFTER delivery and import.
+- name: 'BEGIN | Assert TLS Thumbprint Pin Format'
+  when:
+    - (state | default('present') | string | lower | trim) == 'present'
+    - (config.tls.thumbprint | default('') | string | trim) | length > 0
+  ansible.builtin.assert:
+    that:
+      - (config.tls.thumbprint | string | trim) is match('^[0-9A-Fa-f]{40}$')
+    fail_msg: >-
+      wsus.tls.thumbprint '{{ config.tls.thumbprint }}' is not a 40-character hex SHA-1
+      thumbprint — the trust-but-verify pin could never match any certificate.
+    quiet: true
+
 #endregion --- [ Script ] -------------------------------------------------------------------- #

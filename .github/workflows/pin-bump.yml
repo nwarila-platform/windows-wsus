@@ -1,0 +1,83 @@
+# =========================================================================================== #
+# Pin Bump — track the framework mains, validated by the lifecycle itself
+# ------------------------------------------------------------------------------------------- #
+# Weekly: when ansible-framework or aws-terraform-framework main moves past its pin, this
+# workflow branches, bumps the pin file(s), opens a PR, dispatches the full
+# deploy-test-destroy lifecycle against that branch (a dispatch run reports a status check on
+# the same commit, satisfying the ruleset's required check), and enables auto-merge — so a
+# framework change lands here only after the complete E2E proves it, with nobody watching.
+# A PR created by GITHUB_TOKEN fires no workflows itself; the explicit dispatch is the run.
+# =========================================================================================== #
+name: Pin Bump
+
+on:
+  schedule:
+    - cron: '0 7 * * 2'
+  workflow_dispatch:
+permissions: {}
+
+jobs:
+  pin-bump:
+    name: Bump framework pins when their mains move
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+      issues: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: Bump, prove, auto-merge
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          ansible_main="$(git ls-remote https://github.com/nwarila-platform/ansible-framework refs/heads/main | cut -f1)"
+          terraform_main="$(git ls-remote https://github.com/nwarila-platform/aws-terraform-framework refs/heads/main | cut -f1)"
+          ansible_pin="$(cat .github/ansible-framework-pin)"
+          terraform_pin="$(cat .github/terraform-framework-pin)"
+
+          if [ "${ansible_main}" = "${ansible_pin}" ] && [ "${terraform_main}" = "${terraform_pin}" ]; then
+            echo "Both pins already track their framework mains. Nothing to do."
+            exit 0
+          fi
+
+          branch="pin-bump/${GITHUB_RUN_ID}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "${branch}"
+          printf '%s\n' "${ansible_main}"   > .github/ansible-framework-pin
+          printf '%s\n' "${terraform_main}" > .github/terraform-framework-pin
+          git add .github/ansible-framework-pin .github/terraform-framework-pin
+          git commit -m "chore: bump framework pins to their mains
+
+          ansible-framework   ${ansible_pin} -> ${ansible_main}
+          aws-terraform-framework ${terraform_pin} -> ${terraform_main}
+
+          Opened by pin-bump run ${GITHUB_RUN_ID}; merges only after the full
+          deploy-test-destroy lifecycle passes against this branch."
+          git push origin "${branch}"
+
+          pr_url="$(gh pr create --repo "${GITHUB_REPOSITORY}" --base main --head "${branch}" \
+            --title "chore: bump framework pins to their mains" \
+            --body "Automated pin bump. The full lifecycle run dispatched against this branch is the review: it must go green before auto-merge fires.")"
+          echo "PR: ${pr_url}"
+
+          gh workflow run aws-deploy.yml --repo "${GITHUB_REPOSITORY}" --ref "${branch}"
+          gh pr merge --repo "${GITHUB_REPOSITORY}" --auto --squash --delete-branch "${pr_url}"
+          echo "Auto-merge armed; the lifecycle run decides."
+
+      - name: Open an issue on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh issue create --repo "${GITHUB_REPOSITORY}" \
+            --title "Pin bump failed: run ${GITHUB_RUN_ID}" \
+            --body "The automated framework pin bump failed: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"

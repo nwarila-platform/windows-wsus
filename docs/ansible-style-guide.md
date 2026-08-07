@@ -10,7 +10,7 @@
 
 - One single-purpose role per application repo; the repo composes into a
   version-pinned `ansible-framework` checkout at execution time (`.github/ansible-framework-pin`,
-  `scripts/compose-and-run.sh`). Roles must be drop-in compatible with the framework's
+  the CI compose step in `.github/workflows/aws-deploy.yml`). Roles must be drop-in compatible with the framework's
   `applications/` namespace (`roles_path` resolution by bare name).
 - The framework is the chassis: `ansible.cfg`, lint configs, loader contract, CI
   conventions all originate upstream. Application repos copy `.yamllint.yml` /
@@ -19,7 +19,7 @@
 ## 2. Naming — SEEDED
 
 - Repo: `windows-wsus` (OS-prefixed product). Role: `wsus` (bare product name,
-  resolves via framework `roles_path`). Playbook: `wsus.yml`. Inventory group:
+  resolves via framework `roles_path`). Playbook: `wsus-aws.yml`. Inventory group:
   `wsus_servers` (pluralized component, mirrors `wazuh_indexers`).
 - Role defaults live under `<role>_defaults` in `defaults/main.yml`; the merged
   running config materializes as `<role>_running`; playbook overrides use the bare
@@ -70,12 +70,12 @@
   of guest OS state is the **composed play and its ordered roles**, not a single
   application role. Its input contract is a machine handed to it as **OS + reachable
   SSH + attached-but-blank data disks** — exactly what a fresh Terraform-provisioned
-  (today: snapshot) VM provides. Guest disk provisioning through drive-letter
+  VM provides. Guest disk provisioning through drive-letter
   assignment belongs to the shared `windows_disk_manager` role, which runs first; the
   application role consumes the resulting volumes by drive letter and owns application
   features, installation, configuration, and verification.
 - **Boundary:** *hardware provisioning* (disk count/size/attachment, vCPU/RAM, NIC)
-  belongs to the deploy layer (baseline snapshot now, proxmox-terraform-framework
+  belongs to the deploy layer (the pinned aws-terraform-framework
   later). *Guest OS state* belongs to the composed play and its ordered roles.
   Formatting a disk into the baseline image is FORBIDDEN — it must be role-declared
   code, proven on every clean revert.
@@ -151,7 +151,7 @@ clobber, verified at the module source). These stay `quiet: true` with an action
 ## 5. Windows conventions — SEEDED (first Windows role; ratify via research per cycle)
 
 - Transport: **SSH** (org standard; key auth, one transport story across the fleet).
-  `ansible_shell_type: powershell`; target's OpenSSH `DefaultShell` = PowerShell.
+  `ansible_shell_type: cmd`; the target's OpenSSH `DefaultShell` stays cmd (the boot default) — a PowerShell login shell re-parses ansible's module-bootstrap argv and breaks `-EncodedCommand` (proven live); `win_*` modules run inside their own PowerShell wrapper regardless.
 - `become: false` at play level (framework chassis `become=sudo` is POSIX-only;
   built-in administrator over SSH is already elevated). Revisit for least-privilege
   runs (runas) when a non-admin service account is introduced — TBD.
@@ -247,7 +247,7 @@ clobber, verified at the module source). These stay `quiet: true` with an action
   (currently 2.21.x), plus `ansible-lint`, `yamllint`. Collections pinned:
   `ansible.windows`, `community.windows`.
 - Windows targets are never long-lived dev state: revert the lab VM to the clean
-  baseline snapshot before every playbook execution (`scripts/revert-vm.sh`).
+  a fresh ephemeral instance per run (terraform apply; the lab-era snapshot revert is retired).
 - **Lint from the composed tree** (proof S4b, 2026-07-15): the playbook's role
   resolves only inside the composed framework checkout, so `ansible-lint` runs from
   `.compose/ansible-framework/` (which also supplies the chassis `.ansible-lint`

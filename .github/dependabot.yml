@@ -1,0 +1,15 @@
+# =========================================================================================== #
+# Dependabot — keep the SHA-pinned actions fresh
+# ------------------------------------------------------------------------------------------- #
+# Each bump arrives as a PR; every PR runs the full deploy-test-destroy lifecycle, and the
+# ruleset requires that check — so an action bump merges itself only after proving the whole
+# system still works with it. Framework pins are NOT managed here (raw SHA files Dependabot
+# cannot read); .github/workflows/pin-bump.yml owns those.
+# =========================================================================================== #
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: tuesday

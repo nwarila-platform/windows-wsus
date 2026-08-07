@@ -24,8 +24,8 @@
 #
 # readiness_gate is FALSE by design: the framework's gate dials the instance directly over
 # SSH, which a zero-ingress security group forbids. The playbook's first play waits for
-# readiness over SSM-SSH instead, then sets the OpenSSH DefaultShell to PowerShell (the
-# framework's bootstrap deliberately leaves cmd).
+# readiness over SSM-SSH instead. The OpenSSH DefaultShell stays cmd — the boot default —
+# because a PowerShell login shell breaks ansible's module bootstrap (proven live).
 #
 # =========================================================================================== #
 
@@ -74,9 +74,9 @@ all_systems = [
       volume_size = "30"
     }
 
-    # The same three RAW data disks the lab baseline provides (VM-LIFECYCLE.md §1): the deploy
-    # layer owns the hardware, the composed play's windows_disk_manager formats it. The
-    # Function tags are the identities the role resolves each disk by (resolve_aws.yml).
+    # Three RAW data disks: the deploy layer owns the hardware, the composed play's
+    # windows_disk_manager formats it. The Function tags are the identities the role
+    # resolves each disk by (resolve_aws.yml).
     ebs_block_devices = [
       {
         iops         = null

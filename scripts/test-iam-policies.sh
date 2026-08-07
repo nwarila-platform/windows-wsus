@@ -46,7 +46,8 @@ cp "${IAM_DIR}/policies/"*.json "${WORK}/policies/"
 cp "${IAM_DIR}/roles/"*.json    "${WORK}/roles/"
 sed -i "s|<account-id>|${ACCOUNT}|g; s|<repository-id>|${REPO_ID}|g; s|<region>|${REGION}|g;
         s|<vpc-id>|vpc-00000000000000000|g; s|<subnet-id>|subnet-00000000000000000|g;
-        s|<ebs-kms-key-id>|${KMS_KEY}|g; s|<key-pair-name>|${THIS_REPO}-poc-key|g; s|<owner-id>|000000000|g" \
+        s|<ebs-kms-key-id>|${KMS_KEY}|g; s|<key-pair-name>|${THIS_REPO}-poc-key|g; s|<owner-id>|000000000|g;
+        s|<artifact-bucket>|${ACCOUNT}-ansible|g" \
     "${WORK}"/policies/*.json "${WORK}"/roles/*.json
 
 "${REPO_ROOT}/scripts/check-iam-literals.sh" --materialized "${WORK}" >/dev/null \
@@ -163,7 +164,6 @@ SUBNET="arn:aws:ec2:${REGION}:${ACCOUNT}:subnet/${SUBNET_ID}"
 SG="arn:aws:ec2:${REGION}:${ACCOUNT}:security-group/sg-0test"
 VPCC="ec2:Vpc=string=arn:aws:ec2:${REGION}:${ACCOUNT}:vpc/${VPC_ID}"
 SUBC="ec2:Subnet=string=arn:aws:ec2:${REGION}:${ACCOUNT}:subnet/${SUBNET_ID}"
-SIB_ID="${SIB_ID_0:-}"
 
 echo "== cross-repository isolation (the identity tag is the only separator) =="
 assert "terminate own instance"        allowed      ec2:TerminateInstances "${INST}" "${REG}" "${TAG}=string=${REPO_ID}"

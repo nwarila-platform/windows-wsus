@@ -18,25 +18,25 @@
 #   * One fixed state key; the concurrency group (shared with aws-reaper.yml) serializes
 #     runs, and apply converges from whatever state a killed predecessor left. Anything a
 #     hard-killed run leaves behind, the scheduled reaper tears down within 15 minutes.
+#   * PASSIVE OPERATION: every PR runs the full lifecycle (making this job a required status
+#     check that pin-bump and dependabot PRs auto-merge on), a weekly schedule re-proves main
+#     unattended, and unattended failures file an issue. GitHub pauses schedules after 60
+#     days without repo activity — pin bumps normally reset that clock; a pause emails a
+#     warning first.
 # =========================================================================================== #
 name: AWS Deploy
 
 on:
   workflow_dispatch:
+  schedule:
+    # The weekly self-proof: the full lifecycle runs from main with no human involved.
+    - cron: '0 9 * * 1'
   pull_request:
-    # synchronize included so edits to an open PR re-prove; labeled excluded so a
-    # triage-permission user cannot spend money.
+    # EVERY pull request runs the full lifecycle — that is what makes this job a required
+    # status check, which is what lets pin-bump and dependabot PRs auto-merge on green with
+    # nobody watching. synchronize included so edits to an open PR re-prove; labeled excluded
+    # so a triage-permission user cannot spend money.
     types: [opened, reopened, ready_for_review, synchronize]
-    paths:
-      # ansible/** stays WHOLE: the compose overlay can shadow framework content.
-      - ansible/**
-      - docs/reference/aws-iam/**
-      - scripts/check-iam-literals.sh
-      - scripts/test-iam-policies.sh
-      - terraform/**
-      - .github/terraform-framework-pin
-      - .github/ansible-framework-pin
-      - .github/workflows/aws-deploy.yml
 permissions: {}
 
 # One boundary, one state key — never two runs at once, never cancel a live apply.
@@ -54,6 +54,7 @@ jobs:
     permissions:
       id-token: write
       contents: read
+      issues: write
     env:
       AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
       DEPLOY_ROLE: github_nwarila-platform_windows-wsus
@@ -66,6 +67,16 @@ jobs:
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
           persist-credentials: false
+
+      # Fail-closed source gates, before any credential exists: IAM placeholders + the
+      # workflow-rename tripwire, the trigger contract, and the win_shell split_args scan
+      # (whose failure class otherwise surfaces only mid-run, after money is spent).
+      - name: Repo gates
+        run: |
+          set -euo pipefail
+          ./scripts/check-iam-literals.sh
+          ./scripts/check-workflow-trigger.sh
+          python3 ./scripts/check-winshell-splitargs.py
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
@@ -199,6 +210,18 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
           role-session-name: aws-deploy-destroy-${{ github.run_id }}
           role-duration-seconds: 3600
+
+      # Unattended failure visibility: schedule/dispatch runs have no PR to go red on, so a
+      # failed proof files an issue with the run link instead of dying silently.
+      - name: Open an issue on unattended failure
+        if: failure() && github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh issue create --repo "${GITHUB_REPOSITORY}" \
+            --title "E2E proof failed: run ${GITHUB_RUN_ID}" \
+            --body "The unattended lifecycle run failed: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
 
       # Gated on INIT, not apply: a failed apply still leaves state to tear down.
       - name: Terraform destroy (always)
