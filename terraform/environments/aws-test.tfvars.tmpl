@@ -1,9 +1,13 @@
 # =========================================================================================== #
-# File: 'terraform/environments/aws-test.tfvars'
+# File: 'terraform/environments/aws-test.tfvars.tmpl'
 # --- [ Description ] ----------------------------------------------------------------------- #
 #
 # Variable input for the pinned aws-terraform-framework (SHA in .terraform-framework-pin).
-# Plain tfvars, no templating: the workflow passes this file to terraform verbatim.
+# One rendered token, not by choice: the framework's world-open-ingress ban (its
+# invariants.md, validated at plan time) rejects any /0 ingress CIDR, so the SSH rule must
+# name a real address — and the only address that matters is the CI runner's own, which
+# changes every run. The workflow substitutes RUNNER_CIDR below and passes the rendered copy;
+# everything else is literal.
 #
 # This file is the single source of truth for the deploy subnet: bootstrap-iam.sh parses
 # subnet_id out of it to materialize the IAM subnet pin, so the tfvars and the launch policy
@@ -29,7 +33,9 @@
 #
 # =========================================================================================== #
 
-environment = "test"
+# environment and resource_metadata are deliberately NOT in this file: the workflow passes
+# both with -var, the highest-precedence source, so the environment name and the deployment
+# identity that drives the provider's tags cannot be overridden here.
 
 # Empty on purpose: no framework readiness gate runs (readiness_gate = false below), so no
 # private-key path is needed by Terraform. CI holds the key only for its own SSH stages.
@@ -110,17 +116,17 @@ all_systems = [
         private_ip      = null
         security_groups = []
         # Non-null ingress + egress => the framework creates and attaches wsus-poc-01-eni-0-sg.
-        # Ingress is SSH only, key-authenticated, on an instance that lives ~90 minutes.
-        # Egress [] = no outbound at all: WSUS syncs from nothing in this PoC, the bootstrap's
-        # key fetch is link-local IMDS (invisible to SGs), and SSH replies ride the stateful
-        # inbound connection.
+        # Ingress is SSH from the CI runner's own address only (the framework refuses /0 —
+        # see the header). Egress [] = no outbound at all: WSUS syncs from nothing in this
+        # PoC, the bootstrap's key fetch is link-local IMDS (invisible to SGs), and SSH
+        # replies ride the stateful inbound connection.
         ingress = [
           {
-            description                  = "SSH (key auth only; ephemeral instance)"
+            description                  = "SSH from the CI runner only"
             ip_protocol                  = "tcp"
             from_port                    = 22
             to_port                      = 22
-            cidr_ipv4                    = "0.0.0.0/0"
+            cidr_ipv4                    = "__RUNNER_CIDR__"
             cidr_ipv6                    = null
             prefix_list_id               = null
             referenced_security_group_id = null
@@ -141,6 +147,6 @@ all_systems = [
 all_databases      = []
 all_load_balancers = []
 
-# resource_metadata is injected by the workflow as TF_VAR_resource_metadata; it drives the
-# provider default_tags that satisfy every create-time nwarila:management:repository-id
-# condition in the deploy policies. Never hardcode it here.
+# resource_metadata is passed by the workflow as -var (highest precedence, cannot be
+# overridden here); it drives the provider default_tags that satisfy every create-time
+# nwarila:management:repository-id condition in the deploy policies. Never hardcode it.

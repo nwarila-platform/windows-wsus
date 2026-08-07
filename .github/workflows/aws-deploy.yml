@@ -57,12 +57,6 @@ jobs:
       STATE_KEY: nwarila-platform/windows-wsus/aws-poc.tfstate
       # Matches the pinned ansible-framework's requirements-dev.txt spec.
       ANSIBLE_CORE_SPEC: '>=2.21.2,<2.22'
-      # Drives the framework's provider default_tags — satisfies every create-time
-      # nwarila:management:repository-id condition in the deploy policies.
-      TF_VAR_resource_metadata: >-
-        {"repository":"${{ github.repository }}","repository_id":"${{ github.repository_id }}",
-        "stack":"aws-poc","owner":"${{ github.repository_owner }}",
-        "commit_sha":"${{ github.sha }}","run_id":"${{ github.run_id }}"}
 
     steps:
       - name: Checkout
@@ -109,24 +103,39 @@ jobs:
           terraform_version: '1.15.1'
           terraform_wrapper: false
 
+      # Also renders the tfvars: the framework refuses a /0 ingress CIDR (its world-open
+      # ingress ban), so the SSH rule must name this runner's own address, discovered per run.
+      # Rendering here means destroy (gated on this step) can always rely on the file.
       - name: Terraform init
         id: tf-init
         env:
           AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
         run: |
           set -euo pipefail
+          runner_ip="$(curl -fsS https://checkip.amazonaws.com | tr -d '[:space:]')"
+          sed "s|__RUNNER_CIDR__|${runner_ip}/32|" \
+            terraform/environments/aws-test.tfvars.tmpl > "${RUNNER_TEMP}/aws-test.tfvars"
           terraform -chdir="${TF_DIR}" init -input=false \
             -backend-config="bucket=${AWS_ACCOUNT_ID}-terraform" \
             -backend-config="key=${STATE_KEY}" \
             -backend-config="region=${AWS_REGION}"
 
-      # Converges from clean OR from a killed predecessor's leftover state.
+      # Converges from clean OR from a killed predecessor's leftover state. The environment
+      # and the deployment identity are passed as individual -var flags — the highest-
+      # precedence source, so the tfvars cannot override who this deployment says it is.
       - name: Terraform apply
         timeout-minutes: 30
         run: |
           set -euo pipefail
           terraform -chdir="${TF_DIR}" apply -input=false -auto-approve -lock-timeout=120s \
-            -var-file="${GITHUB_WORKSPACE}/terraform/environments/aws-test.tfvars"
+            -var-file="${RUNNER_TEMP}/aws-test.tfvars" \
+            -var "environment=test" \
+            -var "repository=${GITHUB_REPOSITORY}" \
+            -var "repository_id=${GITHUB_REPOSITORY_ID}" \
+            -var "stack=aws-poc" \
+            -var "owner=${GITHUB_REPOSITORY_OWNER}" \
+            -var "commit_sha=$(git rev-parse HEAD)" \
+            -var "run_id=${GITHUB_RUN_ID}"
 
       # Fresh hour for the longest stage: the play's disk resolver describes EBS mid-run.
       - name: Refresh AWS credentials before configure (OIDC)
@@ -191,7 +200,14 @@ jobs:
         run: |
           set -euo pipefail
           terraform -chdir="${TF_DIR}" destroy -input=false -auto-approve -lock-timeout=300s \
-            -var-file="${GITHUB_WORKSPACE}/terraform/environments/aws-test.tfvars"
+            -var-file="${RUNNER_TEMP}/aws-test.tfvars" \
+            -var "environment=test" \
+            -var "repository=${GITHUB_REPOSITORY}" \
+            -var "repository_id=${GITHUB_REPOSITORY_ID}" \
+            -var "stack=aws-poc" \
+            -var "owner=${GITHUB_REPOSITORY_OWNER}" \
+            -var "commit_sha=$(git rev-parse HEAD)" \
+            -var "run_id=${GITHUB_RUN_ID}"
           tag="Name=tag:nwarila:management:repository-id,Values=${GITHUB_REPOSITORY_ID}"
           fails=0
           check() { # label query...
