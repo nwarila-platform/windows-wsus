@@ -679,73 +679,98 @@
 
     #endregion --- [ Main: IIS Logging + Relocation ] ------------------------------------- #
 
-    #region ------ [ Main: WSUS SSL (local certificate) ] ---------------------------------- #
+    #region ------ [ Main: WSUS SSL (delivered certificate) ] ------------------------------ #
 
-    # MVP TLS: a locally generated self-signed certificate serves the 8531 endpoint; trust
-    # distribution is deliberately out of scope. One idempotent step per concern, in the
-    # role's sentinel style: resolve/create the certificate, bind it to 8531 in IIS, then
-    # wsusutil configuressl so WSUS requires SSL on its client-facing virtual directories and
-    # hands clients the https URL. A CA-issued PFX later replaces only the first step
-    # (delivered from wsus.bucket + tls.pfx_key via s3_artifact_delivery).
+    # The CA-issued PFX and its password live at the artifact prefix the IAM pins
+    # (bucket = wsus.bucket, keys tls.pfx_key and tls.pfx_key + '.password'). The CONTROLLER
+    # downloads both through the read-only artifact-reader role (s3_artifact_delivery get) —
+    # the target never holds an S3 credential — then copies the PFX up, imports it with the
+    # password as a no_log argument, binds it to tls.port in IIS, and wsusutil configuressl
+    # flips the client-facing endpoints to HTTPS. tls.thumbprint pins an already-imported
+    # certificate and skips the delivery entirely. Trust distribution stays out of scope.
 
-    - name: 'MAIN | Resolve Or Create The WSUS TLS Certificate'
+    - name: 'MAIN | Resolve The Controller Staging Directory'
       when: config.tls.enabled | bool
-      ansible.windows.win_shell: |
-        $ErrorActionPreference = 'Stop'
-        $dns = $env:TLS_DNS_NAME
-        if (-not $dns) { $dns = $env:COMPUTERNAME }
-        $pinned = $env:TLS_THUMBPRINT
-        if ($pinned) {
-            $cert = Get-ChildItem Cert:\LocalMachine\My | Where-Object { $_.Thumbprint -eq $pinned }
-            if (-not $cert) { throw ("pinned thumbprint " + $pinned + " not found in LocalMachine\My") }
-            Write-Output ("nochange " + $cert.Thumbprint)
-            exit 0
-        }
-        $cert = Get-ChildItem Cert:\LocalMachine\My |
-            Where-Object { $_.Subject -eq ("CN=" + $dns) -and $_.NotAfter -gt (Get-Date) } |
-            Sort-Object NotAfter -Descending | Select-Object -First 1
-        if ($cert) {
-            Write-Output ("nochange " + $cert.Thumbprint)
-        } else {
-            $cert = New-SelfSignedCertificate -DnsName $dns -CertStoreLocation Cert:\LocalMachine\My `
-                -FriendlyName 'WSUS TLS (self-signed MVP)' -KeyExportPolicy NonExportable
-            Write-Output ("changed " + $cert.Thumbprint)
-        }
-      environment:
-        TLS_DNS_NAME: "{{ config.tls.dns_name | default('') }}"
-        TLS_THUMBPRINT: "{{ config.tls.thumbprint | default('') }}"
-      register: __tls_cert__
-      changed_when: "(__tls_cert__.stdout | trim).startswith('changed')"
+      ansible.builtin.set_fact:
+        __tls_staging__: "{{ lookup('ansible.builtin.env', 'RUNNER_TEMP') | default('/tmp', true) }}"
 
-    - name: 'MAIN | Bind The Certificate To The WSUS 8531 HTTPS Endpoint'
+    - name: 'MAIN | Download The TLS Certificate And Password To The Controller'
+      when: (config.tls.enabled | bool) and not (config.tls.thumbprint | default('') | trim | length)
+      ansible.builtin.include_role:
+        name: 's3_artifact_delivery'
+        tasks_from: 'get'
+      vars:
+        s3_artifact_delivery_reader_role_arn: "arn:aws:iam::{{ aws_account_id }}:role/windows-wsus-artifact-reader"
+        s3_artifact_delivery_session_name: 'wsus-tls-delivery'
+        s3_artifact_delivery_bucket: "{{ config.bucket }}"
+        s3_artifact_delivery_region: "{{ aws_region }}"
+        s3_artifact_delivery_controller_objects:
+          - object_key: "{{ config.tls.pfx_key }}"
+            destination: "{{ __tls_staging__ }}/wsus-tls.pfx"
+          - object_key: "{{ config.tls.pfx_key }}.password"
+            destination: "{{ __tls_staging__ }}/wsus-tls.pfx.password"
+
+    - name: 'MAIN | Copy The Certificate To The Target'
+      when: (config.tls.enabled | bool) and not (config.tls.thumbprint | default('') | trim | length)
+      ansible.windows.win_copy:
+        src: "{{ __tls_staging__ }}/wsus-tls.pfx"
+        dest: 'C:\Windows\Temp\wsus-tls.pfx'
+
+    - name: 'MAIN | Import The Certificate Into The Machine Store'
+      when: (config.tls.enabled | bool) and not (config.tls.thumbprint | default('') | trim | length)
+      ansible.windows.win_certificate_store:
+        path: 'C:\Windows\Temp\wsus-tls.pfx'
+        password: "{{ lookup('ansible.builtin.file', __tls_staging__ ~ '/wsus-tls.pfx.password') | trim }}"
+        store_location: 'LocalMachine'
+        store_name: 'My'
+        key_storage: 'machine'
+        state: 'present'
+      no_log: true
+      register: '__tls_import__'
+
+    - name: 'MAIN | Remove The Copied Certificate From The Target'
+      when: (config.tls.enabled | bool) and not (config.tls.thumbprint | default('') | trim | length)
+      ansible.windows.win_file:
+        path: 'C:\Windows\Temp\wsus-tls.pfx'
+        state: 'absent'
+
+    - name: 'MAIN | Resolve The Certificate Thumbprint'
+      when: config.tls.enabled | bool
+      ansible.builtin.set_fact:
+        __tls_thumbprint__: >-
+          {{ (config.tls.thumbprint | trim)
+          if (config.tls.thumbprint | default('') | trim | length)
+          else (__tls_import__.thumbprints | first) }}
+
+    - name: 'MAIN | Bind The Certificate To The WSUS HTTPS Endpoint'
       when: config.tls.enabled | bool
       ansible.windows.win_shell: |
         $ErrorActionPreference = 'Stop'
         Import-Module WebAdministration
-        $thumb = $env:TLS_CERT_LINE.Split(' ')[1]
+        $thumb = $env:TLS_THUMBPRINT
         $port = [int]$env:TLS_PORT
         $site = 'WSUS Administration'
         $changed = $false
         $binding = Get-WebBinding -Name $site -Protocol https -Port $port -ErrorAction SilentlyContinue
         if (-not $binding) {
             New-WebBinding -Name $site -Protocol https -Port $port -IPAddress '*'
-            $binding = Get-WebBinding -Name $site -Protocol https -Port $port
             $changed = $true
         }
-        $bound = Get-Item ("IIS:\SslBindings\0.0.0.0!" + $port) -ErrorAction SilentlyContinue
+        $sslPath = 'IIS:\SslBindings\0.0.0.0!' + $port
+        $bound = Get-Item $sslPath -ErrorAction SilentlyContinue
         if (-not $bound -or $bound.Thumbprint -ne $thumb) {
-            if ($bound) { Remove-Item ("IIS:\SslBindings\0.0.0.0!" + $port) }
+            if ($bound) { Remove-Item $sslPath }
             $cert = Get-Item (Join-Path 'Cert:\LocalMachine\My' $thumb)
-            New-Item ("IIS:\SslBindings\0.0.0.0!" + $port) -Value $cert | Out-Null
+            New-Item $sslPath -Value $cert | Out-Null
             $changed = $true
         }
-        $verify = Get-Item ("IIS:\SslBindings\0.0.0.0!" + $port)
+        $verify = Get-Item $sslPath
         if ($verify.Thumbprint -ne $thumb) { throw 'ssl binding did not persist' }
         if ($changed) { Write-Output 'changed' } else { Write-Output 'nochange' }
       environment:
-        TLS_CERT_LINE: "{{ __tls_cert__.stdout | trim }}"
+        TLS_THUMBPRINT: "{{ __tls_thumbprint__ }}"
         TLS_PORT: "{{ config.tls.port }}"
-      register: __tls_binding__
+      register: '__tls_binding__'
       changed_when: "__tls_binding__.stdout | trim == 'changed'"
 
     - name: 'MAIN | Require SSL On The Client-Facing WSUS Endpoints (wsusutil configuressl)'
@@ -754,24 +779,25 @@
         $ErrorActionPreference = 'Stop'
         $dns = $env:TLS_DNS_NAME
         if (-not $dns) { $dns = $env:COMPUTERNAME }
-        # ServerSupportsSsl mirrors what configuressl sets; skip when already configured for $dns.
-        $wsus = Get-WsusServer -Name localhost -PortNumber ([int]$env:TLS_PORT) -UseSsl -ErrorAction SilentlyContinue
-        if ($wsus) {
+        # configuressl records UsingSSL in the Setup key; that is the idempotency signal — a
+        # name-based Get-WsusServer probe would trip over certificate-name validation instead.
+        $setupKey = 'HKLM:\SOFTWARE\Microsoft\Update Services\Server\Setup'
+        $setup = Get-ItemProperty $setupKey
+        if ($setup.UsingSSL -eq 1) {
             Write-Output 'nochange'
             exit 0
         }
-        & "$env:ProgramFiles\Update Services\Tools\wsusutil.exe" configuressl $dns | Out-Null
+        $wsusutil = Join-Path $env:ProgramFiles 'Update Services\Tools\wsusutil.exe'
+        & $wsusutil configuressl $dns | Out-Null
         if ($LASTEXITCODE -ne 0) { throw ('wsusutil configuressl failed with ' + $LASTEXITCODE) }
-        # Re-acquire over SSL to prove it took.
-        $wsus = Get-WsusServer -Name localhost -PortNumber ([int]$env:TLS_PORT) -UseSsl
-        if (-not $wsus) { throw 'WSUS did not answer over SSL after configuressl' }
+        $setup = Get-ItemProperty $setupKey
+        if ($setup.UsingSSL -ne 1) { throw 'UsingSSL did not persist after configuressl' }
         Write-Output 'changed'
       environment:
         TLS_DNS_NAME: "{{ config.tls.dns_name | default('') }}"
-        TLS_PORT: "{{ config.tls.port }}"
-      register: __tls_configuressl__
+      register: '__tls_configuressl__'
       changed_when: "__tls_configuressl__.stdout | trim == 'changed'"
 
-    #endregion --- [ Main: WSUS SSL (local certificate) ] ---------------------------------- #
+    #endregion --- [ Main: WSUS SSL (delivered certificate) ] ------------------------------- #
 
 #endregion --- [ Script ] -------------------------------------------------------------------- #

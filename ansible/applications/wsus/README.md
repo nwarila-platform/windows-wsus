@@ -89,9 +89,9 @@ there is no mode flag.
 | `wsuspool.pinging_enabled` | `false` | WsusPool worker-process pinging; `false` stops IIS killing a busy worker |
 | `tls.enabled` | `true` | Serve WSUS over HTTPS: resolve/create the certificate, bind it to `tls.port` in IIS, and run `wsusutil configuressl` so client-facing endpoints require SSL |
 | `tls.dns_name` | `''` | Certificate subject/SAN; empty means the machine's computer name |
-| `tls.thumbprint` | `''` | Pin an existing `LocalMachine\My` certificate; empty means find-or-create a self-signed one (MVP posture — trust distribution is out of scope) |
+| `tls.thumbprint` | `''` | Pin an existing `LocalMachine\My` certificate; empty means find-or-create a self-signed one (empty means deliver+import the PFX from the bucket (trust distribution stays out of scope) |
 | `tls.port` | `8531` | HTTPS port WSUS serves on |
-| `tls.pfx_key` | `applications/windows-wsus/tls/wsus.pfx` | Object key (inside the playbook-supplied `bucket`) where a CA-issued PFX will live when artifact delivery replaces self-signed |
+| `tls.pfx_key` | `applications/windows-wsus/tls/wsus.pfx` | Object key (inside the playbook-supplied `bucket`) of the PFX inside the playbook-supplied `bucket`; its password sits beside it at `pfx_key` + `.password` |
 | `sync.update_languages` | `['en']` | Languages whose updates WSUS syncs and downloads. The role disables the all-languages default and restricts it to this set before the first sync. |
 | `sync.bootstrap_accept_timeout_sec` | `120` | Maximum seconds to confirm that the one-time category bootstrap sync was accepted. The role records a durable per-server marker and does not wait for the WAN-bound sync to complete. |
 | `sync.upstream_port` | `8530` | Port of the upstream WSUS server (`8530` HTTP or `8531` HTTPS) |

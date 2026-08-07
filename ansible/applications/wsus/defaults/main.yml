@@ -40,22 +40,24 @@ wsus_defaults:
     periodic_restart: '00:00:00'
     idle_timeout: '00:00:00'
     pinging_enabled: false
-  # TLS for the WSUS SSL endpoint (8531). MVP: a locally generated self-signed certificate —
-  # trust distribution is deliberately out of scope. The artifact-pipeline coordinates below
-  # exist so a CA-issued PFX can replace self-signed without reshaping the config: the bucket
-  # comes from the playbook's wsus.bucket, and pfx_key is the object key inside it.
+  # TLS for the WSUS SSL endpoint (8531). The PFX and its password live in the artifact
+  # bucket (playbook wsus.bucket) at pfx_key / pfx_key + '.password' — the prefix the IAM
+  # pins. The CONTROLLER fetches both through the read-only artifact-reader role
+  # (s3_artifact_delivery); the target never holds an S3 credential. Trust distribution is
+  # deliberately out of scope.
   tls:
     enabled: true
-    # Certificate subject / SAN. Empty => the machine's computer name.
+    # FQDN wsusutil configuressl writes into the client-facing URLs; must match the
+    # certificate subject. Empty => the machine's computer name.
     dns_name: ''
-    # Pin an existing LocalMachine\My certificate by thumbprint. Empty => find-or-create a
-    # self-signed certificate for dns_name.
+    # Pin an ALREADY-IMPORTED LocalMachine\My certificate by thumbprint and skip the fetch
+    # entirely. Empty => deliver and import the PFX below.
     thumbprint: ''
-    # HTTPS port WSUS serves on; wsusutil configuressl rewrites client-facing URLs to it.
+    # HTTPS port WSUS serves on.
     port: 8531
-    # Default object key for the future CA-issued PFX (delivered via s3_artifact_delivery;
-    # not fetched while thumbprint/self-signed satisfies the MVP).
-    pfx_key: 'applications/windows-wsus/tls/wsus.pfx'
+    # Object key of the PFX inside wsus.bucket; its password sits beside it at
+    # pfx_key + '.password'.
+    pfx_key: 'applications/windows-wsus/tls/wsus.nwarila.internal.pfx'
   # Which languages' updates WSUS syncs/downloads (lowercase codes). The postinstall default is
   # ALL languages (a large, wasteful scope), so the role restricts it. Override to add languages.
   sync:

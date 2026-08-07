@@ -109,17 +109,21 @@ POC_PROFILE="${REPO}-poc-profile"
 # source it has never seen: the old everything-else-is-deploy default silently attached the
 # artifact policies to the CI role, over-granting it S3 write and sts:AssumeRole.
 mapfile -t POLICIES < <(cd "${WORK}/policies" && ls *.json | sed 's/\.json$//')
-DEPLOY_POLICIES=(); ADMIN_ONLY_POLICIES=(); STATE_POLICY=''; READER_POLICY=''
+DEPLOY_POLICIES=(); ADMIN_ONLY_POLICIES=(); STATE_POLICY=''; READER_POLICY=''; ASSUME_POLICY=''
 for p in "${POLICIES[@]}"; do
     case "${p}" in
         github_*) STATE_POLICY="${p}" ;;
         *_artifact-read) READER_POLICY="${p}" ;;
-        *_artifact-folder|*_artifact-assume) ADMIN_ONLY_POLICIES+=("${p}") ;;
+        # assume goes to CI AND admin: the CI deploy assumes the reader to deliver the TLS
+        # PFX at configure time. folder (write) stays admin-only.
+        *_artifact-assume) ASSUME_POLICY="${p}" ;;
+        *_artifact-folder) ADMIN_ONLY_POLICIES+=("${p}") ;;
         *_deploy-*) DEPLOY_POLICIES+=("${p}") ;;
         *) die "unclassified policy source '${p}' — extend the classification case deliberately (README role-to-policy table first)" ;;
     esac
 done
 [ -n "${READER_POLICY}" ] || die 'artifact-read policy source not found'
+[ -n "${ASSUME_POLICY}" ] || die 'artifact-assume policy source not found'
 
 echo "== plan =="
 exists_policy() { aws iam get-policy --policy-arn "arn:aws:iam::${ACCOUNT}:policy/$1" --profile "${PROFILE}" >/dev/null 2>&1; }
@@ -236,12 +240,14 @@ done
 # Terraform state without it.
 attach "${CI_ROLE}"    "arn:aws:iam::${ACCOUNT}:policy/${STATE_POLICY}"
 attach "${ADMIN_ROLE}" "arn:aws:iam::${ACCOUNT}:policy/${STATE_POLICY}"
-# artifact path per the README role-to-policy table: folder+assume are ADMIN-ONLY (the CI role
-# gets neither — it must not write TLS material or assume the reader), read goes to the
-# controller-assumed reader role and nowhere else.
+# artifact path per the README role-to-policy table: folder (write) is ADMIN-ONLY; assume
+# goes to CI AND admin (the CI deploy assumes the reader to deliver the TLS PFX at configure
+# time); read goes to the controller-assumed reader role and nowhere else.
 for p in "${ADMIN_ONLY_POLICIES[@]}"; do
     attach "${ADMIN_ROLE}" "arn:aws:iam::${ACCOUNT}:policy/${p}"
 done
+attach "${CI_ROLE}"    "arn:aws:iam::${ACCOUNT}:policy/${ASSUME_POLICY}"
+attach "${ADMIN_ROLE}" "arn:aws:iam::${ACCOUNT}:policy/${ASSUME_POLICY}"
 attach "${READER_ROLE}" "arn:aws:iam::${ACCOUNT}:policy/${READER_POLICY}"
 attach "${POC_ROLE}"   'arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore'
 say 'attachments' 'reconciled'
