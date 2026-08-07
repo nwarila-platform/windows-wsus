@@ -446,6 +446,9 @@ jobs:
         timeout-minutes: 75
         env:
           ANSIBLE_CONFIG: ${{ github.workspace }}/.frameworks/ansible-framework/ansible.cfg
+          # Imported by the play's pre-tasks (lookup('env') on the controller) — the same
+          # value the OIDC role ARN is built from, so play and deploy identity agree.
+          AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
         run: |
           set -euo pipefail
           cd "${GITHUB_WORKSPACE}/.frameworks/ansible-framework"

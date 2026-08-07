@@ -52,33 +52,26 @@
     #endregion --- [ Pre-Tasks: Initalize Packages:{} ] --------------------------------------- #
 
     #region ------ [ Pre-Tasks: Load AWS Account Information ] -------------------------------- #
-    # The role's contract forbids reaching into the runner's environment: every configuration
-    # value flows through the 'wsus:' override dict. Account-derived values (the bucket) are
-    # therefore looked up HERE, from the instance's own IMDSv2 identity document — no
-    # controller credential, no runner variable, and the hop-limit-1 IMDS is only reachable
-    # from the instance itself.
-    - name: 'PRE | Acquire IMDSv2 session token'
-      ansible.windows.win_uri:
-        url: 'http://169.254.169.254/latest/api/token'
-        method: 'PUT'
-        headers:
-          X-aws-ec2-metadata-token-ttl-seconds: '300'
-        return_content: true
-      register: '__imds_token__'
-
-    - name: 'PRE | Load the instance identity document'
-      ansible.windows.win_uri:
-        url: 'http://169.254.169.254/latest/dynamic/instance-identity/document'
-        method: 'GET'
-        headers:
-          X-aws-ec2-metadata-token: "{{ __imds_token__.content }}"
-        return_content: true
-      register: '__identity_document__'
-
-    - name: 'PRE | Publish AWS account facts'
+    # The ROLE never reaches into an environment variable: every configuration value flows
+    # through the 'wsus:' override dict. Account-derived values are imported HERE, once, from
+    # the CONTROLLER environment the workflow already holds authoritatively — AWS_ACCOUNT_ID
+    # is the same value the OIDC role ARN was built from, so the play and the deploy identity
+    # can never disagree. lookup('env') evaluates on the controller, not the target.
+    - name: 'PRE | Import AWS account information from the controller environment'
       ansible.builtin.set_fact:
-        aws_account_id: "{{ (__identity_document__.content | from_json).accountId }}"
-        aws_region: "{{ (__identity_document__.content | from_json).region }}"
+        aws_account_id: "{{ lookup('ansible.builtin.env', 'AWS_ACCOUNT_ID') | trim }}"
+        aws_region: "{{ lookup('ansible.builtin.env', 'AWS_REGION') | default('us-east-1', true) | trim }}"
+
+    - name: 'PRE | Assert the account id was provided'
+      ansible.builtin.assert:
+        that:
+          - (aws_account_id | length) == 12
+          - aws_account_id is match('^[0-9]{12}$')
+        fail_msg: >-
+          AWS_ACCOUNT_ID is missing or malformed in the controller environment. The aws-deploy
+          workflow exports it on the play step (from the same secret the OIDC role ARN uses);
+          a local run must export it before invoking this playbook.
+        quiet: true
     #endregion --- [ Pre-Tasks: Load AWS Account Information ] -------------------------------- #
 
   #endregion --- [ Pre-Tasks ] ---------------------------------------------------------------- #
