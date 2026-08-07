@@ -51,11 +51,9 @@ readonly -a FOREIGN_IDENTITY_PATTERNS=(
     'aws-marketplace'         # open publisher namespace; this repo launches amazon-alias images
 )
 
-# ENVIRONMENT literals name shared account infrastructure. Verified 2026-07-29: this account has a
-# SINGLE VPC and subnet, and `alias/aws/ebs` resolves to one account-wide AWS-managed key — so every
-# repository here legitimately materializes the SAME values. They are therefore rejected in the
-# SOURCES ONLY (which must carry placeholders) and accepted in a materialized copy, where they are
-# the correct answer rather than a leftover.
+# ENVIRONMENT literals are known values from earlier materializations. They are rejected in source
+# documents, which must carry placeholders, but accepted in an untracked materialized copy because
+# the live resolver may legitimately select them for this repository too.
 readonly -a ENVIRONMENT_PATTERNS=(
     'vpc-03c38504869c1c9bb'
     'subnet-0e1c8aae192deff26'
@@ -85,7 +83,9 @@ fail() { printf 'check-iam-literals: FAIL — %s\n' "$1" >&2; exit 1; }
 # --------------------------------------------------------------------------------------------
 if [ "${1:-}" = '--materialized' ]; then
     target="${2:-}"
-    [ -n "${target}" ] && [ -d "${target}" ] || fail 'usage: --materialized <existing-directory>'
+    if [ -z "${target}" ] || [ ! -d "${target}" ]; then
+        fail 'usage: --materialized <existing-directory>'
+    fi
 
     if grep -RIn --binary-files=without-match -E '<[a-z][a-z0-9-]*>' "${target}"; then
         fail 'the materialized tree still contains placeholders (listed above). Do not apply.'
@@ -148,6 +148,17 @@ done < <(find "${IAM_DIR}" -type f -name '*.json')
 # Verified 2026-07-29: this is the check whose absence let a rename ship a trust naming a file that
 # no longer existed.
 while IFS= read -r trust; do
+    refs="$(python3 -S -c "
+import json,sys
+d=json.load(open(sys.argv[1]))
+for st in d.get('Statement',[]):
+    v=st.get('Condition',{}).get('StringEquals',{}).get('token.actions.githubusercontent.com:job_workflow_ref')
+    for x in ([v] if isinstance(v,str) else (v or [])): print(x)
+" "${trust}")" || {
+        printf 'check-iam-literals: could not read workflow refs from %s.\n' "${trust}" >&2
+        status=1
+        continue
+    }
     while IFS= read -r ref; do
         [ -n "${ref}" ] || continue
         wf="${ref#*/*/}"; wf="${wf%@*}"
@@ -156,13 +167,7 @@ while IFS= read -r trust; do
                 "$(basename "${trust}")" "${ref}" "${wf}" >&2
             status=1
         fi
-    done < <(python3 -S -c "
-import json,sys
-d=json.load(open(sys.argv[1]))
-for st in d.get('Statement',[]):
-    v=st.get('Condition',{}).get('StringLike',{}).get('token.actions.githubusercontent.com:job_workflow_ref')
-    for x in ([v] if isinstance(v,str) else (v or [])): print(x)
-" "${trust}" 2>/dev/null)
+    done <<< "${refs}"
 done < <(find "${IAM_DIR}/roles" -name '*.trust.json')
 
 if ! grep -RIq --binary-files=without-match -F "${THIS_REPO}" "${APPLY_DIRS[@]}"; then

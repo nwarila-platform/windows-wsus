@@ -2,7 +2,7 @@
 # File: '{{ role_path }}/tasks/validate.yml'
 # --- [ Description ] ----------------------------------------------------------------------- #
 #
-# Config-contract validation executed by the v3.1.0 loader's
+# Config-contract validation executed by the v3.3.0 loader's
 # 'INIT | Validating Merged Configuration' hook, with the merged configuration passed
 # as 'config'. Holds ONLY load-bearing, module-inexpressible invariants (never a
 # precondition a module already fails on — style guide §4b). Runs for every state;
@@ -24,11 +24,45 @@
       - "{{ config.data_disks.iis.drive_letter | default('') | string | trim | upper }}"
   ansible.builtin.assert:
     that:
-      - (__disk_letters__ | select | list | unique | length) == (__disk_letters__ | select | list | length)
+      - (__disk_letters__ | select('match', '^[D-Z]$') | list | length) == 3
+      - (__disk_letters__ | unique | length) == 3
     fail_msg: >-
-      wsus.data_disks.db/content/iis.drive_letter must each be a DIFFERENT letter. A collision
-      sends two logical data purposes to the same volume (silent-wrong).
+      wsus.data_disks.db/content/iis.drive_letter must each be one distinct uppercase D-Z
+      letter. Empty, system/reserved, multi-character, and duplicate values fail closed.
       letters={{ __disk_letters__ }}.
+    quiet: true
+
+- name: 'BEGIN | Assert Application Paths Match Their Declared Disks'
+  when: (state | default('present') | string | lower | trim) == 'present'
+  vars:
+    __iis_letter__: "{{ config.data_disks.iis.drive_letter | string | trim | upper }}"
+    __iis_log_dir__: "{{ config.iis.log_dir | string | trim | upper }}"
+    __iis_wwwroot__: "{{ config.iis.wwwroot | string | trim | upper }}"
+    __content_subdir__: "{{ config.content_subdir | string | trim }}"
+    __db_subdir__: "{{ config.db_subdir | string | trim }}"
+  ansible.builtin.assert:
+    that:
+      - __content_subdir__ | length > 0
+      - __db_subdir__ | length > 0
+      - "':' not in __content_subdir__"
+      - "':' not in __db_subdir__"
+      - "'%' not in __content_subdir__"
+      - "'%' not in __db_subdir__"
+      - "'..' not in __content_subdir__"
+      - "'..' not in __db_subdir__"
+      - not __content_subdir__.startswith('\\')
+      - not __content_subdir__.startswith('/')
+      - not __db_subdir__.startswith('\\')
+      - not __db_subdir__.startswith('/')
+      - __iis_log_dir__ is match('^' ~ __iis_letter__ ~ ':\\\\')
+      - __iis_wwwroot__ is match('^' ~ __iis_letter__ ~ ':\\\\')
+      - "'%' not in __iis_log_dir__"
+      - "'%' not in __iis_wwwroot__"
+    fail_msg: >-
+      WSUS subdirectories must be relative, non-traversing names and both IIS paths must be
+      literal paths on the declared IIS drive {{ __iis_letter__ }}:. content_subdir=
+      '{{ config.content_subdir }}', db_subdir='{{ config.db_subdir }}', log_dir=
+      '{{ config.iis.log_dir }}', wwwroot='{{ config.iis.wwwroot }}'.
     quiet: true
 
 - name: 'BEGIN | Assert Upstream WSUS Server Provided'
@@ -39,6 +73,69 @@
     fail_msg: >-
       wsus.upstream_server is REQUIRED for the downstream topology but is empty/undefined. Each WSUS
       downstream points at its upstream by name; declare upstream_server in the wsus: override dict.
+    quiet: true
+
+- name: 'BEGIN | Assert Synchronization Contract'
+  when: (state | default('present') | string | lower | trim) == 'present'
+  vars:
+    __languages__: "{{ config.sync.update_languages | default([]) | map('string') | map('lower') | list }}"
+  ansible.builtin.assert:
+    that:
+      - (config.sync.upstream_port | string) is match('^[0-9]+$')
+      - (config.sync.upstream_port | int) >= 1
+      - (config.sync.upstream_port | int) <= 65535
+      - __languages__ | length > 0
+      - (__languages__ | select('match', '^[a-z]{2}(-[a-z0-9]+)?$') | list | length) == (__languages__ | length)
+      - (__languages__ | unique | length) == (__languages__ | length)
+      - (config.sync.bootstrap_accept_timeout_sec | string) is match('^[0-9]+$')
+      - (config.sync.bootstrap_accept_timeout_sec | int) >= 30
+      - (config.sync.bootstrap_completion_timeout_sec | string) is match('^[0-9]+$')
+      - (config.sync.bootstrap_completion_timeout_sec | int) >= 300
+      - (config.sync.bootstrap_poll_sec | string) is match('^[0-9]+$')
+      - (config.sync.bootstrap_poll_sec | int) >= 2
+      - (config.sync.bootstrap_poll_sec | int) <= 60
+      - not (config.sync.bootstrap_enabled | bool) or ((config.upstream_server | string | lower | trim) != 'wsus-upstream.corp.local')
+    fail_msg: >-
+      Invalid wsus.sync contract. Ports must be 1-65535; languages must be unique normalized
+      language codes; acceptance/completion/poll timeouts must be bounded integers; and the
+      repository placeholder upstream may never be used when bootstrap_enabled=true.
+    quiet: true
+
+- name: 'BEGIN | Assert TLS Delivery Inputs'
+  when:
+    - (state | default('present') | string | lower | trim) == 'present'
+    - config.tls.enabled | default(true) | bool
+  ansible.builtin.assert:
+    that:
+      - (config.bucket | default('') | string | trim) | length > 0
+      - (config.tls.pfx_key | default('') | string | trim) | length > 0
+      - (config.bucket | string | trim) is match('^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$')
+      - "'..' not in (config.tls.pfx_key | string)"
+      - not (config.tls.pfx_key | string).startswith('/')
+      - (config.tls.port | string) is match('^[0-9]+$')
+      - (config.tls.port | int) >= 1
+      - (config.tls.port | int) <= 65535
+      - (config.tls.minimum_validity_days | string) is match('^[0-9]+$')
+      - (config.tls.minimum_validity_days | int) >= 1
+      - (config.tls.dns_name | default('') | string | trim | lower) is match('^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$')
+    fail_msg: >-
+      TLS is enabled but wsus.bucket and/or wsus.tls.pfx_key is empty — the certificate
+      delivery would only fail later, mid-play, at the S3 fetch. Declare bucket in the wsus:
+      override dict (the playbook derives it from the imported account id) or set
+      tls.enabled: false deliberately.
+    quiet: true
+
+# A malformed pin would otherwise pass validation and fail only AFTER delivery and import.
+- name: 'BEGIN | Assert TLS Thumbprint Pin Format'
+  when:
+    - (state | default('present') | string | lower | trim) == 'present'
+    - config.tls.enabled | default(true) | bool
+  ansible.builtin.assert:
+    that:
+      - (config.tls.thumbprint | string | trim) is match('^[0-9A-Fa-f]{40}$')
+    fail_msg: >-
+      wsus.tls.thumbprint '{{ config.tls.thumbprint }}' is not a 40-character hex SHA-1
+      thumbprint — the trust-but-verify pin could never match any certificate.
     quiet: true
 
 #endregion --- [ Script ] -------------------------------------------------------------------- #

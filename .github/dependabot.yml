@@ -1,0 +1,36 @@
+# =========================================================================================== #
+# Dependabot — grouped, reviewable updates for the unprivileged quality boundary
+# ------------------------------------------------------------------------------------------- #
+# Dependabot PRs receive only the credential-free `CI / required` check. This file opens PRs;
+# it does not claim to enable auto-merge. Framework commit-pin promotion remains a separate,
+# protected workflow because Dependabot does not manage raw SHA files.
+# =========================================================================================== #
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: tuesday
+      time: '06:23'
+      timezone: Etc/UTC
+    open-pull-requests-limit: 1
+    groups:
+      github-actions:
+        patterns: ['*']
+    commit-message:
+      prefix: chore(deps)
+
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+      day: tuesday
+      time: '06:37'
+      timezone: Etc/UTC
+    open-pull-requests-limit: 1
+    groups:
+      quality-python:
+        patterns: ['*']
+    commit-message:
+      prefix: chore(deps)

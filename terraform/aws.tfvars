@@ -12,7 +12,7 @@
 #
 # Every value here must stay inside the deploy role's launch boundary
 # (docs/reference/aws-iam/README.md): t3.medium/t3.large only, gp3 encrypted <= 64 GiB,
-# IMDSv2 with hop limit 1, the pinned key pair, and the pinned VPC/subnet.
+# IMDSv2 with hop limit 1, the per-run managed key pair, and the pinned VPC/subnet.
 #
 # REACHABILITY — ZERO INBOUND, SSH OVER SSM: the security group allows NO ingress at all.
 # The runner reaches the instance through an SSM session (AWS-StartSSHSession, tag-gated in
@@ -24,8 +24,8 @@
 #
 # readiness_gate is FALSE by design: the framework's gate dials the instance directly over
 # SSH, which a zero-ingress security group forbids. The playbook's first play waits for
-# readiness over SSM-SSH instead, then sets the OpenSSH DefaultShell to PowerShell (the
-# framework's bootstrap deliberately leaves cmd).
+# readiness over SSM-SSH instead. The OpenSSH DefaultShell stays cmd — the boot default —
+# because a PowerShell login shell breaks ansible's module bootstrap (proven live).
 #
 # =========================================================================================== #
 
@@ -43,9 +43,10 @@ all_systems = [
     hostname          = "wsus-poc-01"
     availability_zone = "us-east-1a"
     subnet_id         = "subnet-0e1c8aae192deff26"
-    # The org's shared EC2 key pair (secure-wazuh pattern) — its private half is the
-    # AWS_EC2_SSH_PRIVATE_KEY Actions secret. No per-repo key material is minted.
-    key_name             = "nwarila-ec2-key"
+    # The workflow generates an ephemeral RSA key and passes its public half through the
+    # framework's managed_keypairs input. Terraform creates and destroys this key-pair with
+    # the rest of the run; no long-lived private key is stored in GitHub.
+    key_name             = "windows-wsus-ci"
     iam_instance_profile = "windows-wsus-poc-profile"
     aws_kms_alias        = "aws/ebs"
     ami                  = "windows_server_2025_base"
@@ -74,9 +75,9 @@ all_systems = [
       volume_size = "30"
     }
 
-    # The same three RAW data disks the lab baseline provides (VM-LIFECYCLE.md §1): the deploy
-    # layer owns the hardware, the composed play's windows_disk_manager formats it. The
-    # Function tags are the identities the role resolves each disk by (resolve_aws.yml).
+    # Three RAW data disks: the deploy layer owns the hardware, the composed play's
+    # windows_disk_manager formats it. The Function tags are the identities the role
+    # resolves each disk by (resolve_aws.yml).
     ebs_block_devices = [
       {
         iops         = null

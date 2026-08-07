@@ -1,0 +1,111 @@
+# Credential-free required check. It validates repository source plus the pinned Terraform and
+# Ansible compositions; AWS lifecycle proof is isolated in the protected-main aws-deploy workflow.
+name: CI
+
+'on':
+  pull_request:
+    types: [opened, reopened, ready_for_review, synchronize]
+  push:
+    branches: [main]
+  merge_group:
+    types: [checks_requested]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  required:
+    name: required
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Set up pinned Python
+        uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
+        with:
+          python-version: '3.12.11'
+          cache: pip
+          cache-dependency-path: requirements-quality.txt
+
+      - name: Install pinned quality toolchain
+        id: tools
+        env:
+          PIP_DISABLE_PIP_VERSION_CHECK: '1'
+        run: |
+          set -euo pipefail
+          source quality-tools.env
+
+          sudo apt-get update -qq
+          sudo apt-get install --yes --no-install-recommends "shellcheck=${SHELLCHECK_APT_VERSION}"
+
+          tools_dir="${RUNNER_TEMP}/quality-tools"
+          mkdir -p "${tools_dir}"
+          archive="${RUNNER_TEMP}/actionlint.tar.gz"
+          curl -fsSLo "${archive}" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          printf '%s  %s\n' "${ACTIONLINT_LINUX_AMD64_SHA256}" "${archive}" | sha256sum --check --strict
+          tar -xzf "${archive}" -C "${tools_dir}" actionlint
+          chmod 0755 "${tools_dir}/actionlint"
+          echo "${tools_dir}" >> "${GITHUB_PATH}"
+
+          quality_venv="${RUNNER_TEMP}/quality-venv"
+          python3 -m venv "${quality_venv}"
+          "${quality_venv}/bin/python" -m pip install --quiet \
+            --requirement requirements-quality.txt
+          echo "${quality_venv}/bin" >> "${GITHUB_PATH}"
+
+          collections_dir="${RUNNER_TEMP}/ansible-collections"
+          "${quality_venv}/bin/ansible-galaxy" collection install --force \
+            --requirements-file requirements-quality.yml \
+            --collections-path "${collections_dir}"
+          echo "ANSIBLE_COLLECTIONS_PATH=${collections_dir}" >> "${GITHUB_ENV}"
+          echo "terraform=${TERRAFORM_VERSION}" >> "${GITHUB_OUTPUT}"
+
+      - name: Set up pinned Terraform
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: ${{ steps.tools.outputs.terraform }}
+          terraform_wrapper: false
+
+      - name: Read framework pins
+        id: framework
+        run: |
+          echo "ansible=$(tr -d '\r\n' < .github/ansible-framework-pin)" >> "${GITHUB_OUTPUT}"
+          echo "terraform=$(tr -d '\r\n' < .github/terraform-framework-pin)" >> "${GITHUB_OUTPUT}"
+
+      - name: Checkout pinned Ansible framework
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          repository: nwarila-platform/ansible-framework
+          ref: ${{ steps.framework.outputs.ansible }}
+          path: .quality/ansible-framework
+          persist-credentials: false
+
+      - name: Checkout pinned Terraform framework
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          repository: nwarila-platform/aws-terraform-framework
+          ref: ${{ steps.framework.outputs.terraform }}
+          path: .quality/terraform-framework
+          persist-credentials: false
+
+      - name: Run required verification
+        env:
+          ANSIBLE_LOCAL_TEMP: ${{ runner.temp }}/ansible-local
+          QUALITY_ANSIBLE_FRAMEWORK: ${{ github.workspace }}/.quality/ansible-framework
+          QUALITY_ENFORCE_TOOL_VERSIONS: '1'
+          QUALITY_REQUIRE_COMPOSED: '1'
+          QUALITY_REQUIRE_TERRAFORM: '1'
+          QUALITY_TERRAFORM_FRAMEWORK: ${{ github.workspace }}/.quality/terraform-framework
+        run: bash ./scripts/verify.sh
