@@ -735,7 +735,7 @@
         $bound = Get-Item ("IIS:\SslBindings\0.0.0.0!" + $port) -ErrorAction SilentlyContinue
         if (-not $bound -or $bound.Thumbprint -ne $thumb) {
             if ($bound) { Remove-Item ("IIS:\SslBindings\0.0.0.0!" + $port) }
-            $cert = Get-Item ("Cert:\LocalMachine\My\" + $thumb)
+            $cert = Get-Item (Join-Path 'Cert:\LocalMachine\My' $thumb)
             New-Item ("IIS:\SslBindings\0.0.0.0!" + $port) -Value $cert | Out-Null
             $changed = $true
         }
