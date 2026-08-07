@@ -73,8 +73,8 @@ out of git.
 
 | Role | Trust source | Policies | Purpose |
 |---|---|---|---|
-| `github_nwarila-platform_windows-wsus` | `roles/github_nwarila-platform_windows-wsus.trust.json` | `github_nwarila-platform_windows-wsus` · `windows-wsus_deploy-ec2-launch` · `windows-wsus_deploy-ec2-lifecycle` · `windows-wsus_deploy-sg-ssm-kms` · `windows-wsus_deploy-discovery-iam` | CI state, deploy, prove, destroy |
-| `github_nwarila-platform_windows-wsus-admin` | `roles/github_nwarila-platform_windows-wsus-admin.trust.json` | `github_nwarila-platform_windows-wsus` · the same four deploy policies · `windows-wsus_artifact-folder` · `windows-wsus_artifact-assume` | Operator break-glass and local deploy |
+| `github_nwarila-platform_windows-wsus` | `roles/github_nwarila-platform_windows-wsus.trust.json` | `github_nwarila-platform_windows-wsus` · `windows-wsus_deploy-ec2-launch` · `windows-wsus_deploy-ec2-lifecycle` · `windows-wsus_deploy-sg-ssm-kms` · `windows-wsus_deploy-discovery-iam` · `windows-wsus_artifact-assume` | CI state, deploy, prove, destroy; assumes the artifact-reader to deliver the TLS PFX at configure time |
+| `github_nwarila-platform_windows-wsus-admin` | `roles/github_nwarila-platform_windows-wsus-admin.trust.json` | `github_nwarila-platform_windows-wsus` · the same four deploy policies · `windows-wsus_artifact-folder` (write is admin-only) · `windows-wsus_artifact-assume` | Operator break-glass and local deploy |
 | `windows-wsus-artifact-reader` | `roles/windows-wsus-artifact-reader.trust.json` | `windows-wsus_artifact-read` | Controller-assumed, read-only artifact delivery |
 | `windows-wsus-poc-role` | `roles/windows-wsus-poc-role.trust.json` | `AmazonSSMManagedInstanceCore` (AWS-managed) **only** | EC2 instance profile `windows-wsus-poc-profile` |
 
@@ -104,8 +104,12 @@ polish; each one is a finding both auditors raised.
 - **The SSO trust is bounded to the permission-set hash**, `AWSReservedSSO_github_nwarila-platform_`
   + sixteen `?` (R3-8). The source uses a trailing `*`, which also matches any future permission set
   named `github_nwarila-platform_<something>` — including a low-privilege one.
-- **`job_workflow_ref` is single-valued** (R3-2), so there is no array shape teaching a cloner to
-  *append* — an appended trust leaves the sibling repository trusted. Replace it wholesale.
+- **`job_workflow_ref` lists exactly this repository's two deploy-boundary workflows** —
+  `aws-deploy.yml` (the lifecycle) and `aws-reaper.yml` (the scheduled teardown safety net) —
+  and nothing else (R3-2). The rule for cloners is unchanged in spirit: never *append* to an
+  inherited list (an appended trust leaves the sibling repository trusted) — replace it
+  wholesale with your own repository's workflow paths, and keep every entry pointing at THIS
+  repository. check-iam-literals.sh verifies each listed workflow file exists.
   **`sub` deliberately lists BOTH subject forms.** GitHub emits the ID-embedded subject
   `repo:<owner>@<owner-id>/<repo>@<repository-id>:<context>` for repositories created after roughly
   2026-07-15 — proven from the CloudTrail `userName` on a real denied `AssumeRoleWithWebIdentity`,
@@ -135,6 +139,27 @@ polish; each one is a finding both auditors raised.
   measure ~2.6 KB and ~3.3 KB, and the role has ten managed-policy slots of which this uses four.
   Attach both; they are one boundary in two documents. Do not recombine them.
 
+## Elastic IP grants (added 2026-08-07)
+
+The full ephemeral lifecycle runs from a GitHub-hosted runner. The terraform framework attaches
+pre-created ENIs, a launch path AWS never auto-assigns a public IP to — and the account has no
+NAT and no VPC endpoints — so without an EIP the instance is both unreachable and route-less.
+Four actions were added for it, all inside the existing identity boundary:
+
+- `ec2:AllocateAddress` (`-launch`, Sid `AllocateTaggedElasticIp`) requires the repo identity tag
+  **at create time** via `aws:RequestTag` — same shape as every other create in that policy. The
+  framework's provider `default_tags` supply the tag.
+- `ec2:AssociateAddress` / `ec2:DisassociateAddress` / `ec2:ReleaseAddress` (`-lifecycle`) are
+  `ec2:ResourceTag`-gated, deliberately **not** `IfExists`: at association time the EIP, instance
+  and ENI legs all already carry the tag, and an `IfExists` here is a fail-open waiting for an
+  untagged resource. A sibling's EIP is untouchable for the same reason a sibling's instance is.
+- `ec2:DescribeAddresses` / `ec2:DescribeAddressesAttribute` join the discovery describes (the
+  provider reads both; describe stays account-wide like every other describe).
+
+The exposure this buys is bounded by the security group, not by IAM: the workflow renders the SG
+ingress to the **runner's own egress /32, discovered per run**, and the egress rule set is empty
+— the instance can answer that one runner and originate nothing.
+
 ## What this clone deliberately drops
 
 Both auditors, independently, recommended that the Windows consumers drop the artifact-delivery path
@@ -162,15 +187,21 @@ governs who may manage the groups. Treat the rule set as code-reviewed, not poli
 
 ## Known residuals (accepted, recorded rather than hidden)
 
-- **Public IP association is not denied.** SSM is reached over the internet gateway from a public
-  subnet, so `ec2:AssociatePublicIpAddress: false` would block every run. The structural fix is a
-  private subnet with VPC endpoints, which is the recommended target for this repo; the role holds
-  no EIP, internet-gateway or route-table actions, so a private subnet cannot be re-opened from
-  inside this boundary.
+- **Public IP association is not denied — and since 2026-08-07 the role holds tag-gated EIP
+  actions** (see [Elastic IP grants](#elastic-ip-grants-added-2026-08-07)): the hosted-runner
+  lifecycle needs a public address on a pre-created-ENI launch in an account with no NAT and no
+  VPC endpoints. The structural fix remains a private subnet with VPC endpoints plus SSM
+  session transport; when that lands, remove the EIP statements with it. The role still holds
+  no internet-gateway or route-table actions.
 - **`security-group-rule/*` is region-scoped.** Every rule action also authorizes against the parent
   `security-group/*` leg, which is tag- and VPC-pinned, so a foreign rule cannot be reached without
   its foreign parent. EC2 exposes VPC context on the parent group, not the rule resource — this is
   why it looks loose and is not.
+- **`ec2:DisassociateAddress` is region-scoped only** (proven live, run 31183916280): Terraform
+  disassociates by association-id, and EC2 then resolves no taggable resource — the request
+  authorizes against `*/*`, so a `ResourceTag` condition fails closed and blocks every destroy.
+  The exposure is disruption-only (a sibling's EIP could be detached, not released or stolen);
+  Release/Associate stay tag-gated.
 - **SSM session teardown is region-scoped.** An assumed role's `${aws:userid}` is
   `<role-id>:<session-name>`, which is not an SSM session-id prefix, so using it to narrow the ARN
   would silently deny legitimate teardown.

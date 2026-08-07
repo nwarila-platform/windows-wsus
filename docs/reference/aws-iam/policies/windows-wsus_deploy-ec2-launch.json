@@ -148,6 +148,18 @@
           "ec2:ResourceTag/nwarila:management:repository-id": "<repository-id>"
         }
       }
+    },
+    {
+      "Sid": "AllocateTaggedElasticIp",
+      "Effect": "Allow",
+      "Action": "ec2:AllocateAddress",
+      "Resource": "arn:aws:ec2:<region>:<account-id>:elastic-ip/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "<region>",
+          "aws:RequestTag/nwarila:management:repository-id": "<repository-id>"
+        }
+      }
     }
   ]
 }

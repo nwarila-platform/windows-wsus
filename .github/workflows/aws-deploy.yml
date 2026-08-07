@@ -1,82 +1,65 @@
 # =========================================================================================== #
 # AWS Deploy — windows-wsus
 # ------------------------------------------------------------------------------------------- #
-# WHAT THIS DOES TODAY, AND WHAT IT DOES NOT
+# Ephemeral lifecycle: terraform init/apply -> ansible -> terraform destroy (always).
+# Terraform is DATA-ONLY here (a plain tfvars, no .tf files); resources live in the pinned
+# aws-terraform-framework, configuration in the pinned ansible-framework + this repo's role.
 #
-# This workflow proves the AWS deploy BOUNDARY works. It does not yet deploy, because two inputs
-# do not exist: terraform/ is a skeleton with no resources, and no EC2 key pair has been created
-# (a key pair carries private key material whose custody is an operator decision). Adding the
-# terraform apply / ansible / destroy stages is the next piece of work; the trust, the roles and
-# the policies they exercise are already live and tested.
-#
-# It exists NOW rather than later for a specific reason. The OIDC trust pins this file's PATH in
-# `job_workflow_ref`. Until this file existed, that condition named a workflow that had never been
-# written, so no CI job in this repository could assume the deploy role at all — and nothing
-# detected that, because the trust is syntactically valid either way. scripts/check-iam-literals.sh
-# now fails when a trust pins a workflow that does not exist, and this file is what makes it pass
-# honestly rather than by weakening the check.
-#
-# WHY THE ASSERTIONS BELOW MATTER
-#
-# Every claim about this repository's IAM has so far been proven by `iam simulate-principal-policy`
-# run as an ADMIN credential against the deploy role's ARN. That is sound, but it is not the same as
-# the deploy role actually authenticating and acting. This workflow closes that gap: it performs a
-# real OIDC exchange, asserts the resulting identity is exactly the intended role, and then
-# exercises the read-only discovery calls the deploy genuinely needs. A trust or policy regression
-# fails here loudly, in CI, on the change that caused it.
-#
-# The role deliberately CANNOT run scripts/test-iam-policies.sh: simulate-custom-policy and
-# access-analyzer are not in its grants, and adding them to make a test pass would widen the
-# boundary to accommodate the test. That suite stays an operator-run check.
+#   * The OIDC trust lists exactly two workflow paths — this file and aws-reaper.yml — so a
+#     rename of either fails its credential exchange loudly, and no other workflow can
+#     assume the deploy role.
+#   * Reachability: ZERO INBOUND — SSH over SSM. The SG allows no ingress; the runner's SSH
+#     tunnels through an SSM session (AWS-StartSSHSession) riding the agent's own outbound
+#     443, and the EIP exists purely so that outbound path works (pre-created ENIs never get
+#     auto public IPs; the account has no NAT). readiness_gate=false because the framework's
+#     gate dials the instance directly; the playbook's first play waits over SSM-SSH instead.
+#   * Credentials re-exchange per stage (MaxSessionDuration < job runtime); a destroy with
+#     dead credentials strands paid resources.
+#   * One fixed state key; the concurrency group (shared with aws-reaper.yml) serializes
+#     runs, and apply converges from whatever state a killed predecessor left. Anything a
+#     hard-killed run leaves behind, the scheduled reaper tears down within 15 minutes.
 # =========================================================================================== #
 name: AWS Deploy
 
 on:
   workflow_dispatch:
   pull_request:
-    # `synchronize` is INCLUDED deliberately: without it only the first push to a PR fires, so
-    # editing a task file or variable in an already-open PR would silently skip the proof.
-    # `labeled` is deliberately ABSENT: manual re-runs go through workflow_dispatch, and the
-    # label path is reachable by a TRIAGE-permission user, who could otherwise spend real money
-    # without holding write access.
+    # synchronize included so edits to an open PR re-prove; labeled excluded so a
+    # triage-permission user cannot spend money.
     types: [opened, reopened, ready_for_review, synchronize]
     paths:
-      # Role tasks, variables and defaults. Kept WHOLE, not enumerated: the Compose
-      # step rsyncs this directory onto the pinned framework tree where any file can
-      # shadow framework content, so the set that affects a deploy is all of them,
-      # including paths that do not exist yet.
+      # ansible/** stays WHOLE: the compose overlay can shadow framework content.
       - ansible/**
-      # The IAM sources define the boundary this workflow authenticates
-      # against, so a change to them must re-prove it.
       - docs/reference/aws-iam/**
       - scripts/check-iam-literals.sh
       - scripts/test-iam-policies.sh
       - terraform/**
-      # Must track this workflow's own filename: a stale entry here means changes to the
-      # deploy workflow never trigger their own proof.
+      - .terraform-framework-pin
+      - .framework-pin
       - .github/workflows/aws-deploy.yml
-# Least privilege at the workflow level; the job elevates only what it needs.
 permissions: {}
 
-# One deploy boundary, one shared AWS account. Serialize so two runs cannot race the same identity.
+# One boundary, one state key — never two runs at once, never cancel a live apply.
 concurrency:
   group: aws-deploy-${{ github.repository }}
   cancel-in-progress: false
 
 jobs:
   aws-deploy:
-    name: AWS (deploy boundary proof)
+    name: AWS (ephemeral deploy-test-destroy)
     runs-on: ubuntu-latest
-    # Fork pull requests never reach this job. The organization setting that would mint an ID token
-    # to a fork PR MUST remain disabled — that platform default is the load-bearing control here,
-    # and this guard is the second layer, not the first.
+    timeout-minutes: 180
+    # Fork PRs never reach the role; the org's no-ID-token-to-forks setting is layer one.
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     permissions:
       id-token: write
       contents: read
     env:
       AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
-      EXPECTED_ROLE: github_nwarila-platform_windows-wsus
+      DEPLOY_ROLE: github_nwarila-platform_windows-wsus
+      STATE_KEY: nwarila-platform/windows-wsus/aws-poc.tfstate
+      # Matches the pinned ansible-framework's requirements-dev.txt spec.
+      ANSIBLE_CORE_SPEC: '>=2.21.2,<2.22'
 
     steps:
       - name: Checkout
@@ -84,58 +67,154 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: IAM substitution gate
-        run: ./scripts/check-iam-literals.sh
-
       - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d13d05 # v4.2.1
+        uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
         with:
-          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ env.EXPECTED_ROLE }}
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ env.DEPLOY_ROLE }}
           aws-region: ${{ env.AWS_REGION }}
           role-session-name: aws-deploy-${{ github.run_id }}
+          role-duration-seconds: 3600
 
-      - name: Assert the assumed identity is exactly the deploy role
+      # actions/checkout cannot read a file into ref:, so the pinned SHAs pass through step
+      # outputs. A bad SHA fails the checkout itself.
+      - name: Read framework pins
+        id: pins
+        run: |
+          echo "terraform=$(cat .terraform-framework-pin)" >> "$GITHUB_OUTPUT"
+          echo "ansible=$(cat .framework-pin)" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout aws-terraform-framework (pinned)
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          repository: nwarila-platform/aws-terraform-framework
+          ref: ${{ steps.pins.outputs.terraform }}
+          path: .frameworks/aws-terraform-framework
+          persist-credentials: false
+
+      - name: Checkout ansible-framework (pinned)
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          repository: nwarila-platform/ansible-framework
+          ref: ${{ steps.pins.outputs.ansible }}
+          path: .frameworks/ansible-framework
+          persist-credentials: false
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          # The framework's required_version is exact.
+          terraform_version: '1.15.1'
+          terraform_wrapper: false
+
+      - name: Terraform init
+        id: tf-init
+        working-directory: .frameworks/aws-terraform-framework/terraform
+        env:
+          AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
         run: |
           set -euo pipefail
-          # A trust that is too permissive would still authenticate — it would just authenticate as
-          # something unintended. Assert the identity rather than assuming the exchange proves it.
-          arn="$(aws sts get-caller-identity --query Arn --output text)"
-          case "${arn}" in
-            *":assumed-role/${EXPECTED_ROLE}/aws-deploy-${GITHUB_RUN_ID}") ;;
-            *) printf 'unexpected identity: %s\n' "${arn}" >&2; exit 1 ;;
-          esac
-          printf 'authenticated as %s\n' "${EXPECTED_ROLE}"
+          terraform init -input=false \
+            -backend-config="bucket=${AWS_ACCOUNT_ID}-terraform" \
+            -backend-config="key=${STATE_KEY}" \
+            -backend-config="region=${AWS_REGION}"
 
-      - name: Exercise the discovery grants the deploy needs
+      # Converges from clean OR from a killed predecessor's leftover state. The environment
+      # and the deployment identity are passed as individual -var flags — the highest-
+      # precedence source, so the tfvars cannot override who this deployment says it is.
+      - name: Terraform apply
+        timeout-minutes: 30
+        working-directory: .frameworks/aws-terraform-framework/terraform
         run: |
           set -euo pipefail
-          # These are the reads Terraform performs before it can plan. If a policy narrowing breaks
-          # one, it breaks the deploy — so failing here is the point.
-          aws ec2 describe-vpcs      --query 'length(Vpcs)'     --output text >/dev/null
-          aws ec2 describe-subnets   --query 'length(Subnets)'  --output text >/dev/null
-          aws ec2 describe-images    --owners amazon --filters Name=state,Values=available \
-                                     --max-items 1 --query 'length(Images)' --output text >/dev/null
-          aws ec2 describe-instance-types --instance-types t3.medium \
-                                     --query 'length(InstanceTypes)' --output text >/dev/null
-          aws iam get-instance-profile --instance-profile-name windows-wsus-poc-profile \
-                                     --query 'InstanceProfile.Roles[0].RoleName' --output text >/dev/null
-          echo 'discovery grants intact'
+          terraform apply -input=false -auto-approve -lock-timeout=120s \
+            -var-file="${GITHUB_WORKSPACE}/terraform/aws.tfvars" \
+            -var "environment=test" \
+            -var "repository=${GITHUB_REPOSITORY}" \
+            -var "repository_id=${GITHUB_REPOSITORY_ID}" \
+            -var "stack=aws-poc" \
+            -var "owner=${GITHUB_REPOSITORY_OWNER}" \
+            -var "commit_sha=$(git -C "${GITHUB_WORKSPACE}" rev-parse HEAD)" \
+            -var "run_id=${GITHUB_RUN_ID}"
 
-      - name: Assert the boundary still denies a sibling's resources
+      # Fresh hour for the longest stage: the play's disk resolver describes EBS mid-run.
+      - name: Refresh AWS credentials before configure (OIDC)
+        uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ env.DEPLOY_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: aws-deploy-configure-${{ github.run_id }}
+          role-duration-seconds: 3600
+
+      - name: Install Ansible and the SSM session plugin
         run: |
           set -euo pipefail
-          # The identity tag is the only thing separating this repository's AWS resources from its
-          # siblings' in a shared account. Prove the deny is real from inside the role itself, not
-          # only by simulation from an admin credential.
-          if aws ec2 describe-instances \
-               --filters "Name=tag:nwarila:management:repository-id,Values=1307854438" \
-               --query 'length(Reservations)' --output text >/dev/null 2>&1; then
-            echo 'note: describe is intentionally account-wide; lifecycle actions are the tag-gated ones'
-          fi
-          # TerminateInstances on a non-existent id: the expected failure is an AUTHORIZATION error,
-          # not a not-found error. A not-found would mean the tag gate let us through.
-          out="$(aws ec2 terminate-instances --instance-ids i-0000000000000000f 2>&1 || true)"
-          case "${out}" in
-            *UnauthorizedOperation*|*AccessDenied*) echo 'lifecycle boundary enforced' ;;
-            *) printf 'expected an authorization failure, got: %s\n' "${out}" >&2; exit 1 ;;
-          esac
+          python3 -m pip install --quiet --no-cache-dir "ansible-core${ANSIBLE_CORE_SPEC}" boto3 botocore
+          ansible-galaxy collection install ansible.windows community.windows amazon.aws
+          curl -fsS -o /tmp/session-manager-plugin.deb \
+            https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb
+          sudo dpkg -i /tmp/session-manager-plugin.deb > /dev/null
+
+      - name: Install the SSH key
+        env:
+          AWS_EC2_SSH_PRIVATE_KEY: ${{ secrets.AWS_EC2_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          install -d -m 0700 "${HOME}/.ssh"
+          install -m 0600 /dev/stdin "${HOME}/.ssh/nwarila-ec2-key.pem" <<< "${AWS_EC2_SSH_PRIVATE_KEY}"
+
+      # This repo's roles overlay onto the pinned framework tree. A framework-TRACKED role
+      # path is refused so an overlay can never replace framework-owned code.
+      - name: Compose the Ansible tree
+        run: |
+          set -euo pipefail
+          framework_dir="${GITHUB_WORKSPACE}/.frameworks/ansible-framework"
+          for role_source in "${GITHUB_WORKSPACE}"/ansible/applications/*; do
+            role_name="$(basename "${role_source}")"
+            [ -f "${role_source}/tasks/main.yml" ] || { echo "!! missing tasks/main.yml in ${role_source}" >&2; exit 1; }
+            [ -z "$(git -C "${framework_dir}" ls-files -- "applications/${role_name}/")" ] \
+              || { echo "!! refusing framework-tracked role path applications/${role_name}" >&2; exit 1; }
+            rsync -a --delete "${role_source}/" "${framework_dir}/applications/${role_name}/"
+          done
+
+      # Readiness, configuration and the WSUS proof all live in the playbook; the dynamic
+      # inventory (ansible/inventory/aws_ec2.yml) finds the instance by its Function tag.
+      - name: Run the WSUS playbook
+        timeout-minutes: 100
+        working-directory: .frameworks/ansible-framework
+        env:
+          ANSIBLE_CONFIG: ${{ github.workspace }}/.frameworks/ansible-framework/ansible.cfg
+          # Imported by the play's pre-tasks — same value the OIDC role ARN is built from.
+          AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          ansible-playbook -i "${GITHUB_WORKSPACE}/ansible/inventory/aws_ec2.yml" \
+            "${GITHUB_WORKSPACE}/ansible/playbooks/wsus-aws.yml" -e env=test
+
+      # The originals are dead by now; a destroy with dead credentials strands paid resources.
+      - name: Refresh AWS credentials before destroy (OIDC)
+        if: always() && steps.tf-init.outcome == 'success'
+        uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ env.DEPLOY_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: aws-deploy-destroy-${{ github.run_id }}
+          role-duration-seconds: 3600
+
+      # Gated on INIT, not apply: a failed apply still leaves state to tear down.
+      - name: Terraform destroy (always)
+        if: always() && steps.tf-init.outcome == 'success'
+        timeout-minutes: 30
+        working-directory: .frameworks/aws-terraform-framework/terraform
+        env:
+          GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
+        run: |
+          set -euo pipefail
+          terraform destroy -input=false -auto-approve -lock-timeout=300s \
+            -var-file="${GITHUB_WORKSPACE}/terraform/aws.tfvars" \
+            -var "environment=test" \
+            -var "repository=${GITHUB_REPOSITORY}" \
+            -var "repository_id=${GITHUB_REPOSITORY_ID}" \
+            -var "stack=aws-poc" \
+            -var "owner=${GITHUB_REPOSITORY_OWNER}" \
+            -var "commit_sha=$(git -C "${GITHUB_WORKSPACE}" rev-parse HEAD)" \
+            -var "run_id=${GITHUB_RUN_ID}"

@@ -79,12 +79,6 @@ there is no mode flag.
 | `data_disks.iis.drive_letter` | `G` | IIS-purpose letter checked for distinctness with the database and content letters; `iis.log_dir` and `iis.wwwroot` remain the actual IIS path targets |
 | `iis.log_dir` | `G:\inetpub\logs\LogFiles` | Where IIS writes its site logs — on the IIS disk, not the system drive (STIG "IIS on its own drive"). Must be a **literal** drive-qualified path (a `%SystemDrive%`-style token is treated as drift). The role repoints the global `siteDefaults` and every site's `logFile.directory` here. |
 | `iis.wwwroot` | `G:\inetpub\wwwroot` | Active IIS web root, relocated to the IIS disk. Must be a **literal** drive-qualified path (a `%SystemDrive%`-style token is rejected). The role copies the current wwwroot content, repoints the `InetStp` `PathWWWRoot` registry value (native and Wow6432Node) and the **Default Web Site** `physicalPath` here; the WSUS Administration site under Program Files is untouched. |
-| `iis.log_target_w3c` | `File,ETW` | IIS W3C log event destination (STIG V-218786). `File` keeps the file logs; `ETW` adds a real-time event emit. Set on site defaults and every site. Valid: `File`, `ETW`, `File,ETW`. |
-| `iis.custom_log_fields` | Connection / Warning / Authorization / Content-Type | STIG-required W3C **custom** log fields (V-218788/9) — a separate collection from the standard fields, so the complete standard set does not cover them. Each is `{field, source, source_type}` (`RequestHeader`/`ResponseHeader`). Override to add fields. |
-| `iis.log_retention_days` | `90` | IIS has no built-in W3C log retention; the scheduled cleanup task deletes `*.log` older than this under `iis.log_dir`. Override per records-retention needs. |
-| `iis.log_cleanup_schedule` | `{day: sunday, time: '02:00', time_limit: PT1H}` | Weekly off-hours schedule for IIS log cleanup (`day`, target-local `HH:MM`, ISO-8601 `time_limit`). The default sits between the 00:00 monthly WSUS cleanup and the 03:00 weekly reindex. |
-| `iis.config_channel_enabled` | `true` | Enable the `Microsoft-IIS-Configuration/Operational` event channel, which records IIS configuration changes. Set `false` to opt out. |
-| `iis.config_channel_max_bytes` | `20971520` | Maximum size in bytes (20 MB) for the IIS configuration event channel. |
 | `content_subdir` | `WSUS` | WSUS content folder name; the role forms the content root as `<content drive letter>:\<content_subdir>` (for example, `F:\WSUS`), and `wsusutil postinstall` creates `WSUSContent` inside it |
 | `db_subdir` | `WID\Data` | SUSDB relocation target name; the role forms `<db drive letter>:\<db_subdir>` (for example, `E:\WID\Data`) and relocates `SUSDB.mdf` and `.ldf` there |
 | `wsuspool.queue_length` | `2000` | WsusPool IIS app-pool request queue length (Microsoft best practice, up from 1000) |
@@ -93,24 +87,16 @@ there is no mode flag.
 | `wsuspool.periodic_restart` | `00:00:00` | WsusPool periodic-restart interval (`hh:mm:ss`); `00:00:00` disables the default 29-hour recycle |
 | `wsuspool.idle_timeout` | `00:00:00` | WsusPool idle timeout (`hh:mm:ss`); `00:00:00` disables idle shutdown |
 | `wsuspool.pinging_enabled` | `false` | WsusPool worker-process pinging; `false` stops IIS killing a busy worker |
-| `maintenance.dir` | `C:\ProgramData\wsus-maintenance` | Role-managed directory holding the SUSDB maintenance scripts and their timestamped run logs |
-| `maintenance.reindex_schedule.day` | `sunday` | Day of the week the scheduled SUSDB reindex runs |
-| `maintenance.reindex_schedule.time` | `03:00` | Target-local `HH:MM` for the reindex |
-| `maintenance.reindex_schedule.time_limit` | `PT2H` | ISO-8601 duration bounding a hung or lock-blocked reindex run |
-| `maintenance.cleanup_operations` | the 6 Microsoft operations | WSUS Server Cleanup operations the scheduled cleanup runs; each value is validated against the role's allowlist. Override to a subset. |
-| `maintenance.cleanup_schedule.week` | `1` | Week of the month for the monthly cleanup (`1` = first) |
-| `maintenance.cleanup_schedule.day` | `sunday` | Day of the week the monthly cleanup runs |
-| `maintenance.cleanup_schedule.time` | `00:00` | Target-local `HH:MM` for cleanup; the default leaves an hour before the weekly reindex |
-| `maintenance.cleanup_schedule.time_limit` | `PT2H` | ISO-8601 duration bounding a hung cleanup run |
+| `tls.enabled` | `true` | Serve WSUS over HTTPS: resolve/create the certificate, bind it to `tls.port` in IIS, and run `wsusutil configuressl` so client-facing endpoints require SSL |
+| `tls.dns_name` | `''` | Certificate subject/SAN; empty means the machine's computer name |
+| `tls.thumbprint` | `''` | Pin an existing `LocalMachine\My` certificate; empty means find-or-create a self-signed one (empty means deliver+import the PFX from the bucket (trust distribution stays out of scope) |
+| `tls.port` | `8531` | HTTPS port WSUS serves on |
+| `tls.pfx_key` | `applications/windows-wsus/tls/wsus.pfx` | Object key (inside the playbook-supplied `bucket`) of the PFX inside the playbook-supplied `bucket`; its password sits beside it at `pfx_key` + `.password` |
 | `sync.update_languages` | `['en']` | Languages whose updates WSUS syncs and downloads. The role disables the all-languages default and restricts it to this set before the first sync. |
 | `sync.bootstrap_accept_timeout_sec` | `120` | Maximum seconds to confirm that the one-time category bootstrap sync was accepted. The role records a durable per-server marker and does not wait for the WAN-bound sync to complete. |
 | `sync.upstream_port` | `8530` | Port of the upstream WSUS server (`8530` HTTP or `8531` HTTPS) |
 | `sync.upstream_use_ssl` | `false` | Whether to sync from the upstream WSUS over SSL |
 | `sync.replica` | `true` | `true` creates a replica downstream that mirrors the upstream's selections and approvals; `false` creates an autonomous downstream that manages its own approvals |
-
-The role also deploys three Event Viewer custom views under
-`%ProgramData%\Microsoft\Event Viewer\Views\`: **WSUS**, **IIS - WsusPool**, and
-**WID - SUSDB**. They appear under **Custom Views** the next time Event Viewer opens.
 
 The required `upstream_server` and `temp_dir` workaround must co-locate in one `wsus:`
 declaration. The loader reads `temp_dir` from the raw `wsus` var, and Ansible does not
@@ -119,8 +105,9 @@ replaces the whole mapping.
 
 ## Requirements
 
-- Windows Server 2025 target over SSH (`ansible_shell_type: powershell`,
-  OpenSSH `DefaultShell` = PowerShell), elevated admin account, `become: false`.
+- Windows Server 2025 target over SSH, `ansible_shell_type` matching the OpenSSH
+  `DefaultShell` (`cmd`, the Windows boot default — a PowerShell login shell mangles
+  ansible's module bootstrap; proven live), elevated admin account, `become: false`.
 - Pinned framework containing `windows_disk_manager`, invoked before `wsus`.
 - Collections: `ansible.windows` (primary), `community.windows` (fallback).
 - `ENV` play-var (loader-validated) and the TD-001 playbook workarounds described in
