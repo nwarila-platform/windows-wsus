@@ -53,7 +53,6 @@ jobs:
     env:
       AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
       DEPLOY_ROLE: github_nwarila-platform_windows-wsus
-      TF_DIR: .frameworks/aws-terraform-framework/terraform
       STATE_KEY: nwarila-platform/windows-wsus/aws-poc.tfstate
       # Matches the pinned ansible-framework's requirements-dev.txt spec.
       ANSIBLE_CORE_SPEC: '>=2.21.2,<2.22'
@@ -114,11 +113,12 @@ jobs:
 
       - name: Terraform init
         id: tf-init
+        working-directory: .frameworks/aws-terraform-framework/terraform
         env:
           AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
         run: |
           set -euo pipefail
-          terraform -chdir="${TF_DIR}" init -input=false \
+          terraform init -input=false \
             -backend-config="bucket=${AWS_ACCOUNT_ID}-terraform" \
             -backend-config="key=${STATE_KEY}" \
             -backend-config="region=${AWS_REGION}"
@@ -128,16 +128,17 @@ jobs:
       # precedence source, so the tfvars cannot override who this deployment says it is.
       - name: Terraform apply
         timeout-minutes: 30
+        working-directory: .frameworks/aws-terraform-framework/terraform
         run: |
           set -euo pipefail
-          terraform -chdir="${TF_DIR}" apply -input=false -auto-approve -lock-timeout=120s \
+          terraform apply -input=false -auto-approve -lock-timeout=120s \
             -var-file="${RUNNER_TEMP}/aws-test.tfvars" \
             -var "environment=test" \
             -var "repository=${GITHUB_REPOSITORY}" \
             -var "repository_id=${GITHUB_REPOSITORY_ID}" \
             -var "stack=aws-poc" \
             -var "owner=${GITHUB_REPOSITORY_OWNER}" \
-            -var "commit_sha=$(git rev-parse HEAD)" \
+            -var "commit_sha=$(git -C "${GITHUB_WORKSPACE}" rev-parse HEAD)" \
             -var "run_id=${GITHUB_RUN_ID}"
 
       # Fresh hour for the longest stage: the play's disk resolver describes EBS mid-run.
@@ -181,13 +182,13 @@ jobs:
       # inventory (ansible/inventory/aws_ec2.yml) finds the instance by its Function tag.
       - name: Run the WSUS playbook
         timeout-minutes: 100
+        working-directory: .frameworks/ansible-framework
         env:
           ANSIBLE_CONFIG: ${{ github.workspace }}/.frameworks/ansible-framework/ansible.cfg
           # Imported by the play's pre-tasks — same value the OIDC role ARN is built from.
           AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
         run: |
           set -euo pipefail
-          cd "${GITHUB_WORKSPACE}/.frameworks/ansible-framework"
           ansible-playbook -i "${GITHUB_WORKSPACE}/ansible/inventory/aws_ec2.yml" \
             "${GITHUB_WORKSPACE}/ansible/playbooks/wsus-aws.yml" -e env=test
 
@@ -205,18 +206,19 @@ jobs:
       - name: Terraform destroy (always)
         if: always() && steps.tf-init.outcome == 'success'
         timeout-minutes: 30
+        working-directory: .frameworks/aws-terraform-framework/terraform
         env:
           GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
         run: |
           set -euo pipefail
-          terraform -chdir="${TF_DIR}" destroy -input=false -auto-approve -lock-timeout=300s \
+          terraform destroy -input=false -auto-approve -lock-timeout=300s \
             -var-file="${RUNNER_TEMP}/aws-test.tfvars" \
             -var "environment=test" \
             -var "repository=${GITHUB_REPOSITORY}" \
             -var "repository_id=${GITHUB_REPOSITORY_ID}" \
             -var "stack=aws-poc" \
             -var "owner=${GITHUB_REPOSITORY_OWNER}" \
-            -var "commit_sha=$(git rev-parse HEAD)" \
+            -var "commit_sha=$(git -C "${GITHUB_WORKSPACE}" rev-parse HEAD)" \
             -var "run_id=${GITHUB_RUN_ID}"
 
       # The cost alarm. terraform destroy can only remove what its state recorded; a resource
