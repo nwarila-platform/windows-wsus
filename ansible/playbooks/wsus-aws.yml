@@ -5,8 +5,8 @@
 # AWS variant of wsus.yml: provisions the declared Windows data disks on the EPHEMERAL EC2
 # instance, then deploys the WSUS (WID-backed) role. Runs from the COMPOSED tree only — in CI,
 # .github/workflows/aws-deploy.yml overlays the role into the pinned ansible-framework
-# checkout and executes this playbook against the aws_ec2 dynamic inventory (the instance's
-# Elastic IP, found by its Function tag).
+# checkout and executes this playbook against the aws_ec2 dynamic inventory (found by its
+# Function tag, reached as its instance id over SSH-in-SSM — zero inbound).
 #
 # Differences from wsus.yml, and nothing else:
 #   * windows_disk_manager.platform is 'aws' (vendor assert: 'Amazon EC2').

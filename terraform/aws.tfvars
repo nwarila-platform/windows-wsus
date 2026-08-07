@@ -1,13 +1,9 @@
 # =========================================================================================== #
-# File: 'terraform/environments/aws-test.tfvars.tmpl'
+# File: 'terraform/aws.tfvars'
 # --- [ Description ] ----------------------------------------------------------------------- #
 #
 # Variable input for the pinned aws-terraform-framework (SHA in .terraform-framework-pin).
-# One rendered token, not by choice: the framework's world-open-ingress ban (its
-# invariants.md, validated at plan time) rejects any /0 ingress CIDR, so the SSH rule must
-# name a real address — and the only address that matters is the CI runner's own, which
-# changes every run. The workflow substitutes RUNNER_CIDR below and passes the rendered copy;
-# everything else is literal.
+# Plain tfvars — the workflow passes this file to terraform verbatim.
 #
 # This file is the single source of truth for the deploy subnet: bootstrap-iam.sh parses
 # subnet_id out of it to materialize the IAM subnet pin, so the tfvars and the launch policy
@@ -18,18 +14,18 @@
 # (docs/reference/aws-iam/README.md): t3.medium/t3.large only, gp3 encrypted <= 64 GiB,
 # IMDSv2 with hop limit 1, the pinned key pair, and the pinned VPC/subnet.
 #
-# REACHABILITY: the framework attaches a PRE-CREATED ENI, and AWS never auto-assigns a public
-# IP to that launch path — so without the EIP below the instance would have no route to
-# anything (no NAT, no VPC endpoints in this account) and nothing could reach it. The EIP
-# (~$0.005/h for the instance's short life) plus a key-auth-only SSH port is the entire
-# exposure. Egress is EMPTY: WSUS here syncs from nothing — no
-# Microsoft Update, no website — and the OpenSSH bootstrap pulls its key from link-local
-# IMDS, which security groups never see.
+# REACHABILITY — ZERO INBOUND, SSH OVER SSM: the security group allows NO ingress at all.
+# The runner reaches the instance through an SSM session (AWS-StartSSHSession, tag-gated in
+# the deploy IAM), which rides the SSM AGENT's own outbound 443. That outbound path is why
+# the EIP exists: the framework attaches a pre-created ENI, a launch path AWS never
+# auto-assigns a public IP to, and the account has no NAT and no VPC endpoints — so without
+# the EIP (~$0.005/h for the instance's short life) the agent could never register and
+# nothing could configure the box.
 #
-# readiness_gate is FALSE by design: the framework's gate dials the instance's PRIVATE ip,
-# which a GitHub-hosted runner cannot reach. The workflow performs its own readiness wait
-# against the EIP, then sets the OpenSSH DefaultShell to PowerShell (the framework's
-# bootstrap deliberately leaves cmd).
+# readiness_gate is FALSE by design: the framework's gate dials the instance directly over
+# SSH, which a zero-ingress security group forbids. The playbook's first play waits for
+# readiness over SSM-SSH instead, then sets the OpenSSH DefaultShell to PowerShell (the
+# framework's bootstrap deliberately leaves cmd).
 #
 # =========================================================================================== #
 
@@ -116,30 +112,29 @@ all_systems = [
         private_ip      = null
         security_groups = []
         # Non-null ingress + egress => the framework creates and attaches wsus-poc-01-eni-0-sg.
-        # Ingress is SSH from the CI runner's own address only (the framework refuses /0 —
-        # see the header). Egress [] = no outbound at all: WSUS syncs from nothing in this
-        # PoC, the bootstrap's key fetch is link-local IMDS (invisible to SGs), and SSH
-        # replies ride the stateful inbound connection.
-        ingress = [
+        # Ingress [] = ZERO inbound: the runner's SSH rides the SSM agent's own outbound
+        # session, so nothing on the internet can dial this instance. Egress is HTTPS only —
+        # the SSM agent registering and streaming through the internet gateway.
+        ingress = []
+        egress = [
           {
-            description                  = "SSH from the CI runner only"
+            description                  = "HTTPS out (SSM agent registration and sessions)"
             ip_protocol                  = "tcp"
-            from_port                    = 22
-            to_port                      = 22
-            cidr_ipv4                    = "__RUNNER_CIDR__"
+            from_port                    = 443
+            to_port                      = 443
+            cidr_ipv4                    = "0.0.0.0/0"
             cidr_ipv6                    = null
             prefix_list_id               = null
             referenced_security_group_id = null
           }
         ]
-        egress = []
-        tags   = {}
+        tags = {}
       }
     ]
 
-    # An Elastic IP on eni-0 — the only public-address path for a pre-created-ENI launch, and
-    # the runner's only way to the instance. Tag-gated in the deploy IAM
-    # (AllocateTaggedElasticIp / AssociateEipToOurResources).
+    # An Elastic IP on eni-0 — pure EGRESS enablement for the SSM agent (see the header), not
+    # an inbound path. Tag-gated in the deploy IAM (AllocateTaggedElasticIp /
+    # AssociateEipToOurResources).
     associate_public_ip = true
   }
 ]

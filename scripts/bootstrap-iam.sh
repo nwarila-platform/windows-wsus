@@ -50,8 +50,8 @@ KMS_KEY="$(aws kms describe-key --key-id alias/aws/ebs --profile "${PROFILE}" --
 # deploy workflow renders — so the IAM subnet pin and the tfvars can never disagree. The VPC
 # is derived FROM that subnet (the account holds more than one VPC; a blind Vpcs[0] pick is a
 # coin toss).
-SUBNET_ID="$(grep -oE 'subnet-[0-9a-f]+' "${ROOT}/terraform/environments/aws-test.tfvars.tmpl" | head -1)"
-[ -n "${SUBNET_ID}" ] || die 'no subnet_id found in terraform/environments/aws-test.tfvars'
+SUBNET_ID="$(grep -oE 'subnet-[0-9a-f]+' "${ROOT}/terraform/aws.tfvars" | head -1)"
+[ -n "${SUBNET_ID}" ] || die 'no subnet_id found in terraform/aws.tfvars'
 VPC_ID="$(aws ec2 describe-subnets --subnet-ids "${SUBNET_ID}" --profile "${PROFILE}" --region "${REGION}" \
   --query 'Subnets[0].VpcId' --output text)" || die "subnet ${SUBNET_ID} not found in ${REGION}"
 # The org's shared EC2 key pair (secure-wazuh pattern); override only if a per-repo pair is

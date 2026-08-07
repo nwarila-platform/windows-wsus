@@ -2,15 +2,18 @@
 # AWS Deploy — windows-wsus
 # ------------------------------------------------------------------------------------------- #
 # Ephemeral lifecycle: terraform init/apply -> ansible -> terraform destroy (always).
-# Terraform is DATA-ONLY here (tfvars template, no .tf files); resources live in the pinned
+# Terraform is DATA-ONLY here (a plain tfvars, no .tf files); resources live in the pinned
 # aws-terraform-framework, configuration in the pinned ansible-framework + this repo's role.
 #
 #   * The OIDC trust lists exactly two workflow paths — this file and aws-reaper.yml — so a
 #     rename of either fails its credential exchange loudly, and no other workflow can
 #     assume the deploy role.
-#   * Reachability: EIP + key-authenticated SSH (the SG's only ingress; egress is empty).
-#     readiness_gate=false because the framework's gate dials the private ip; the Ansible
-#     stage waits for sshd/EC2Launch itself, then flips DefaultShell to PowerShell.
+#   * Reachability: ZERO INBOUND — SSH over SSM. The SG allows no ingress; the runner's SSH
+#     tunnels through an SSM session (AWS-StartSSHSession) riding the agent's own outbound
+#     443, and the EIP exists purely so that outbound path works (pre-created ENIs never get
+#     auto public IPs; the account has no NAT). readiness_gate=false because the framework's
+#     gate dials the instance directly; the playbook's first play waits over SSM-SSH instead,
+#     then flips DefaultShell to PowerShell.
 #   * Credentials re-exchange per stage (MaxSessionDuration < job runtime); a destroy with
 #     dead credentials strands paid resources.
 #   * One fixed state key; the concurrency group (shared with aws-reaper.yml) serializes
@@ -104,15 +107,6 @@ jobs:
           terraform_version: '1.15.1'
           terraform_wrapper: false
 
-      # The framework refuses a /0 ingress CIDR (its world-open ingress ban), so the SSH rule
-      # must name this runner's own address, discovered fresh every run.
-      - name: Render tfvars (SSH open to this runner only)
-        run: |
-          set -euo pipefail
-          runner_ip="$(curl -fsS https://checkip.amazonaws.com | tr -d '[:space:]')"
-          sed "s|__RUNNER_CIDR__|${runner_ip}/32|" \
-            terraform/environments/aws-test.tfvars.tmpl > "${RUNNER_TEMP}/aws-test.tfvars"
-
       - name: Terraform init
         id: tf-init
         working-directory: .frameworks/aws-terraform-framework/terraform
@@ -134,7 +128,7 @@ jobs:
         run: |
           set -euo pipefail
           terraform apply -input=false -auto-approve -lock-timeout=120s \
-            -var-file="${RUNNER_TEMP}/aws-test.tfvars" \
+            -var-file="${GITHUB_WORKSPACE}/terraform/aws.tfvars" \
             -var "environment=test" \
             -var "repository=${GITHUB_REPOSITORY}" \
             -var "repository_id=${GITHUB_REPOSITORY_ID}" \
@@ -152,11 +146,14 @@ jobs:
           role-session-name: aws-deploy-configure-${{ github.run_id }}
           role-duration-seconds: 3600
 
-      - name: Install Ansible
+      - name: Install Ansible and the SSM session plugin
         run: |
           set -euo pipefail
           python3 -m pip install --quiet --no-cache-dir "ansible-core${ANSIBLE_CORE_SPEC}" boto3 botocore
           ansible-galaxy collection install ansible.windows community.windows amazon.aws
+          curl -fsS -o /tmp/session-manager-plugin.deb \
+            https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb
+          sudo dpkg -i /tmp/session-manager-plugin.deb > /dev/null
 
       - name: Install the SSH key
         env:
@@ -214,7 +211,7 @@ jobs:
         run: |
           set -euo pipefail
           terraform destroy -input=false -auto-approve -lock-timeout=300s \
-            -var-file="${RUNNER_TEMP}/aws-test.tfvars" \
+            -var-file="${GITHUB_WORKSPACE}/terraform/aws.tfvars" \
             -var "environment=test" \
             -var "repository=${GITHUB_REPOSITORY}" \
             -var "repository_id=${GITHUB_REPOSITORY_ID}" \

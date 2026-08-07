@@ -4,8 +4,12 @@
 #
 # Dynamic inventory for the ephemeral AWS PoC (amazon.aws.aws_ec2 plugin — the filename must
 # end in aws_ec2.yml for plugin detection). Finds the running instance the terraform framework
-# tagged Function=wsus, addresses it by its Elastic IP, and places it in the same
-# 'wsus_servers' group the lab inventory uses, so the playbooks are inventory-agnostic.
+# tagged Function=wsus and places it in the 'wsus_servers' group the playbooks target.
+#
+# TRANSPORT IS SSH OVER SSM: the instance has a zero-ingress security group, so every
+# connection tunnels through an SSM session (AWS-StartSSHSession — the capability the deploy
+# IAM's tag-gated session grants exist for). That is why ansible_host is the INSTANCE ID, not
+# an IP address: it is the target of `aws ssm start-session` in the ProxyCommand below.
 #
 # Credentials come from the caller's AWS environment (in CI, the OIDC session). The private
 # key path matches where the workflow installs the AWS_EC2_SSH_PRIVATE_KEY secret — the
@@ -29,11 +33,15 @@ groups:
   wsus_servers: true
 
 compose:
-  ansible_host: 'public_ip_address'
+  # The SSM session target — see the header.
+  ansible_host: 'instance_id'
   # Connection settings follow the DETECTED OS (EC2 reports platform 'windows' on Windows
   # instances), so this inventory serves any future mixed fleet unchanged.
   ansible_user: '"Administrator" if platform == "windows" else "ec2-user"'
   ansible_shell_type: '"powershell" if platform == "windows" else "sh"'
   ansible_connection: '"ssh"'
   ansible_ssh_private_key_file: '"~/.ssh/nwarila-ec2-key.pem"'
-  ansible_ssh_common_args: '"-o StrictHostKeyChecking=accept-new"'
+  ansible_ssh_common_args: >-
+    '-o StrictHostKeyChecking=accept-new
+    -o ProxyCommand="aws ssm start-session --target %h --document-name AWS-StartSSHSession
+    --parameters portNumber=%p --region us-east-1"'
