@@ -50,12 +50,13 @@ wsus_defaults:
     # FQDN wsusutil configuressl writes into the client-facing URLs; must match the
     # certificate subject. Empty => the machine's computer name.
     dns_name: ''
-    # TRUST-BUT-VERIFY pin: expected SHA-1 thumbprint of the delivered certificate. When
-    # set, the import must match it — proving the S3 object was not modified or swapped
-    # since the pin was recorded. Empty skips the check (delivery still runs).
+    # TRUST-BUT-VERIFY pin: expected SHA-1 thumbprint of the delivered certificate. Required
+    # whenever TLS is enabled; the PFX must match before it is allowed into the machine store.
     thumbprint: ''
     # HTTPS port WSUS serves on.
     port: 8531
+    # Reject a delivered certificate that is too close to expiry for unattended operation.
+    minimum_validity_days: 45
     # Object key of the PFX inside wsus.bucket; its password sits beside it at
     # pfx_key + '.password'.
     pfx_key: 'applications/windows-wsus/tls/wsus.nwarila.internal.pfx'
@@ -64,11 +65,14 @@ wsus_defaults:
   sync:
     update_languages:
       - 'en'
-    # Max SECONDS to confirm the category bootstrap sync was ACCEPTED (status left NotProcessing, or a new
-    # sync-history entry appeared) after StartSynchronizationForCategoryOnly(). Prove-started (Director
-    # 2026-07-17): C11b does NOT wait for the ~1-2hr full category sync to complete; it confirms acceptance
-    # and marks, and the sync (with the early-loaded product/classification catalog) continues async.
+    # Max seconds to confirm that WSUS accepted the category-bootstrap request. Acceptance is
+    # only the first gate; the role then waits for terminal Succeeded before writing a marker.
     bootstrap_accept_timeout_sec: 120
+    # A bootstrap marker means terminal success, never merely that WSUS accepted the request.
+    # The AWS smoke play disables this while its upstream is deliberately unreachable.
+    bootstrap_enabled: true
+    bootstrap_completion_timeout_sec: 5400
+    bootstrap_poll_sec: 15
     # C11d downstream source policy. The upstream WSUS server itself is REQUIRED input
     # (config.upstream_server in the 'wsus:' override dict) with NO default.
     # upstream_port: 8530 HTTP / 8531 HTTPS; upstream_use_ssl: sync over SSL.

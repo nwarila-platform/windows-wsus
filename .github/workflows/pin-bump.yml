@@ -1,83 +1,172 @@
 # =========================================================================================== #
-# Pin Bump — track the framework mains, validated by the lifecycle itself
+# Framework Pin Discovery
 # ------------------------------------------------------------------------------------------- #
-# Weekly: when ansible-framework or aws-terraform-framework main moves past its pin, this
-# workflow branches, bumps the pin file(s), opens a PR, dispatches the full
-# deploy-test-destroy lifecycle against that branch (a dispatch run reports a status check on
-# the same commit, satisfying the ruleset's required check), and enables auto-merge — so a
-# framework change lands here only after the complete E2E proves it, with nobody watching.
-# A PR created by GITHUB_TOKEN fires no workflows itself; the explicit dispatch is the run.
+# This default-branch schedule discovers upstream movement and maintains one reviewable PR. It
+# deliberately does not dispatch an AWS workflow, enable auto-merge, or treat raw upstream main as
+# trusted. Promotion remains behind the repository's required quality and review controls.
 # =========================================================================================== #
-name: Pin Bump
+name: Framework Pin Discovery
 
-on:
+'on':
   schedule:
-    - cron: '0 7 * * 2'
-  workflow_dispatch:
+    - cron: '43 7 * * 2'
+
 permissions: {}
 
+concurrency:
+  group: framework-pin-discovery-${{ github.repository }}
+  cancel-in-progress: false
+
 jobs:
-  pin-bump:
-    name: Bump framework pins when their mains move
-    runs-on: ubuntu-latest
+  discover:
+    name: Maintain framework update PR
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: write
       pull-requests: write
-      actions: write
-      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      UPDATE_BRANCH: automation/framework-pins
 
     steps:
-      - name: Checkout
+      - name: Checkout protected main without persisted credentials
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
 
-      - name: Bump, prove, auto-merge
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Discover updates and maintain one PR
         run: |
           set -euo pipefail
 
-          ansible_main="$(git ls-remote https://github.com/nwarila-platform/ansible-framework refs/heads/main | cut -f1)"
-          terraform_main="$(git ls-remote https://github.com/nwarila-platform/aws-terraform-framework refs/heads/main | cut -f1)"
-          ansible_pin="$(cat .github/ansible-framework-pin)"
-          terraform_pin="$(cat .github/terraform-framework-pin)"
+          [ "${GITHUB_REF}" = refs/heads/main ] \
+            || { echo "::error::Pin discovery runs only from protected main."; exit 1; }
 
-          if [ "${ansible_main}" = "${ansible_pin}" ] && [ "${terraform_main}" = "${terraform_pin}" ]; then
-            echo "Both pins already track their framework mains. Nothing to do."
+          ansible_candidate="$(git ls-remote https://github.com/nwarila-platform/ansible-framework refs/heads/main | cut -f1)"
+          terraform_candidate="$(git ls-remote https://github.com/nwarila-platform/aws-terraform-framework refs/heads/main | cut -f1)"
+          [[ "${ansible_candidate}" =~ ^[0-9a-f]{40}$ ]] \
+            || { echo "::error::Could not resolve a full ansible-framework commit."; exit 1; }
+          [[ "${terraform_candidate}" =~ ^[0-9a-f]{40}$ ]] \
+            || { echo "::error::Could not resolve a full aws-terraform-framework commit."; exit 1; }
+
+          ansible_pin="$(< .github/ansible-framework-pin)"
+          terraform_pin="$(< .github/terraform-framework-pin)"
+          existing_pr="$(gh pr list --repo "${GITHUB_REPOSITORY}" --base main \
+            --head "${UPDATE_BRANCH}" --state open --limit 1 --json number --jq '.[0].number // empty')"
+
+          if [ "${ansible_candidate}" = "${ansible_pin}" ] && \
+            [ "${terraform_candidate}" = "${terraform_pin}" ]; then
+            echo "Framework pins already match the discovered upstream commits."
+            if [ -n "${existing_pr}" ]; then
+              gh pr close "${existing_pr}" --repo "${GITHUB_REPOSITORY}" \
+                --comment "Closing: protected main already contains the discovered framework commits."
+            fi
             exit 0
           fi
 
-          branch="pin-bump/${GITHUB_RUN_ID}"
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout -b "${branch}"
-          printf '%s\n' "${ansible_main}"   > .github/ansible-framework-pin
-          printf '%s\n' "${terraform_main}" > .github/terraform-framework-pin
-          git add .github/ansible-framework-pin .github/terraform-framework-pin
-          git commit -m "chore: bump framework pins to their mains
+          if [ -n "${existing_pr}" ]; then
+            branch_ansible_pin="$(gh api \
+              "repos/${GITHUB_REPOSITORY}/contents/.github/ansible-framework-pin?ref=${UPDATE_BRANCH}" \
+              --jq '.content' | base64 --decode | tr -d '\r\n')"
+            branch_terraform_pin="$(gh api \
+              "repos/${GITHUB_REPOSITORY}/contents/.github/terraform-framework-pin?ref=${UPDATE_BRANCH}" \
+              --jq '.content' | base64 --decode | tr -d '\r\n')"
+            if [ "${ansible_candidate}" = "${branch_ansible_pin}" ] && \
+              [ "${terraform_candidate}" = "${branch_terraform_pin}" ]; then
+              echo "Open PR #${existing_pr} already contains the current candidates; no update."
+              exit 0
+            fi
+          fi
 
-          ansible-framework   ${ansible_pin} -> ${ansible_main}
-          aws-terraform-framework ${terraform_pin} -> ${terraform_main}
+          base_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')"
+          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${UPDATE_BRANCH}" > /dev/null 2>&1; then
+            gh api --method PATCH "repos/${GITHUB_REPOSITORY}/git/refs/heads/${UPDATE_BRANCH}" \
+              -f sha="${base_sha}" -F force=true > /dev/null
+          else
+            gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+              -f ref="refs/heads/${UPDATE_BRANCH}" -f sha="${base_sha}" > /dev/null
+          fi
 
-          Opened by pin-bump run ${GITHUB_RUN_ID}; merges only after the full
-          deploy-test-destroy lifecycle passes against this branch."
-          git push origin "${branch}"
+          update_pin() {
+            local path="$1" value="$2" message="$3" blob_sha encoded
+            blob_sha="$(gh api "repos/${GITHUB_REPOSITORY}/contents/${path}?ref=${UPDATE_BRANCH}" --jq '.sha')"
+            encoded="$(printf '%s\n' "${value}" | base64 -w 0)"
+            gh api --method PUT "repos/${GITHUB_REPOSITORY}/contents/${path}" \
+              -f branch="${UPDATE_BRANCH}" -f message="${message}" \
+              -f content="${encoded}" -f sha="${blob_sha}" > /dev/null
+          }
 
-          pr_url="$(gh pr create --repo "${GITHUB_REPOSITORY}" --base main --head "${branch}" \
-            --title "chore: bump framework pins to their mains" \
-            --body "Automated pin bump. The full lifecycle run dispatched against this branch is the review: it must go green before auto-merge fires.")"
-          echo "PR: ${pr_url}"
+          if [ "${ansible_candidate}" != "${ansible_pin}" ]; then
+            update_pin .github/ansible-framework-pin "${ansible_candidate}" \
+              "chore: discover ansible-framework ${ansible_candidate}"
+          fi
+          if [ "${terraform_candidate}" != "${terraform_pin}" ]; then
+            update_pin .github/terraform-framework-pin "${terraform_candidate}" \
+              "chore: discover aws-terraform-framework ${terraform_candidate}"
+          fi
 
-          gh workflow run aws-deploy.yml --repo "${GITHUB_REPOSITORY}" --ref "${branch}"
-          gh pr merge --repo "${GITHUB_REPOSITORY}" --auto --squash --delete-branch "${pr_url}"
-          echo "Auto-merge armed; the lifecycle run decides."
+          body="$(cat <<EOF
+          Automated discovery only; no privileged workflow was dispatched and auto-merge is not enabled.
 
-      - name: Open an issue on failure
-        if: failure()
-        env:
-          GH_TOKEN: ${{ github.token }}
+          - ansible-framework: \`${ansible_pin}\` -> \`${ansible_candidate}\`
+          - aws-terraform-framework: \`${terraform_pin}\` -> \`${terraform_candidate}\`
+
+          Review upstream provenance and required statuses before promotion. The credential-free
+          required quality workflow must pass; the protected-main AWS lifecycle proves after merge.
+          EOF
+          )"
+
+          if [ -n "${existing_pr}" ]; then
+            gh pr edit "${existing_pr}" --repo "${GITHUB_REPOSITORY}" \
+              --title "chore: review discovered framework pin updates" --body "${body}"
+            gh pr comment "${existing_pr}" --repo "${GITHUB_REPOSITORY}" \
+              --body "Discovery refreshed by ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}."
+          else
+            gh pr create --repo "${GITHUB_REPOSITORY}" --base main --head "${UPDATE_BRANCH}" \
+              --title "chore: review discovered framework pin updates" --body "${body}"
+          fi
+
+  report:
+    name: Framework discovery incident
+    needs: discover
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      INCIDENT_TITLE: '[automation] Framework pin discovery failed'
+      DISCOVERY_RESULT: ${{ needs.discover.result }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Update or resolve the discovery incident
         run: |
           set -euo pipefail
-          gh issue create --repo "${GITHUB_REPOSITORY}" \
-            --title "Pin bump failed: run ${GITHUB_RUN_ID}" \
-            --body "The automated framework pin bump failed: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+
+          issue_number="$(gh issue list --repo "${GITHUB_REPOSITORY}" --state all --limit 100 \
+            --search '"[automation] Framework pin discovery failed" in:title' \
+            --json number,title \
+            --jq '[.[] | select(.title == "[automation] Framework pin discovery failed")] | sort_by(.number) | .[0].number // empty')"
+
+          if [ "${DISCOVERY_RESULT}" = success ]; then
+            if [ -n "${issue_number}" ] && \
+              [ "$(gh issue view "${issue_number}" --repo "${GITHUB_REPOSITORY}" --json state --jq .state)" = OPEN ]; then
+              gh issue close "${issue_number}" --repo "${GITHUB_REPOSITORY}" \
+                --reason completed --comment "Recovered in ${RUN_URL}."
+            else
+              echo "Discovery is healthy; no open incident to resolve."
+            fi
+            exit 0
+          fi
+
+          message="Framework pin discovery result: ${DISCOVERY_RESULT}. Inspect ${RUN_URL}. No candidate was auto-merged."
+          if [ -z "${issue_number}" ]; then
+            gh issue create --repo "${GITHUB_REPOSITORY}" \
+              --title "${INCIDENT_TITLE}" --body "${message}"
+          else
+            if [ "$(gh issue view "${issue_number}" --repo "${GITHUB_REPOSITORY}" --json state --jq .state)" = CLOSED ]; then
+              gh issue reopen "${issue_number}" --repo "${GITHUB_REPOSITORY}"
+            fi
+            gh issue comment "${issue_number}" --repo "${GITHUB_REPOSITORY}" --body "${message}"
+          fi

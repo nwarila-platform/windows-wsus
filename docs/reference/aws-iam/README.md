@@ -25,21 +25,19 @@ materialized copy **cannot** catch that, because the materialized copy is what i
 | `<account-id>` | the 12-digit AWS account id | `aws sts get-caller-identity` | **fail-closed** — non-matching ARNs, or `MalformedPolicyDocument` at apply |
 | `<repository-id>` | this repo's **immutable** GitHub repository id | `gh api repos/nwarila-platform/windows-wsus --jq .id` | **fail-closed** if wholly absent — **FAIL-OPEN if a sibling's id is left in even one statement** (see below) |
 | `<region>` | the deploy region | the deploy plan (`us-east-1`) | fail-closed |
-| `<vpc-id>` | the deploy VPC | Layer-0 bootstrap output | fail-closed if absent. **Verified 2026-07-29: this account has ONE VPC**, so every sibling materializes the same value — it is shared infrastructure, not a per-repo literal |
-| `<subnet-id>` | the deploy subnet | Layer-0 bootstrap output | as above — **one subnet account-wide**, shared by all siblings |
+| `<vpc-id>` | VPC containing the declared deploy subnet | live `DescribeSubnets` result for the tfvars subnet | fail-closed if the subnet does not resolve |
+| `<subnet-id>` | exact deploy subnet | `terraform/aws.tfvars` | fail-closed at launch; parsed from the same file Terraform consumes |
 | `<ebs-kms-key-id>` | the key `alias/aws/ebs` resolves to **in this account** | `aws kms describe-key --key-id alias/aws/ebs` | fail-closed. Account-wide and AWS-managed, so **siblings legitimately share the same key id** |
 | `<owner-id>` | the GitHub organization's numeric id | `gh api orgs/nwarila-platform --jq .id` | fail-closed — the ID-embedded OIDC `sub` form never matches |
-| `<key-pair-name>` | this repo's EC2 key pair | Layer-0 bootstrap output | fail-closed at launch |
-| `<artifact-bucket>` | the S3 bucket holding the deploy artifacts | the deploy plan / Layer-0 bootstrap output | fail-closed — `s3:GetObject` on a `<...>` bucket name is denied. **But see below: the object-key prefix, not the bucket, is what separates the siblings** |
+| `<key-pair-name>` | the workflow-managed key name (`windows-wsus-ci`) | `terraform/aws.tfvars` | fail-closed at import/launch/delete |
+| `<artifact-bucket>` | the S3 bucket holding deploy artifacts | the shared `<account-id>-ansible` playbook/bootstrap convention | fail-closed if the naming contract diverges; the object-key prefix remains the repository boundary |
 
-Because the VPC, subnet and EBS key are account-wide, **the identity tag is the only thing separating
-the sibling repositories from each other.** The `ec2:Subnet` pin bounds every repo to the same deploy
-subnet; it does not hold them apart. That raises the stakes on the next paragraph rather than easing
-them.
+The VPC and subnet constrain network placement, but **the immutable repository identity tag is the
+authorization boundary between repositories.** A network-placement pin is not an ownership pin.
 
-**`<artifact-bucket>` behaves the same way, and its failure mode is quieter.** If the artifact bucket
-is shared across siblings — the likely arrangement, since it is Layer-0 infrastructure — then
-substituting it correctly grants nothing by itself. The read grant is scoped by the **object-key
+**`<artifact-bucket>` behaves the same way, and its failure mode is quieter.** The artifact bucket
+is shared across applications, so substituting it correctly grants nothing by itself. The read
+grant is scoped by the **object-key
 prefix**, `applications/windows-wsus/tls/*`, not by the bucket name. Widen that prefix, or paste a
 sibling's prefix into it, and this repository gains read access to another repository's private key
 material with every placeholder correctly substituted and the gate green. The gate proves no literal
@@ -74,7 +72,7 @@ out of git.
 
 | Role | Trust source | Policies | Purpose |
 |---|---|---|---|
-| `github_nwarila-platform_windows-wsus` | `roles/github_nwarila-platform_windows-wsus.trust.json` | `github_nwarila-platform_windows-wsus` · `windows-wsus_deploy-ec2-launch` · `windows-wsus_deploy-ec2-lifecycle` · `windows-wsus_deploy-sg-ssm-kms` · `windows-wsus_deploy-discovery-iam` · `windows-wsus_artifact-assume` | CI state, deploy, prove, destroy; assumes the artifact-reader to deliver the TLS PFX at configure time |
+| `github_nwarila-platform_windows-wsus` | `roles/github_nwarila-platform_windows-wsus.trust.json` | `github_nwarila-platform_windows-wsus` · `windows-wsus_deploy-ec2-launch` · `windows-wsus_deploy-ec2-lifecycle` · `windows-wsus_deploy-sg-ssm-kms` · `windows-wsus_deploy-discovery-iam` · `windows-wsus_artifact-assume` | Protected-main lifecycle and conservative fallback cleanup; assumes the artifact-reader to deliver the TLS PFX at configure time |
 | `github_nwarila-platform_windows-wsus-admin` | `roles/github_nwarila-platform_windows-wsus-admin.trust.json` | `github_nwarila-platform_windows-wsus` · the same four deploy policies · `windows-wsus_artifact-folder` (write is admin-only) · `windows-wsus_artifact-assume` | Operator break-glass and local deploy |
 | `windows-wsus-artifact-reader` | `roles/windows-wsus-artifact-reader.trust.json` | `windows-wsus_artifact-read` | Controller-assumed, read-only artifact delivery |
 | `windows-wsus-poc-role` | `roles/windows-wsus-poc-role.trust.json` | `AmazonSSMManagedInstanceCore` (AWS-managed) **only** | EC2 instance profile `windows-wsus-poc-profile` |
@@ -82,19 +80,23 @@ out of git.
 The `-admin` role carries the state policy as well as the four deploy policies: a local
 `deploy -> test -> destroy` cannot read or write Terraform state without it, and the row above
 claims that capability. Detach the deploy policies when the local path is retired.
-`MaxSessionDuration` is 3600 seconds on all four roles — the AWS default, materialized as a
-role property rather than inside any document here.
+The protected lifecycle role has `MaxSessionDuration=7200`, covering either 100-minute Ansible
+converge and its late controller-side artifact fetch. The admin, artifact-reader, and instance
+roles remain exactly 3600 seconds. `bootstrap-iam.sh --check-drift` also verifies each role's exact
+managed-policy set, absence of inline policies, trust document, duration, and instance-profile
+membership. `--apply` removes unexpected attachments/inline policies and reconciles those
+properties; review its plan and source diff before using that mode.
 
 The instance role carries **exactly one** AWS-managed policy and no inline policy. It holds no S3
-access of any kind — see [what this clone deliberately drops](#what-this-clone-deliberately-drops).
+access of any kind; TLS artifacts are fetched by the controller through the reader role.
 
 ## Hardening applied during the clone
 
 These close audit findings that are **still open in the source repository**. They are not optional
 polish; each one is a finding both auditors raised.
 
-- **Every literal is a placeholder** (R3-1/2/3/7, R4-1). The source repo placeholders only the
-  account id; this clone placeholders all seven, so partial substitution becomes fail-closed.
+- **Every environment literal is a placeholder** (R3-1/2/3/7, R4-1). All nine required values are
+  substituted in one pass, so an incomplete materialization fails closed.
 - **`ec2:Encrypted: true` is required** on `RunInstancesVolumeCapped` and `CreateDataVolumeCapped`
   (R3-6). The source permits EBS encryption but never requires it, so omitting the KMS alias
   silently creates unencrypted volumes. WSUS carries the WID database and update content; encryption
@@ -105,19 +107,28 @@ polish; each one is a finding both auditors raised.
 - **The SSO trust is bounded to the permission-set hash**, `AWSReservedSSO_github_nwarila-platform_`
   + sixteen `?` (R3-8). The source uses a trailing `*`, which also matches any future permission set
   named `github_nwarila-platform_<something>` — including a low-privilege one.
-- **`job_workflow_ref` lists exactly this repository's two deploy-boundary workflows** —
+- **`job_workflow_ref` lists exactly this repository's two deploy-boundary workflows at
+  `refs/heads/main`** —
   `aws-deploy.yml` (the lifecycle) and `aws-reaper.yml` (the scheduled teardown safety net) —
   and nothing else (R3-2). The rule for cloners is unchanged in spirit: never *append* to an
   inherited list (an appended trust leaves the sibling repository trusted) — replace it
   wholesale with your own repository's workflow paths, and keep every entry pointing at THIS
-  repository. check-iam-literals.sh verifies each listed workflow file exists.
+  repository. Feature-branch workflow code cannot match either workflow ref, and each exact `sub`
+  suffix is also `ref:refs/heads/main`. check-iam-literals.sh verifies each listed workflow file
+  exists.
   **`sub` deliberately lists BOTH subject forms.** GitHub emits the ID-embedded subject
   `repo:<owner>@<owner-id>/<repo>@<repository-id>:<context>` for repositories created after roughly
   2026-07-15 — proven from the CloudTrail `userName` on a real denied `AssumeRoleWithWebIdentity`,
   not inferred. An earlier audit finding called that subject dead and a single-valued `sub`
   de-credentialed CI in all three repositories until it was corrected. `repository_id` with
-  `StringEquals` is the actual identity boundary, so carrying both forms costs nothing and survives
-  a repository transfer.
+  `StringEquals` is the immutable identity boundary, so carrying both forms costs nothing and
+  survives a repository transfer; the separate exact `ref` condition prevents a subject-template
+  change from weakening the protected-main boundary.
+- **The EC2 login key is ephemeral.** The lifecycle generates an RSA key on the hosted runner,
+  passes only its public half through the framework's `managed_keypairs`, and destroys the tagged
+  `windows-wsus-ci` key pair with the stack. `ImportKeyPair`, its create-time tag leg, launch use,
+  and `DeleteKeyPair` are all scoped to the materialized key name and repository identity. No
+  long-lived SSH private key is required in GitHub Actions.
 - **IMDS hop limit pinned to 1** at launch and on modify (R3-14), so IMDS cannot be extended past
   the host network stack.
 - **Denies carry no substitutable narrowing** (R3 F11). The state Denies dropped
@@ -162,23 +173,6 @@ runner's SSH rides the SSM agent's own outbound 443 session — and egress is HT
 is what lets the agent register through the internet gateway. Nothing on the internet can dial
 the instance; the EIP just gives its outbound packets a route home.
 
-## What this clone deliberately drops
-
-> **Superseded 2026-08-07:** the artifact path described below was re-added and is now LIVE —
-> the TLS certificate is delivered through `windows-wsus-artifact-reader` at configure time
-> (see the role-to-policy map). This section stays as the audit trail of the original
-> decision; the instance profile remains S3-free either way.
-
-Both auditors, independently, recommended that the Windows consumers drop the artifact-delivery path
-entirely. WSUS installs from a Windows Server role and Microsoft Update; it has no S3-delivered
-artifact. Dropping it removes **the artifact-reader role, its trust, the artifact-read policy, the
-presigned-URL signer and its fetch tasks** — and with them every finding R4-3 through R4-9.
-
-The consequence worth stating: the instance profile is `AmazonSSMManagedInstanceCore` and nothing
-else, so **no credential on the target can reach S3 at all.** If a future piece genuinely needs a
-controller-delivered artifact, copy the source repo's presigned pattern *then* — with its own audit
-findings applied first — rather than carrying the surface now for a need that does not exist.
-
 ## Values re-derived for this repository (never copied)
 
 | Value | This repo | Why not the source's |
@@ -194,6 +188,11 @@ governs who may manage the groups. Treat the rule set as code-reviewed, not poli
 
 ## Known residuals (accepted, recorded rather than hidden)
 
+- **The GitHub lifecycle and fallback currently share one AWS role.** Exact protected-main OIDC
+  trust removes arbitrary-ref access, and deletion remains tag-scoped, but a dedicated janitor role
+  with no launch, state-write, SSM-session, or artifact-assume capability is the next Layer-0 IAM
+  change. The fallback's GitHub run/age checks are deliberately not described as an atomic lock;
+  replace them with an AWS-native lease and EventBridge janitor before relying on hard cleanup SLAs.
 - **Public IP association is not denied — and since 2026-08-07 the role holds tag-gated EIP
   actions** (see [Elastic IP grants](#elastic-ip-grants-added-2026-08-07)): the hosted-runner
   lifecycle needs a public address on a pre-created-ENI launch in an account with no NAT and no

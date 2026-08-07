@@ -10,7 +10,8 @@
 
 - One single-purpose role per application repo; the repo composes into a
   version-pinned `ansible-framework` checkout at execution time (`.github/ansible-framework-pin`,
-  the CI compose step in `.github/workflows/aws-deploy.yml`). Roles must be drop-in compatible with the framework's
+  the compose steps in `.github/workflows/quality.yml` and
+  `.github/workflows/aws-deploy.yml`). Roles must be drop-in compatible with the framework's
   `applications/` namespace (`roles_path` resolution by bare name).
 - The framework is the chassis: `ansible.cfg`, lint configs, loader contract, CI
   conventions all originate upstream. Application repos copy `.yamllint.yml` /
@@ -25,13 +26,13 @@
   running config materializes as `<role>_running`; playbook overrides use the bare
   `<role>:` dict. (Loader v3 contract.)
 
-## 3. Loader contract — SEEDED (framework v3.2.1; local WSUS v3.1.0)
+## 3. Loader contract — SEEDED (framework and local WSUS v3.3.0)
 
 - Every role must ship the framework's generic loader as `tasks/main.yml`,
   **byte-identical, never edited per-role**. Loader changes are governance-surface →
   upstream framework PR only.
-- The local WSUS loader currently diverges from the pinned shared loader; this
-  implementation debt is recorded in `docs/TECH-DEBT.md`.
+- The local WSUS loader is byte-identical to the loader at the current framework pin. A
+  divergence is a release-blocking composition failure, not accepted application debt.
 - **RATIFIED (Director, 2026-07-15):** `tasks/main.yml` is intentionally a generic,
   hash-matched global loader. Any recommended change and/or optimization
   recommendation targeting it MUST be validated by **two independent reviewers,
@@ -83,11 +84,10 @@
   prerequisite outside the composed Ansible play. For nwarila-platform Windows app
   repos the composed play is the end-to-end configurator of the machine it is handed.
 - Disk identification is **declarative by a stable per-disk identifier — never
-  disk-number- nor size-coupled** (amended C01r, 2026-07-15): select the target disk
-  by its declared `unique_id` (Windows Get-Disk `UniqueId` / `win_disk_facts.unique_id`,
-  e.g. `eui.<hex>`), supplied as a REQUIRED input — never by size and never by
-  enumeration number, so the role is robust to enumeration order AND size changes.
-  (`unique_id` is populated on RAW/blank disks and stable through GPT initialization.)
+  disk-number- nor size-coupled** (amended C01r, 2026-07-15). On AWS, the application
+  declares a unique EBS `Function` tag; the shared disk manager resolves it to the attached
+  volume id and the guest's Nitro serial. Other platforms may supply a native `unique_id`.
+  Enumeration order and capacity are never identity.
 
 ## 4b. Guards earn their keep — RATIFIED (C01/C01r seeded; policy ratified V, 2026-07-15)
 
@@ -120,8 +120,8 @@ clobber, verified at the module source). These stay `quiet: true` with an action
   distinguishable (e.g. distinct identifiers).
 - The declared CONFIG contract (post-merge `config.*`) is validated in ONE place where `config` is
   in scope — the role's `tasks/validate.yml`, run by the loader's
-  `INIT | Validating Merged Configuration` hook (local WSUS v3.1.0 and shared framework
-  v3.2.1) — **never** `meta/argument_specs.yml` (structurally blind to the merged
+  `INIT | Validating Merged Configuration` hook (local WSUS and shared framework v3.3.0)
+  — **never** `meta/argument_specs.yml` (structurally blind to the merged
   `config`; see §8).
 - Guard pieces carry a negative proof (deliberately-wrong input fails on the intended assert;
   sibling specs still pass). (Exercised: C01 / C01r / C02a / C02b / V.)
@@ -140,7 +140,7 @@ clobber, verified at the module source). These stay `quiet: true` with an action
   `windows_disk_manager`.** The pinned shared role brings every declared disk online
   and writable before classifying observed state and asserting that none is foreign.
   It resets and accumulates `__resolved_disks__` with `set_fact`. Its attachment guard
-  resolves each declared `unique_id` to exactly one match; the later classifier repeats
+  resolves each declared platform identity to exactly one match; the later classifier repeats
   that selection and uses `| first` to build its matched-disk input. This exception is
   scoped only to that shared role. Its foreign-layout assert still precedes every
   provisioning module (initialize, partition, and format). The application-role code
@@ -158,23 +158,21 @@ clobber, verified at the module source). These stay `quiet: true` with an action
 - Windows modules from `ansible.windows` (fallback `community.windows`); never invoke
   raw PowerShell where a module exists — escape-hatch threshold decided at C05, see the
   PROPOSED (C05) rule below.
-- Loader Windows gaps are TD-001 workarounds in the playbook, not role hacks — see
-  `docs/TECH-DEBT.md`.
+- The v3.3.0 loader guards POSIX-only package and temporary-directory paths on Windows. Do not
+  restore the retired playbook fact seed or `temp_dir: false` workaround.
 - **RATIFIED (C02a, 2026-07-15 — supersedes the C01r §5-ext) — required per-target
   inputs live in the `<role>:` override dict, consumed via `config`.** Environment-
   specific inputs the role cannot default (for example, `upstream_server` for `wsus`
-  or `disks[].unique_id` for `windows_disk_manager`) are declared inside the
+  or `disks[].function` for the AWS disk manager) are declared inside the
   corresponding `<role>:` override dict (playbook / group_vars / host_vars) and read
   from that role's `config`, matching the framework/wazuh idiom and the loader's
   `defaults -> overlays -> <role> override -> config` merge.
   Only `ENV`/`state` stay top-level (loader-level). NOTE: a `-e '{"<role>":{...}}'`
-  override REPLACES the whole dict, so co-locate loader-read keys (`temp_dir`) with any
-  `-e`/override-provided keys, and any override must re-state them. The README documents
-  these as merged config, not top-level vars.
+  override REPLACES the whole dict; it does not recursively merge with a playbook mapping.
+  The README documents these values as merged config, not top-level vars.
 - **PROPOSED (C01):** never `set_fact` the name `ansible_facts` — the resulting
   set_fact variable shadows the live facts store and silently hides every later
-  facts module's results (proven C01/P4: `win_disk_facts` results invisible until
-  the TD-001 seed was rewritten to `packages: {} / cacheable: true`).
+  facts module's results.
 - **PROPOSED (C05, P2-refined) — the escape-hatch policy.** Native module FIRST, always
   (C05 verified the gap empirically: 0 of 118 modules across `ansible.windows` +
   `community.windows` cover WSUS server ops). Where no module exists:
@@ -246,16 +244,15 @@ clobber, verified at the module source). These stay `quiet: true` with an action
 - pipx-installed `ansible-core` pinned to the framework's supported range
   (currently 2.21.x), plus `ansible-lint`, `yamllint`. Collections pinned:
   `ansible.windows`, `community.windows`.
-- Windows targets are never long-lived dev state: revert the lab VM to the clean
-  a fresh ephemeral instance per run (terraform apply; the lab-era snapshot revert is retired).
+- Windows targets are never long-lived development state: every proof creates a fresh ephemeral
+  instance with Terraform; the lab-era snapshot-revert workflow is retired.
 - **Lint from the composed tree** (proof S4b, 2026-07-15): the playbook's role
   resolves only inside the composed framework checkout, so `ansible-lint` runs from
-  `.compose/ansible-framework/` (which also supplies the chassis `.ansible-lint`
+  the quality job's pinned framework copy (which also supplies the chassis `.ansible-lint`
   profile). Repo-side `ansible-lint <playbook>` fails `syntax-check` by design — do
   not "fix" that by vendoring a roles_path shim without a ratified rule.
-- SSH multiplexing is isolated per-repo (`.compose/.cp`, pre-cleaned every run) —
-  stale ControlMaster sockets from killed runs or VM reverts hang plays silently
-  (proof S3, 2026-07-15).
+- SSH connection state is isolated in each disposable runner. Stale local ControlMaster sockets
+  must be removed before any manually operated proof.
 
 ## 7. Commits & process — SEEDED
 
@@ -276,7 +273,7 @@ clobber, verified at the module source). These stay `quiet: true` with an action
   enforcement.** The auto-inserted arg-spec validator runs BEFORE the v3 loader builds the merged
   `config` (verified empirically), so it is structurally blind to `config.*` and only duplicates the
   loader's ENV/state assert. Merged-config validation lives in each role's
-  `tasks/validate.yml`, run by the local WSUS v3.1.0 or shared framework v3.2.1
+  `tasks/validate.yml`, run by the byte-identical local/shared v3.3.0 loader's
   `INIT | Validating Merged Configuration` hook (§4b). argument_specs is permissible
   only as description-only documentation of the `<role>:` dict shape. _(superseded note)_
   wazuh roles use them; python3_pip's meta shape TBD against it.

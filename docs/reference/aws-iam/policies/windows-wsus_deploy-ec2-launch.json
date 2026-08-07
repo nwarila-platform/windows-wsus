@@ -93,7 +93,19 @@
       "Sid": "RunInstancesWithPinnedKeyPair",
       "Effect": "Allow",
       "Action": "ec2:RunInstances",
-      "Resource": "arn:aws:ec2:<region>:*:key-pair/<key-pair-name>"
+      "Resource": "arn:aws:ec2:<region>:<account-id>:key-pair/<key-pair-name>"
+    },
+    {
+      "Sid": "ImportEphemeralCiKeyPair",
+      "Effect": "Allow",
+      "Action": "ec2:ImportKeyPair",
+      "Resource": "arn:aws:ec2:<region>:<account-id>:key-pair/<key-pair-name>",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "<region>",
+          "aws:RequestTag/nwarila:management:repository-id": "<repository-id>"
+        }
+      }
     },
     {
       "Sid": "CreateDataVolumeCapped",

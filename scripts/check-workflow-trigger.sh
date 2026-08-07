@@ -1,112 +1,190 @@
 #!/usr/bin/env bash
-# =========================================================================================== #
-# check-workflow-trigger.sh — assert this repo's aws-deploy.yml trigger matches the org contract
-# ------------------------------------------------------------------------------------------- #
-# WHY THIS EXISTS
-#
-# Three sibling repositories must share ONE trigger behaviour for their AWS deploy workflow. They
-# drifted within an hour of the second one being written, and the drift was invisible on reading:
-# one repo DECLARED `types:` while another OMITTED the key entirely. Omitting it looks like less
-# configuration but means "inherit GitHub's default", which includes `synchronize` — so the two
-# files behaved differently while appearing merely differently verbose.
-#
-# That is the same failure as two IAM defects found the same day: the semantics of an ABSENT key.
-# A condition with `...IfExists` passes when the key is absent; a condition on a key invalid for a
-# resource type fails when absent; an absent `types:` silently changes which events fire. Reading
-# does not catch this class. Only an assertion does.
-#
-# The IAM sources have such an assertion and consequently never drifted. This is the equivalent
-# for the workflow trigger.
-#
-#   ./scripts/check-workflow-trigger.sh
-#
-# Exit 0 = the trigger matches the contract.
-# =========================================================================================== #
-set -uo pipefail
+# Assert the split workflow contract: unprivileged PR quality, protected-main AWS proof.
+set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-WF="${ROOT}/.github/workflows/aws-deploy.yml"
-
-# The contract, stated once. Changing intended behaviour means changing THIS, deliberately, in every
-# repository — which is the point.
-readonly -a REQUIRED_TYPES=(opened reopened ready_for_review synchronize)
-readonly -a FORBIDDEN_TYPES=(labeled unlabeled)
+QUALITY="${ROOT}/.github/workflows/quality.yml"
+DEPLOY="${ROOT}/.github/workflows/aws-deploy.yml"
 
 fail() { printf 'check-workflow-trigger: FAIL — %s\n' "$1" >&2; exit 1; }
-[ -f "${WF}" ] || fail "no aws-deploy.yml at ${WF}"
+[ -f "${QUALITY}" ] || fail "missing ${QUALITY}"
+[ -f "${DEPLOY}" ] || fail "missing ${DEPLOY}"
 
-PY="$(command -v python3)"
-"${PY}" - "${WF}" "${REQUIRED_TYPES[*]}" "${FORBIDDEN_TYPES[*]}" <<'PYEOF'
+python3 - "${QUALITY}" "${DEPLOY}" <<'PYEOF'
+from __future__ import annotations
+
+import re
 import sys
 
-wf, req_types, forbidden_types = sys.argv[1:4]
 try:
     import yaml
-except ModuleNotFoundError:
-    # PyYAML is not guaranteed on a bare runner; fall back to a targeted parse of the on: block so
-    # the gate still runs rather than silently passing.
-    yaml = None
-
-status = 0
-
-
-def bad(msg):
-    global status
-    print(f"check-workflow-trigger: {msg}", file=sys.stderr)
-    status = 1
+except ModuleNotFoundError as exc:
+    print(
+        "check-workflow-trigger: FAIL — PyYAML is required; install requirements-quality.txt",
+        file=sys.stderr,
+    )
+    raise SystemExit(2) from exc
 
 
-text = open(wf).read()
-if yaml:
-    doc = yaml.safe_load(text)
-    # PyYAML parses the bare key `on` as the boolean True
-    on = doc.get(True, doc.get("on"))
-    pr = (on or {}).get("pull_request") or {}
-    types = pr.get("types") or []
-    paths = pr.get("paths") or []
-    has_dispatch = "workflow_dispatch" in (on or {})
-else:
-    import re
-    block = re.search(r"^on:\s*\n((?:[ \t].*\n|\n)*?)(?=^\S)", text, re.M)
-    block = block.group(1) if block else ""
-    m = re.search(r"types:\s*\[([^\]]*)\]", block)
-    types = [t.strip() for t in m.group(1).split(",")] if m else []
-    paths = ["x"] if re.search(r"^\s+paths:", block, re.M) else []
-    has_dispatch = "workflow_dispatch:" in block
-    on = {"schedule": None} if "schedule:" in block else {}
+quality_path, deploy_path = sys.argv[1:3]
+failures: list[str] = []
 
-# `types:` must be DECLARED, not inherited. An omitted key is the exact shape that caused the drift:
-# it inherits a default that happens to be close to correct, so nobody notices it is not the same
-# decision as the sibling repo's explicit list.
-if not types:
-    bad("pull_request declares no types:. Inheriting GitHub's default is how the three repos "
-        "drifted — declare the list explicitly even when it matches the default.")
 
-for t in req_types.split():
-    if t not in types:
-        bad(f"pull_request types must include '{t}' (missing). "
-            + ("Without synchronize, editing a task file or variable in an already-open PR does "
-               "not re-run the proof." if t == "synchronize" else ""))
-for t in forbidden_types.split():
-    if t in types:
-        bad(f"pull_request types must NOT include '{t}': that path is reachable by a "
-            "TRIAGE-permission user, who could spend real money without holding write access. "
-            "Manual re-runs go through workflow_dispatch.")
+def load(path: str) -> dict:
+    with open(path, encoding="utf-8") as handle:
+        document = yaml.safe_load(handle)
+    if not isinstance(document, dict):
+        failures.append(f"{path} is not a workflow mapping")
+        return {}
+    return document
 
-# EVERY pull request must run the full lifecycle: a paths filter would break the job's role
-# as a REQUIRED status check (an unmatched PR would wait forever on a check that never
-# reports), which is what unattended auto-merge stands on.
-if paths:
-    bad("pull_request must carry NO paths filter — every PR runs the proof so the job can be a required check.")
 
-if not has_dispatch:
-    bad("workflow_dispatch must be present: it is the manual-execution path.")
+def triggers(workflow: dict, path: str) -> dict:
+    # PyYAML intentionally implements YAML 1.1 and reads a bare `on` key as True.
+    value = workflow.get("on", workflow.get(True))
+    if not isinstance(value, dict):
+        failures.append(f"{path} has no mapping-valued on: block")
+        return {}
+    return value
 
-if "schedule" not in on:
-    bad("schedule must be present: the weekly unattended self-proof is the passive contract.")
 
-sys.exit(status)
+def mapping(value) -> dict:
+    return value if isinstance(value, dict) else {}
+
+
+def exact_types(path: str, event: str, config, expected: set[str]) -> None:
+    values = mapping(config).get("types", [])
+    if not isinstance(values, list) or set(values) != expected or len(values) != len(expected):
+        failures.append(f"{path} {event}.types must be exactly {sorted(expected)!r}; got {values!r}")
+
+
+def no_path_filters(path: str, event: str, config) -> None:
+    config = mapping(config)
+    for key in ("paths", "paths-ignore"):
+        if key in config:
+            failures.append(f"{path} {event} must not use {key}; the required check must always report")
+
+
+quality = load(quality_path)
+quality_on = triggers(quality, quality_path)
+if quality.get("name") != "CI":
+    failures.append(f"{quality_path} name must be 'CI' so the required context remains stable")
+
+required_quality_events = {"pull_request", "push", "merge_group", "workflow_dispatch"}
+if set(quality_on) != required_quality_events:
+    failures.append(
+        f"{quality_path} events must be exactly {sorted(required_quality_events)!r}; "
+        f"got {sorted(str(key) for key in quality_on)!r}"
+    )
+
+exact_types(
+    quality_path,
+    "pull_request",
+    quality_on.get("pull_request"),
+    {"opened", "reopened", "ready_for_review", "synchronize"},
+)
+no_path_filters(quality_path, "pull_request", quality_on.get("pull_request"))
+
+quality_push = mapping(quality_on.get("push"))
+if quality_push.get("branches") != ["main"]:
+    failures.append(f"{quality_path} push.branches must be exactly ['main']")
+no_path_filters(quality_path, "push", quality_push)
+
+exact_types(quality_path, "merge_group", quality_on.get("merge_group"), {"checks_requested"})
+no_path_filters(quality_path, "merge_group", quality_on.get("merge_group"))
+
+if quality.get("permissions") != {"contents": "read"}:
+    failures.append(f"{quality_path} top-level permissions must be exactly contents: read")
+
+quality_jobs = mapping(quality.get("jobs"))
+required_job = mapping(quality_jobs.get("required"))
+if required_job.get("name") != "required":
+    failures.append(f"{quality_path} must expose job id/name 'required' (stable context: CI / required)")
+for job_name, job in quality_jobs.items():
+    job = mapping(job)
+    if "permissions" in job and job.get("permissions") != {"contents": "read"}:
+        failures.append(f"{quality_path} job {job_name!r} broadens the read-only permission boundary")
+
+
+def audit_quality_boundary(value, location: str) -> None:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            child_location = f"{location}.{key}"
+            if str(key) == "id-token":
+                failures.append(f"{quality_path} must not request id-token permission ({child_location})")
+            if str(key) == "secrets":
+                failures.append(f"{quality_path} must not declare or pass secrets ({child_location})")
+            if str(key) == "uses" and isinstance(child, str):
+                action = child.split("@", 1)[0].lower()
+                if action == "aws-actions/configure-aws-credentials":
+                    failures.append(
+                        f"{quality_path} must not use the AWS credential action ({child_location})"
+                    )
+            audit_quality_boundary(child, child_location)
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            audit_quality_boundary(child, f"{location}[{index}]")
+    elif isinstance(value, str) and re.search(r"\bsecrets(?:\.|\[)", value, re.IGNORECASE):
+        failures.append(f"{quality_path} must not reference the secrets context ({location})")
+
+
+audit_quality_boundary(quality, "workflow")
+
+
+deploy = load(deploy_path)
+deploy_on = triggers(deploy, deploy_path)
+for forbidden in ("pull_request", "pull_request_target", "merge_group"):
+    if forbidden in deploy_on:
+        failures.append(f"{deploy_path} must not run privileged AWS code for {forbidden}")
+
+required_deploy_events = {"push", "schedule", "workflow_dispatch"}
+if set(deploy_on) != required_deploy_events:
+    failures.append(
+        f"{deploy_path} events must be exactly {sorted(required_deploy_events)!r}; "
+        f"got {sorted(str(key) for key in deploy_on)!r}"
+    )
+
+deploy_push = mapping(deploy_on.get("push"))
+if deploy_push.get("branches") != ["main"]:
+    failures.append(f"{deploy_path} push.branches must be exactly ['main']")
+no_path_filters(deploy_path, "push", deploy_push)
+
+schedules = deploy_on.get("schedule")
+if schedules != [{"cron": "17 9 * * 1"}]:
+    failures.append(f"{deploy_path} schedule must be the single off-minute cron '17 9 * * 1'")
+if "workflow_dispatch" not in deploy_on:
+    failures.append(f"{deploy_path} must retain workflow_dispatch for protected break-glass execution")
+if deploy.get("permissions") != {}:
+    failures.append(f"{deploy_path} top-level permissions must remain empty")
+
+deploy_jobs = mapping(deploy.get("jobs"))
+guard = mapping(deploy_jobs.get("main-ref"))
+if not guard:
+    failures.append(f"{deploy_path} must contain the unprivileged main-ref guard job")
+elif guard.get("permissions") not in (None, {}, {"contents": "read"}):
+    failures.append(f"{deploy_path} main-ref guard must not hold write permissions")
+
+privileged = mapping(deploy_jobs.get("aws-deploy"))
+needs = privileged.get("needs", [])
+needs = [needs] if isinstance(needs, str) else needs
+if "main-ref" not in (needs or []):
+    failures.append(f"{deploy_path} aws-deploy must depend on the main-ref guard")
+condition = str(privileged.get("if", ""))
+if "github.ref" not in condition or "refs/heads/main" not in condition:
+    failures.append(f"{deploy_path} aws-deploy must independently require refs/heads/main")
+
+for job_name, job in deploy_jobs.items():
+    job = mapping(job)
+    permissions = mapping(job.get("permissions"))
+    if permissions.get("id-token") == "write" and job_name != "aws-deploy":
+        failures.append(f"{deploy_path} only aws-deploy may receive id-token: write (found on {job_name})")
+
+for failure in failures:
+    print(f"check-workflow-trigger: FAIL — {failure}", file=sys.stderr)
+if failures:
+    raise SystemExit(1)
+
+print(
+    "check-workflow-trigger: OK — CI is universal/read-only and AWS deploy is protected-main only"
+)
 PYEOF
-rc=$?
-[ ${rc} -eq 0 ] || fail 'the aws-deploy.yml trigger does not match the org contract (see above).'
-printf 'check-workflow-trigger: OK — types explicit, synchronize present, labeled absent, no paths filter, schedule present.\n'

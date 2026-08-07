@@ -1,10 +1,9 @@
 # =========================================================================================== #
-# Dependabot — keep the SHA-pinned actions fresh
+# Dependabot — grouped, reviewable updates for the unprivileged quality boundary
 # ------------------------------------------------------------------------------------------- #
-# Each bump arrives as a PR; every PR runs the full deploy-test-destroy lifecycle, and the
-# ruleset requires that check — so an action bump merges itself only after proving the whole
-# system still works with it. Framework pins are NOT managed here (raw SHA files Dependabot
-# cannot read); .github/workflows/pin-bump.yml owns those.
+# Dependabot PRs receive only the credential-free `CI / required` check. This file opens PRs;
+# it does not claim to enable auto-merge. Framework commit-pin promotion remains a separate,
+# protected workflow because Dependabot does not manage raw SHA files.
 # =========================================================================================== #
 version: 2
 updates:
@@ -13,3 +12,25 @@ updates:
     schedule:
       interval: weekly
       day: tuesday
+      time: '06:23'
+      timezone: Etc/UTC
+    open-pull-requests-limit: 1
+    groups:
+      github-actions:
+        patterns: ['*']
+    commit-message:
+      prefix: chore(deps)
+
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+      day: tuesday
+      time: '06:37'
+      timezone: Etc/UTC
+    open-pull-requests-limit: 1
+    groups:
+      quality-python:
+        patterns: ['*']
+    commit-message:
+      prefix: chore(deps)

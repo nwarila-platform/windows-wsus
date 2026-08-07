@@ -31,6 +31,10 @@ pass=0; fail=0
 ok()   { printf '  \033[32m✓\033[0m %-56s %s\n' "$1" "$2"; pass=$((pass+1)); }
 bad()  { printf '  \033[31m✗\033[0m %-56s got=%s want=%s\n' "$1" "$2" "$3"; fail=$((fail+1)); }
 
+# These assertions need no AWS account and are also run by the unprivileged quality workflow.
+# Keep them first so a widened trust fails before any credential or network lookup is attempted.
+python3 "${REPO_ROOT}/scripts/test-iam-structure.py" || exit 1
+
 echo "== resolving live values =="
 ACCOUNT="$(aws sts get-caller-identity --profile "${PROFILE}" --query Account --output text)" || exit 1
 REPO_ID="$(gh api "repos/${OWNER}/${THIS_REPO}" --jq .id)" || exit 1
@@ -46,7 +50,7 @@ cp "${IAM_DIR}/policies/"*.json "${WORK}/policies/"
 cp "${IAM_DIR}/roles/"*.json    "${WORK}/roles/"
 sed -i "s|<account-id>|${ACCOUNT}|g; s|<repository-id>|${REPO_ID}|g; s|<region>|${REGION}|g;
         s|<vpc-id>|vpc-00000000000000000|g; s|<subnet-id>|subnet-00000000000000000|g;
-        s|<ebs-kms-key-id>|${KMS_KEY}|g; s|<key-pair-name>|${THIS_REPO}-poc-key|g; s|<owner-id>|000000000|g;
+        s|<ebs-kms-key-id>|${KMS_KEY}|g; s|<key-pair-name>|windows-wsus-ci|g; s|<owner-id>|000000000|g;
         s|<artifact-bucket>|${ACCOUNT}-ansible|g" \
     "${WORK}"/policies/*.json "${WORK}"/roles/*.json
 
@@ -92,25 +96,26 @@ ADMIN_TRUST="github_nwarila-platform_${THIS_REPO}-admin.trust.json"
 POC_TRUST="${THIS_REPO}-poc-role.trust.json"
 C='d["Statement"][0]["Condition"]'
 
-# Single-valued sub and job_workflow_ref: an array is what teaches a cloner to APPEND, and an
-# appended trust leaves the sibling repository trusted.
 # `sub` MUST list BOTH forms. CloudTrail proves GitHub emits the ID-EMBEDDED subject
 # (repo:<owner>@<owner-id>/<repo>@<repo-id>:<context>) for these repositories, not the plain slug
-# form. An earlier audit finding called that subject dead and this assertion enforced single-valued
-# — together they de-credentialed CI in all three repos. `repository_id` StringEquals is the real
-# identity boundary, so carrying both subject forms costs nothing and survives a transfer.
+# form. `repository_id` StringEquals is the identity boundary, while exact main-ref suffixes prevent
+# feature-branch workflow code from receiving AWS credentials.
 trust_assert "OIDC sub lists BOTH subject forms" \
-  "len(${C}['StringLike']['token.actions.githubusercontent.com:sub'])" "2" "${CI_TRUST}"
+  "len(${C}['StringEquals']['token.actions.githubusercontent.com:sub'])" "2" "${CI_TRUST}"
 trust_assert "OIDC sub includes the ID-embedded form GitHub emits" \
-  "any('@' in x for x in ${C}['StringLike']['token.actions.githubusercontent.com:sub'])" "True" "${CI_TRUST}"
-trust_assert "OIDC job_workflow_ref is single-valued" \
-  "type(${C}['StringLike']['token.actions.githubusercontent.com:job_workflow_ref']).__name__" "str" "${CI_TRUST}"
+  "any('@' in x for x in ${C}['StringEquals']['token.actions.githubusercontent.com:sub'])" "True" "${CI_TRUST}"
+trust_assert "OIDC subjects are exact protected-main forms" \
+  "set(${C}['StringEquals']['token.actions.githubusercontent.com:sub']) == {'repo:nwarila-platform@000000000/windows-wsus@${REPO_ID}:ref:refs/heads/main', 'repo:nwarila-platform/windows-wsus:ref:refs/heads/main'}" "True" "${CI_TRUST}"
+trust_assert "OIDC workflow refs are the exact two protected-main workflows" \
+  "set(${C}['StringEquals']['token.actions.githubusercontent.com:job_workflow_ref']) == {'nwarila-platform/windows-wsus/.github/workflows/aws-deploy.yml@refs/heads/main', 'nwarila-platform/windows-wsus/.github/workflows/aws-reaper.yml@refs/heads/main'}" "True" "${CI_TRUST}"
 trust_assert "OIDC binds this repository id exactly" \
   "${C}['StringEquals']['token.actions.githubusercontent.com:repository_id']" "${REPO_ID}" "${CI_TRUST}"
 trust_assert "OIDC audience is exact" \
   "${C}['StringEquals']['token.actions.githubusercontent.com:aud']" "sts.amazonaws.com" "${CI_TRUST}"
+trust_assert "OIDC ref is exact protected main" \
+  "${C}['StringEquals']['token.actions.githubusercontent.com:ref']" "refs/heads/main" "${CI_TRUST}"
 trust_assert "every OIDC sub names this repository" \
-  "all('${THIS_REPO}' in x for x in ${C}['StringLike']['token.actions.githubusercontent.com:sub'])" "True" "${CI_TRUST}"
+  "all('${THIS_REPO}' in x for x in ${C}['StringEquals']['token.actions.githubusercontent.com:sub'])" "True" "${CI_TRUST}"
 # The SSO suffix must be hash-bounded, not a trailing wildcard that also matches a future
 # permission set named github_<owner>_<anything>.
 trust_assert "SSO trust is hash-bounded, not wildcard" \
@@ -158,7 +163,8 @@ STATE="arn:aws:s3:::${ACCOUNT}-terraform/${OWNER}/${THIS_REPO}"
 # returns implicitDeny for any other ARN, which would make these assertions lie.
 VPC_ID='vpc-00000000000000000'
 SUBNET_ID='subnet-00000000000000000'
-KEY_PAIR="${THIS_REPO}-poc-key"
+KEY_PAIR='windows-wsus-ci'
+KEY_ARN="arn:aws:ec2:${REGION}:${ACCOUNT}:key-pair/${KEY_PAIR}"
 ENI="arn:aws:ec2:${REGION}:${ACCOUNT}:network-interface/eni-0test"
 SUBNET="arn:aws:ec2:${REGION}:${ACCOUNT}:subnet/${SUBNET_ID}"
 SG="arn:aws:ec2:${REGION}:${ACCOUNT}:security-group/sg-0test"
@@ -201,13 +207,37 @@ assert "leg: network-interface" allowed      ec2:RunInstances "${ENI}" "${VPCC}"
 assert "leg: subnet"            allowed      ec2:RunInstances "${SUBNET}" "${VPCC}"
 assert "leg: security-group"    allowed      ec2:RunInstances "${SG}" "${VPCC}"
 assert "leg: image (amazon)"    allowed      ec2:RunInstances "arn:aws:ec2:${REGION}::image/ami-0test" "ec2:Owner=string=amazon"
-assert "leg: key-pair (pinned)" allowed      ec2:RunInstances "arn:aws:ec2:${REGION}:${ACCOUNT}:key-pair/${KEY_PAIR}"
+assert "leg: key-pair (pinned)" allowed      ec2:RunInstances "${KEY_ARN}"
 # refuter correction: the positive key-pair assertion cannot fail (no Condition, and both sides are
 # built from the same variable). The negative is the shape that fails if the ARN is widened.
 assert "leg: key-pair OTHER -> deny" implicitDeny ec2:RunInstances "arn:aws:ec2:${REGION}:${ACCOUNT}:key-pair/some-other-key"
 assert "leg: image marketplace -> deny" implicitDeny ec2:RunInstances "arn:aws:ec2:${REGION}::image/ami-0test" "ec2:Owner=string=aws-marketplace"
 assert "ENI in a FOREIGN subnet -> deny" implicitDeny ec2:RunInstances "${ENI}" "${VPCC}" \
        "ec2:Subnet=string=arn:aws:ec2:${REGION}:${ACCOUNT}:subnet/subnet-0foreign"
+
+echo "== ephemeral key-pair lifecycle =="
+assert "import exact key with repository tag" allowed ec2:ImportKeyPair "${KEY_ARN}" \
+       "${REG}" "${RTAG}=string=${REPO_ID}"
+assert "import key without repository tag" implicitDeny ec2:ImportKeyPair "${KEY_ARN}" "${REG}"
+assert "import key with foreign repository tag" implicitDeny ec2:ImportKeyPair "${KEY_ARN}" \
+       "${REG}" "${RTAG}=string=${SIB_ID[${SIBLINGS[0]}]}"
+assert "import a different key name" implicitDeny ec2:ImportKeyPair \
+       "arn:aws:ec2:${REGION}:${ACCOUNT}:key-pair/some-other-key" \
+       "${REG}" "${RTAG}=string=${REPO_ID}"
+assert "tag imported key at create time" allowed ec2:CreateTags "${KEY_ARN}" \
+       "ec2:CreateAction=string=ImportKeyPair" "${RTAG}=string=${REPO_ID}"
+assert "tag imported key without identity" implicitDeny ec2:CreateTags "${KEY_ARN}" \
+       "ec2:CreateAction=string=ImportKeyPair"
+assert "tag imported key with foreign identity" explicitDeny ec2:CreateTags "${KEY_ARN}" \
+       "ec2:CreateAction=string=ImportKeyPair" "${RTAG}=string=${SIB_ID[${SIBLINGS[0]}]}"
+assert "delete owned ephemeral key" allowed ec2:DeleteKeyPair "${KEY_ARN}" \
+       "${REG}" "${TAG}=string=${REPO_ID}"
+assert "delete key without ownership tag" implicitDeny ec2:DeleteKeyPair "${KEY_ARN}" "${REG}"
+assert "delete foreign-owned key" implicitDeny ec2:DeleteKeyPair "${KEY_ARN}" \
+       "${REG}" "${TAG}=string=${SIB_ID[${SIBLINGS[0]}]}"
+assert "delete a different key name" implicitDeny ec2:DeleteKeyPair \
+       "arn:aws:ec2:${REGION}:${ACCOUNT}:key-pair/some-other-key" \
+       "${REG}" "${TAG}=string=${REPO_ID}"
 
 echo "== omitted-key bypass (a condition avoided by omission is not a control) =="
 # Every one of these omits the key entirely. If the result is `allowed`, the control is decoration.

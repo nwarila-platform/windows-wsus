@@ -5,9 +5,8 @@
 # Terraform is DATA-ONLY here (a plain tfvars, no .tf files); resources live in the pinned
 # aws-terraform-framework, configuration in the pinned ansible-framework + this repo's role.
 #
-#   * The OIDC trust lists exactly two workflow paths — this file and aws-reaper.yml — so a
-#     rename of either fails its credential exchange loudly, and no other workflow can
-#     assume the deploy role.
+#   * AWS credentials are issued only to this workflow at refs/heads/main. Pull requests use
+#     the credential-free quality workflow; feature-branch workflow code never reaches AWS.
 #   * Reachability: ZERO INBOUND — SSH over SSM. The SG allows no ingress; the runner's SSH
 #     tunnels through an SSM session (AWS-StartSSHSession) riding the agent's own outbound
 #     443, and the EIP exists purely so that outbound path works (pre-created ENIs never get
@@ -15,28 +14,21 @@
 #     gate dials the instance directly; the playbook's first play waits over SSM-SSH instead.
 #   * Credentials re-exchange per stage (MaxSessionDuration < job runtime); a destroy with
 #     dead credentials strands paid resources.
-#   * One fixed state key; the concurrency group (shared with aws-reaper.yml) serializes
-#     runs, and apply converges from whatever state a killed predecessor left. Anything a
-#     hard-killed run leaves behind, the scheduled reaper tears down within 15 minutes.
-#   * PASSIVE OPERATION: every PR runs the full lifecycle (making this job a required status
-#     check that pin-bump and dependabot PRs auto-merge on), a weekly schedule re-proves main
-#     unattended, and unattended failures file an issue. GitHub pauses schedules after 60
-#     days without repo activity — pin bumps normally reset that clock; a pause emails a
-#     warning first.
+#   * One fixed state key; this workflow's concurrency group prevents overlapping applies and
+#     never cancels a live lifecycle. The separately serialized reaper is only a conservative,
+#     age-gated fallback for a run killed before destroy.
+#   * Protected-main pushes prove immediately; an off-minute weekly schedule proves recurrence.
+#     One durable incident is updated on failure and closed after the next successful lifecycle.
 # =========================================================================================== #
 name: AWS Deploy
 
-on:
+'on':
   workflow_dispatch:
+  push:
+    branches: [main]
   schedule:
-    # The weekly self-proof: the full lifecycle runs from main with no human involved.
-    - cron: '0 9 * * 1'
-  pull_request:
-    # EVERY pull request runs the full lifecycle — that is what makes this job a required
-    # status check, which is what lets pin-bump and dependabot PRs auto-merge on green with
-    # nobody watching. synchronize included so edits to an open PR re-prove; labeled excluded
-    # so a triage-permission user cannot spend money.
-    types: [opened, reopened, ready_for_review, synchronize]
+    # Avoid the top-of-hour load spike documented for scheduled Actions workflows.
+    - cron: '17 9 * * 1'
 permissions: {}
 
 # One boundary, one state key — never two runs at once, never cancel a live apply.
@@ -45,22 +37,36 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  main-ref:
+    name: Protected main ref
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    permissions: {}
+    steps:
+      - name: Refuse privileged execution outside protected main
+        env:
+          EXPECTED_REF: refs/heads/main
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_REF}" != "${EXPECTED_REF}" ]; then
+            echo "::error::AWS lifecycle runs only from ${EXPECTED_REF}; got ${GITHUB_REF}."
+            exit 1
+          fi
+
   aws-deploy:
     name: AWS (ephemeral deploy-test-destroy)
-    runs-on: ubuntu-latest
+    needs: main-ref
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
     timeout-minutes: 180
-    # Fork PRs never reach the role; the org's no-ID-token-to-forks setting is layer one.
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     permissions:
       id-token: write
       contents: read
-      issues: write
     env:
       AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
       DEPLOY_ROLE: github_nwarila-platform_windows-wsus
       STATE_KEY: nwarila-platform/windows-wsus/aws-poc.tfstate
-      # Matches the pinned ansible-framework's requirements-dev.txt spec.
-      ANSIBLE_CORE_SPEC: '>=2.21.2,<2.22'
+      CI_KEY_NAME: windows-wsus-ci
 
     steps:
       - name: Checkout
@@ -68,15 +74,31 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Set up pinned Python
+        uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
+        with:
+          python-version: '3.12.11'
+          cache: pip
+          cache-dependency-path: requirements-quality.txt
+
       # The controller toolchain, first: the split_args gate below imports ansible's own
       # parser, and everything here is needed by the configure stage anyway.
       - name: Install Ansible and the SSM session plugin
+        env:
+          PIP_DISABLE_PIP_VERSION_CHECK: '1'
         run: |
           set -euo pipefail
-          python3 -m pip install --quiet --no-cache-dir "ansible-core${ANSIBLE_CORE_SPEC}" boto3 botocore
-          ansible-galaxy collection install ansible.windows community.windows amazon.aws
+          . ./quality-tools.env
+          runtime_venv="${RUNNER_TEMP}/aws-proof-venv"
+          python3 -m venv "${runtime_venv}"
+          "${runtime_venv}/bin/python" -m pip install --quiet --no-cache-dir \
+            --requirement requirements-quality.txt
+          "${runtime_venv}/bin/ansible-galaxy" collection install --force \
+            --requirements-file requirements-quality.yml
+          echo "${runtime_venv}/bin" >> "${GITHUB_PATH}"
           curl -fsS -o /tmp/session-manager-plugin.deb \
-            https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb
+            "https://s3.amazonaws.com/session-manager-downloads/plugin/${SESSION_MANAGER_PLUGIN_VERSION}/ubuntu_64bit/session-manager-plugin.deb"
+          echo "${SESSION_MANAGER_PLUGIN_DEB_SHA256}  /tmp/session-manager-plugin.deb" | sha256sum --check --strict
           sudo dpkg -i /tmp/session-manager-plugin.deb > /dev/null
 
       # Fail-closed source gates, before any credential exists: IAM placeholders + the
@@ -89,11 +111,27 @@ jobs:
           ./scripts/check-workflow-trigger.sh
           python3 ./scripts/check-winshell-splitargs.py
 
+      # The framework imports only the public half and destroys the EC2 key pair with the stack.
+      # The private half exists only in this runner's temporary directory for this one lifecycle.
+      - name: Generate an ephemeral SSH key
+        run: |
+          set -euo pipefail
+          private_key="${RUNNER_TEMP}/windows-wsus-ci.pem"
+          ssh-keygen -q -t rsa -b 3072 -N '' \
+            -C "windows-wsus-ci-${GITHUB_RUN_ID}" -f "${private_key}"
+          managed_keypairs="$(jq -cn \
+            --arg name "${CI_KEY_NAME}" \
+            --arg public_key "$(< "${private_key}.pub")" \
+            '{($name): {public_key: $public_key, tags: {}}}')"
+          echo "CI_PRIVATE_KEY=${private_key}" >> "${GITHUB_ENV}"
+          echo "TF_VAR_managed_keypairs=${managed_keypairs}" >> "${GITHUB_ENV}"
+
       - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
         with:
           role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ env.DEPLOY_ROLE }}
           aws-region: ${{ env.AWS_REGION }}
+          allowed-account-ids: ${{ secrets.AWS_ACCOUNT_ID }}
           role-session-name: aws-deploy-${{ github.run_id }}
           role-duration-seconds: 3600
 
@@ -158,22 +196,99 @@ jobs:
             -var "commit_sha=$(git -C "${GITHUB_WORKSPACE}" rev-parse HEAD)" \
             -var "run_id=${GITHUB_RUN_ID}"
 
-      # Fresh hour for the longest stage: the play's disk resolver describes EBS mid-run.
+      # Fresh two-hour session for the longest stage: the play's disk resolver and artifact
+      # delivery use AWS late in a converge whose hard timeout is 100 minutes.
       - name: Refresh AWS credentials before configure (OIDC)
-        uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
         with:
           role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ env.DEPLOY_ROLE }}
           aws-region: ${{ env.AWS_REGION }}
+          allowed-account-ids: ${{ secrets.AWS_ACCOUNT_ID }}
           role-session-name: aws-deploy-configure-${{ github.run_id }}
-          role-duration-seconds: 3600
+          role-duration-seconds: 7200
 
-      - name: Install the SSH key
-        env:
-          AWS_EC2_SSH_PRIVATE_KEY: ${{ secrets.AWS_EC2_SSH_PRIVATE_KEY }}
+      # Terraform is the authority for target selection. Refuse zero/multiple results and verify
+      # the immutable repository/run identity directly against EC2 before Ansible can mutate it.
+      - name: Build exact runtime inventory from Terraform output
+        working-directory: .frameworks/aws-terraform-framework/terraform
         run: |
           set -euo pipefail
-          install -d -m 0700 "${HOME}/.ssh"
-          install -m 0600 /dev/stdin "${HOME}/.ssh/nwarila-ec2-key.pem" <<< "${AWS_EC2_SSH_PRIVATE_KEY}"
+
+          instances="$(terraform output -json aws_instances)"
+          jq -e 'type == "object" and length == 1' <<< "${instances}" > /dev/null \
+            || { echo "::error::aws_instances must contain exactly one instance."; exit 1; }
+
+          instance="$(jq -c 'to_entries[0].value' <<< "${instances}")"
+          instance_id="$(jq -er '.instance_id | select(type == "string" and test("^i-[0-9a-f]+$"))' <<< "${instance}")"
+          output_region="$(jq -er '.region | select(type == "string") | gsub("_"; "-")' <<< "${instance}")"
+          output_environment="$(jq -er '.environment | select(type == "string")' <<< "${instance}")"
+          output_os="$(jq -er '.os_family | select(type == "string") | ascii_downcase' <<< "${instance}")"
+
+          [ "${output_region}" = "${AWS_REGION}" ] \
+            || { echo "::error::Terraform returned region ${output_region}; expected ${AWS_REGION}."; exit 1; }
+          [ "${output_environment}" = test ] \
+            || { echo "::error::Terraform returned environment ${output_environment}; expected test."; exit 1; }
+          [ "${output_os}" = windows ] \
+            || { echo "::error::Terraform returned OS ${output_os}; expected windows."; exit 1; }
+
+          instance_json="$(aws ec2 describe-instances --instance-ids "${instance_id}" --output json)"
+          jq -e \
+            --arg repository_id "${GITHUB_REPOSITORY_ID}" \
+            --arg run_id "${GITHUB_RUN_ID}" '
+              [.Reservations[].Instances[]] as $instances
+              | ($instances | length) == 1
+              and $instances[0].State.Name == "running"
+              and ($instances[0].Tags | map({key: .Key, value: .Value}) | from_entries) as $tags
+              | $tags["nwarila:management:repository-id"] == $repository_id
+              and $tags["nwarila:provenance:run-id"] == $run_id
+              and $tags["nwarila:management:environment"] == "test"
+              and $tags["nwarila:management:stack"] == "aws-poc"
+            ' <<< "${instance_json}" > /dev/null \
+            || { echo "::error::EC2 target ownership/state assertion failed for ${instance_id}."; exit 1; }
+
+          instance_object="$(jq -c '.Reservations[0].Instances[0]' <<< "${instance_json}")"
+          proxy_command='-o StrictHostKeyChecking=accept-new'
+          proxy_command+=" -o ProxyCommand=\"aws ssm start-session --target %h"
+          proxy_command+=" --document-name AWS-StartSSHSession --parameters portNumber=%p"
+          proxy_command+=" --region ${AWS_REGION}\""
+          jq -n \
+            --arg instance_id "${instance_id}" \
+            --arg region "${AWS_REGION}" \
+            --arg private_key "${CI_PRIVATE_KEY}" \
+            --arg proxy_command "${proxy_command}" \
+            --argjson ec2 "${instance_object}" '
+              {
+                all: {
+                  children: {
+                    wsus_servers: {
+                      hosts: {
+                        ($instance_id): {
+                          ansible_host: $instance_id,
+                          ansible_user: "Administrator",
+                          ansible_shell_type: "cmd",
+                          ansible_connection: "ssh",
+                          ansible_ssh_private_key_file: $private_key,
+                          ansible_ssh_common_args: $proxy_command,
+                          ec2_instance_id: $ec2.InstanceId,
+                          ec2_platform: ($ec2.Platform // "linux"),
+                          ec2_state: {
+                            code: $ec2.State.Code,
+                            name: $ec2.State.Name
+                          },
+                          ec2_placement: {
+                            availability_zone: $ec2.Placement.AvailabilityZone,
+                            group_name: ($ec2.Placement.GroupName // ""),
+                            tenancy: $ec2.Placement.Tenancy,
+                            region: $region
+                          },
+                          ec2_tags: ($ec2.Tags | map({key: .Key, value: .Value}) | from_entries)
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            ' > "${RUNNER_TEMP}/aws-inventory.json"
 
       # This repo's roles overlay onto the pinned framework tree. A framework-TRACKED role
       # path is refused so an overlay can never replace framework-owned code.
@@ -189,8 +304,8 @@ jobs:
             rsync -a --delete "${role_source}/" "${framework_dir}/applications/${role_name}/"
           done
 
-      # Readiness, configuration and the WSUS proof all live in the playbook; the dynamic
-      # inventory (ansible/inventory/aws_ec2.yml) finds the instance by its Function tag.
+      # Readiness, configuration and the WSUS proof all live in the playbook. The exact runtime
+      # inventory above is derived from Terraform output and independently ownership-checked.
       - name: Run the WSUS playbook
         timeout-minutes: 100
         working-directory: .frameworks/ansible-framework
@@ -198,35 +313,68 @@ jobs:
           ANSIBLE_CONFIG: ${{ github.workspace }}/.frameworks/ansible-framework/ansible.cfg
           # Imported by the play's pre-tasks — same value the OIDC role ARN is built from.
           AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+          GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
-          ansible-playbook -i "${GITHUB_WORKSPACE}/ansible/inventory/aws_ec2.yml" \
+          ansible-playbook -i "${RUNNER_TEMP}/aws-inventory.json" \
             "${GITHUB_WORKSPACE}/ansible/playbooks/wsus-aws.yml" -e env=test
+
+      - name: Refresh AWS credentials before second converge (OIDC)
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ env.DEPLOY_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+          allowed-account-ids: ${{ secrets.AWS_ACCOUNT_ID }}
+          role-session-name: aws-deploy-idempotence-${{ github.run_id }}
+          role-duration-seconds: 7200
+
+      - name: Prove a second converge is idempotent
+        timeout-minutes: 100
+        working-directory: .frameworks/ansible-framework
+        env:
+          ANSIBLE_CONFIG: ${{ github.workspace }}/.frameworks/ansible-framework/ansible.cfg
+          ANSIBLE_NOCOLOR: '1'
+          AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+          GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          recap_file="${RUNNER_TEMP}/ansible-second-converge.log"
+          ansible-playbook -i "${RUNNER_TEMP}/aws-inventory.json" \
+            "${GITHUB_WORKSPACE}/ansible/playbooks/wsus-aws.yml" -e env=test | tee "${recap_file}"
+          mapfile -t recaps < <(awk \
+            '/PLAY RECAP/{seen=1; next} seen && /^[^[:space:]].*: +ok=/{print}' "${recap_file}")
+          ((${#recaps[@]} > 0)) \
+            || { echo "::error::Second converge emitted no parseable recap."; exit 1; }
+
+          target_seen=0
+          for recap in "${recaps[@]}"; do
+            grep -Eq 'changed=0([[:space:]]|$)' <<< "${recap}" \
+              || { echo "::error::Second converge was not idempotent: ${recap}"; exit 1; }
+            grep -Eq 'unreachable=0([[:space:]]|$)' <<< "${recap}" \
+              || { echo "::error::Second converge was unreachable: ${recap}"; exit 1; }
+            grep -Eq 'failed=0([[:space:]]|$)' <<< "${recap}" \
+              || { echo "::error::Second converge failed: ${recap}"; exit 1; }
+            [[ "${recap}" =~ ^i-[0-9a-f]+[[:space:]]*: ]] && target_seen=1
+          done
+          [ "${target_seen}" -eq 1 ] \
+            || { echo "::error::Second converge recap did not contain the EC2 target."; exit 1; }
 
       # The originals are dead by now; a destroy with dead credentials strands paid resources.
       - name: Refresh AWS credentials before destroy (OIDC)
         if: always() && steps.tf-init.outcome == 'success'
-        uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
         with:
           role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ env.DEPLOY_ROLE }}
           aws-region: ${{ env.AWS_REGION }}
+          allowed-account-ids: ${{ secrets.AWS_ACCOUNT_ID }}
           role-session-name: aws-deploy-destroy-${{ github.run_id }}
           role-duration-seconds: 3600
 
-      # Unattended failure visibility: schedule/dispatch runs have no PR to go red on, so a
-      # failed proof files an issue with the run link instead of dying silently.
-      - name: Open an issue on unattended failure
-        if: failure() && github.event_name != 'pull_request'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          gh issue create --repo "${GITHUB_REPOSITORY}" \
-            --title "E2E proof failed: run ${GITHUB_RUN_ID}" \
-            --body "The unattended lifecycle run failed: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-
       # Gated on INIT, not apply: a failed apply still leaves state to tear down.
       - name: Terraform destroy (always)
+        id: tf-destroy
         if: always() && steps.tf-init.outcome == 'success'
         timeout-minutes: 30
         working-directory: .frameworks/aws-terraform-framework/terraform
@@ -243,3 +391,119 @@ jobs:
             -var "owner=${GITHUB_REPOSITORY_OWNER}" \
             -var "commit_sha=$(git -C "${GITHUB_WORKSPACE}" rev-parse HEAD)" \
             -var "run_id=${GITHUB_RUN_ID}"
+
+      - name: Prove no live repository-owned AWS resources remain
+        if: always() && steps.tf-destroy.outcome == 'success'
+        env:
+          AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+          GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
+        run: |
+          set -euo pipefail
+
+          split_text_array() {
+            local destination_name="$1" raw="$2" item
+            local -n destination="${destination_name}"
+            destination=()
+            raw="${raw//$'\t'/$'\n'}"
+            while IFS= read -r item; do
+              [ -n "${item}" ] && destination+=("${item}")
+            done <<< "${raw}"
+          }
+
+          filters=(
+            "Name=tag:nwarila:management:repository-id,Values=${GITHUB_REPOSITORY_ID}"
+          )
+          lock_key="${STATE_KEY}.tflock"
+
+          for attempt in {1..10}; do
+            instance_text="$(aws ec2 describe-instances \
+              --filters "${filters[@]}" "Name=instance-state-name,Values=pending,running,stopping,stopped" \
+              --query 'Reservations[].Instances[].InstanceId' --output text)"
+            interface_text="$(aws ec2 describe-network-interfaces --filters "${filters[@]}" \
+              --query 'NetworkInterfaces[].NetworkInterfaceId' --output text)"
+            allocation_text="$(aws ec2 describe-addresses --filters "${filters[@]}" \
+              --query 'Addresses[].AllocationId' --output text)"
+            volume_text="$(aws ec2 describe-volumes --filters "${filters[@]}" \
+              --query 'Volumes[].VolumeId' --output text)"
+            group_text="$(aws ec2 describe-security-groups --filters "${filters[@]}" \
+              --query 'SecurityGroups[].GroupId' --output text)"
+            key_text="$(aws ec2 describe-key-pairs --filters "${filters[@]}" \
+              --query 'KeyPairs[].KeyPairId' --output text)"
+            lock_json="$(aws s3api list-objects-v2 --bucket "${AWS_ACCOUNT_ID}-terraform" \
+              --prefix "${lock_key}" --output json)"
+
+            split_text_array instance_ids "${instance_text}"
+            split_text_array interface_ids "${interface_text}"
+            split_text_array allocation_ids "${allocation_text}"
+            split_text_array volume_ids "${volume_text}"
+            split_text_array group_ids "${group_text}"
+            split_text_array key_ids "${key_text}"
+            lock_exists="$(jq -r --arg key "${lock_key}" \
+              '[.Contents[]? | select(.Key == $key)] | length' <<< "${lock_json}")"
+
+            remaining=$((${#instance_ids[@]} + ${#interface_ids[@]} + ${#allocation_ids[@]} + \
+              ${#volume_ids[@]} + ${#group_ids[@]} + ${#key_ids[@]} + lock_exists))
+            if [ "${remaining}" -eq 0 ]; then
+              echo "Destroy verified: no live repository-owned EC2 resource or Terraform lock remains."
+              exit 0
+            fi
+
+            echo "Attempt ${attempt}: ${remaining} repository-owned resource(s)/lock still visible."
+            [ "${attempt}" -eq 10 ] || sleep 15
+          done
+
+          echo "::error::Destroy returned success but repository-owned resources or the lock remain."
+          exit 1
+
+      - name: Remove the ephemeral private key
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ -n "${CI_PRIVATE_KEY:-}" ]; then
+            rm -f -- "${CI_PRIVATE_KEY}" "${CI_PRIVATE_KEY}.pub"
+          fi
+
+  report:
+    name: AWS lifecycle incident
+    needs: [main-ref, aws-deploy]
+    if: always() && needs.main-ref.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      INCIDENT_TITLE: '[automation] AWS lifecycle proof failed'
+      LIFECYCLE_RESULT: ${{ needs.aws-deploy.result }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Update or resolve the lifecycle incident
+        run: |
+          set -euo pipefail
+
+          issue_number="$(gh issue list --repo "${GITHUB_REPOSITORY}" --state all --limit 100 \
+            --search '"[automation] AWS lifecycle proof failed" in:title' \
+            --json number,title \
+            --jq '[.[] | select(.title == "[automation] AWS lifecycle proof failed")] | sort_by(.number) | .[0].number // empty')"
+
+          if [ "${LIFECYCLE_RESULT}" = success ]; then
+            if [ -n "${issue_number}" ] && \
+              [ "$(gh issue view "${issue_number}" --repo "${GITHUB_REPOSITORY}" --json state --jq .state)" = OPEN ]; then
+              gh issue close "${issue_number}" --repo "${GITHUB_REPOSITORY}" \
+                --reason completed --comment "Recovered in ${RUN_URL}."
+            else
+              echo "Lifecycle is healthy; no open incident to resolve."
+            fi
+            exit 0
+          fi
+
+          message="Lifecycle result: ${LIFECYCLE_RESULT}. Inspect ${RUN_URL}. Cleanup ran before this report."
+          if [ -z "${issue_number}" ]; then
+            gh issue create --repo "${GITHUB_REPOSITORY}" \
+              --title "${INCIDENT_TITLE}" --body "${message}"
+          else
+            if [ "$(gh issue view "${issue_number}" --repo "${GITHUB_REPOSITORY}" --json state --jq .state)" = CLOSED ]; then
+              gh issue reopen "${issue_number}" --repo "${GITHUB_REPOSITORY}"
+            fi
+            gh issue comment "${issue_number}" --repo "${GITHUB_REPOSITORY}" --body "${message}"
+          fi

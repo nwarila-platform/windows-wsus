@@ -1,25 +1,21 @@
 # =========================================================================================== #
-# AWS Reaper — windows-wsus
+# AWS Reaper — conservative fallback for windows-wsus
 # ------------------------------------------------------------------------------------------- #
-# The safety net for the ephemeral lifecycle. terraform destroy can only remove what its state
-# recorded, and a run killed hard enough never reaches its own destroy — so every 15 minutes
-# this workflow tears down ANYTHING still carrying this repository's identity tag.
+# The lifecycle's own terraform destroy is authoritative. This hourly fallback considers only
+# repository-owned resources with a complete stack/environment/run identity whose GitHub lifecycle
+# has been terminal for at least four hours. It fails closed when provenance is absent or unverifiable.
 #
-#   * It runs in its OWN concurrency group and instead GUARDS on the lifecycle: a pending
-#     deploy in a shared group would be replaced (cancelled) by every reaper tick —
-#     cancel-in-progress:false only protects RUNNING jobs, a pathology proven live when a
-#     tick cancelled a queued required-check run. The guard step skips the sweep whenever any
-#     lifecycle run is active or queued.
-#   * The OIDC trust lists this file's path in job_workflow_ref alongside aws-deploy.yml —
-#     renaming either file breaks its credential exchange loudly.
-#   * Schedules run from the default branch only, and a clean account is a fast no-op.
+# GitHub status checks are not a distributed lock. The broad nonterminal check and immediate
+# per-run recheck reduce race exposure (and include pending/requested/waiting states), but do not
+# claim atomic exclusion. An AWS-native lease/janitor remains the durable target.
 # =========================================================================================== #
 name: AWS Reaper
 
-on:
+'on':
   schedule:
-    - cron: '*/15 * * * *'
+    - cron: '23 * * * *'
   workflow_dispatch:
+
 permissions: {}
 
 concurrency:
@@ -27,110 +23,443 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  main-ref:
+    name: Protected main ref
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    permissions: {}
+    steps:
+      - name: Refuse privileged execution outside protected main
+        env:
+          EXPECTED_REF: refs/heads/main
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_REF}" != "${EXPECTED_REF}" ]; then
+            echo "::error::AWS reaper runs only from ${EXPECTED_REF}; got ${GITHUB_REF}."
+            exit 1
+          fi
+
   aws-reaper:
-    name: AWS (teardown anything still standing)
-    runs-on: ubuntu-latest
+    name: AWS (age-gated fallback cleanup)
+    needs: main-ref
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
-      id-token: write
-      contents: read
-      issues: write
       actions: read
+      id-token: write
+    outputs:
+      performed: ${{ steps.sweep.outputs.performed || 'false' }}
     env:
       AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
       DEPLOY_ROLE: github_nwarila-platform_windows-wsus
+      MINIMUM_AGE_SECONDS: '14400'
 
     steps:
-      # Never sweep while a deploy is live: an active run's freshly created resources carry
-      # the same tag and would be torn down mid-configure. Queued counts too — it will be
-      # creating resources moments from now.
-      - name: Check for an active lifecycle run
-        id: gate
+      # Fetch without a status filter so new GitHub states such as pending cannot accidentally be
+      # treated as idle. Any nonterminal lifecycle defers the entire fallback sweep.
+      - name: Check for any nonterminal lifecycle
+        id: lifecycle
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          active="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/aws-deploy.yml/runs?status=in_progress&per_page=1" --jq '.total_count')"
-          queued="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/aws-deploy.yml/runs?status=queued&per_page=1" --jq '.total_count')"
-          echo "busy=$(( active + queued ))" >> "${GITHUB_OUTPUT}"
-          echo "lifecycle runs active or queued: $(( active + queued ))"
+          nonterminal_ids="$(gh api --paginate \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/aws-deploy.yml/runs?per_page=100" \
+            --jq '.workflow_runs[] | select(.status != "completed") | .id')"
+          if [ -n "${nonterminal_ids}" ]; then
+            echo "safe=false" >> "${GITHUB_OUTPUT}"
+            echo "Fallback deferred; nonterminal lifecycle run(s):"
+            printf '%s\n' "${nonterminal_ids}"
+          else
+            echo "safe=true" >> "${GITHUB_OUTPUT}"
+          fi
 
       - name: Configure AWS credentials (OIDC)
-        if: steps.gate.outputs.busy == '0'
-        uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
+        if: steps.lifecycle.outputs.safe == 'true'
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
         with:
           role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ env.DEPLOY_ROLE }}
           aws-region: ${{ env.AWS_REGION }}
+          allowed-account-ids: ${{ secrets.AWS_ACCOUNT_ID }}
           role-session-name: aws-reaper-${{ github.run_id }}
           role-duration-seconds: 3600
 
-      # Teardown order follows the dependency chain: instances first (everything else is
-      # attached to them), then network interfaces, Elastic IPs, volumes, security groups.
-      # Every command is scoped by the repository's tag.
-      - name: Tear down anything still standing
-        if: steps.gate.outputs.busy == '0'
+      - name: Reap terminal resources older than the safety window
+        id: sweep
+        if: steps.lifecycle.outputs.safe == 'true'
         env:
+          GH_TOKEN: ${{ github.token }}
+          AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
           GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
         run: |
           set -euo pipefail
 
-          owned_by_this_repo="Name=tag:nwarila:management:repository-id,Values=${GITHUB_REPOSITORY_ID}"
+          repository_filter="Name=tag:nwarila:management:repository-id,Values=${GITHUB_REPOSITORY_ID}"
+          stack_filter="Name=tag:nwarila:management:stack,Values=aws-poc"
+          environment_filter="Name=tag:nwarila:management:environment,Values=test"
+          run_tag='nwarila:provenance:run-id'
 
-          instance_ids="$(aws ec2 describe-instances \
-            --filters "${owned_by_this_repo}" "Name=instance-state-name,Values=pending,running,stopping,stopped" \
-            --query 'Reservations[].Instances[].InstanceId' --output text)"
-          if [ -n "${instance_ids}" ]; then
-            echo "terminating instance(s): ${instance_ids}"
-            aws ec2 terminate-instances --instance-ids ${instance_ids} > /dev/null
-            aws ec2 wait instance-terminated --instance-ids ${instance_ids}
+          declare -A observed_runs=()
+          malformed_identity=0
+          owned_resource_count=0
+          record_inventory() {
+            local rows="$1" resource_json resource_id resource_stack resource_environment resource_run_id
+            while IFS= read -r resource_json; do
+              [ -n "${resource_json}" ] || continue
+              owned_resource_count=$((owned_resource_count + 1))
+              resource_id="$(jq -er '.id | select(type == "string" and length > 0)' <<< "${resource_json}")"
+              resource_stack="$(jq -r '.tags["nwarila:management:stack"] // ""' <<< "${resource_json}")"
+              resource_environment="$(jq -r '.tags["nwarila:management:environment"] // ""' <<< "${resource_json}")"
+              resource_run_id="$(jq -r --arg run_tag "${run_tag}" '.tags[$run_tag] // ""' <<< "${resource_json}")"
+
+              if [ "${resource_stack}" != aws-poc ] || [ "${resource_environment}" != test ] || \
+                [[ ! "${resource_run_id}" =~ ^[0-9]+$ ]]; then
+                echo "::error::Owned resource ${resource_id} has malformed stack/environment/run identity; refusing all deletion."
+                malformed_identity=1
+              else
+                observed_runs["${resource_run_id}"]=1
+              fi
+            done <<< "${rows}"
+          }
+
+          capture_repository_rows() {
+            local instance_json interface_json address_json volume_json group_json key_json
+            instance_json="$(aws ec2 describe-instances \
+              --filters "${repository_filter}" \
+                "Name=instance-state-name,Values=pending,running,stopping,stopped" --output json)"
+            interface_json="$(aws ec2 describe-network-interfaces \
+              --filters "${repository_filter}" --output json)"
+            address_json="$(aws ec2 describe-addresses --filters "${repository_filter}" --output json)"
+            volume_json="$(aws ec2 describe-volumes --filters "${repository_filter}" --output json)"
+            group_json="$(aws ec2 describe-security-groups --filters "${repository_filter}" --output json)"
+            key_json="$(aws ec2 describe-key-pairs --filters "${repository_filter}" --output json)"
+
+            instance_rows="$(jq -c '.Reservations[].Instances[]
+              | {id: .InstanceId, tags: (.Tags | map({key: .Key, value: .Value}) | from_entries)}' \
+              <<< "${instance_json}")"
+            interface_rows="$(jq -c '.NetworkInterfaces[]
+              | {id: .NetworkInterfaceId, tags: (.TagSet | map({key: .Key, value: .Value}) | from_entries)}' \
+              <<< "${interface_json}")"
+            address_rows="$(jq -c '.Addresses[]
+              | {id: .AllocationId, tags: (.Tags | map({key: .Key, value: .Value}) | from_entries)}' \
+              <<< "${address_json}")"
+            volume_rows="$(jq -c '.Volumes[]
+              | {id: .VolumeId, tags: (.Tags | map({key: .Key, value: .Value}) | from_entries)}' \
+              <<< "${volume_json}")"
+            group_rows="$(jq -c '.SecurityGroups[]
+              | {id: .GroupId, tags: (.Tags | map({key: .Key, value: .Value}) | from_entries)}' \
+              <<< "${group_json}")"
+            key_rows="$(jq -c '.KeyPairs[]
+              | {id: .KeyPairId, tags: (.Tags | map({key: .Key, value: .Value}) | from_entries)}' \
+              <<< "${key_json}")"
+          }
+
+          # Repository id is the IAM-enforced create-time identity. Enumerate by that tag alone so
+          # a regression in mutable stack/environment/run tags becomes a loud failure, not a leak.
+          capture_repository_rows
+
+          record_inventory "${instance_rows}"
+          record_inventory "${interface_rows}"
+          record_inventory "${address_rows}"
+          record_inventory "${volume_rows}"
+          record_inventory "${group_rows}"
+          record_inventory "${key_rows}"
+          [ "${malformed_identity}" -eq 0 ] || exit 1
+
+          now_epoch="$(date -u +%s)"
+          candidate_text="$(printf '%s\n' "${!observed_runs[@]}" | sed '/^$/d' | sort -n)"
+          candidate_runs=()
+          while IFS= read -r candidate_run; do
+            [ -n "${candidate_run}" ] && candidate_runs+=("${candidate_run}")
+          done <<< "${candidate_text}"
+
+          split_text_array() {
+            local destination_name="$1" raw="$2" item
+            local -n destination="${destination_name}"
+            destination=()
+            raw="${raw//$'\t'/$'\n'}"
+            while IFS= read -r item; do
+              [ -n "${item}" ] && destination+=("${item}")
+            done <<< "${raw}"
+          }
+
+          deploy_workflow_id="$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/aws-deploy.yml" --jq '.id')"
+          assert_lifecycle_idle() {
+            local active_ids
+            active_ids="$(gh api --paginate \
+              "repos/${GITHUB_REPOSITORY}/actions/workflows/aws-deploy.yml/runs?per_page=100" \
+              --jq '.workflow_runs[] | select(.status != "completed") | .id')"
+            if [ -n "${active_ids}" ]; then
+              echo "::error::Lifecycle became nonterminal before fallback mutation: ${active_ids//$'\n'/, }."
+              return 1
+            fi
+          }
+
+          for source_run_id in "${candidate_runs[@]}"; do
+            run_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${source_run_id}")"
+            jq -e \
+              --arg repository_id "${GITHUB_REPOSITORY_ID}" \
+              --arg workflow_id "${deploy_workflow_id}" '
+                . as $run
+                | ($run.repository.id | tostring) == $repository_id
+                and ($run.head_repository.id | tostring) == $repository_id
+                and ($run.workflow_id | tostring) == $workflow_id
+                and $run.path == ".github/workflows/aws-deploy.yml"
+                and $run.head_branch == "main"
+                and (["push", "schedule", "workflow_dispatch"] | index($run.event) != null)
+              ' <<< "${run_json}" > /dev/null || {
+                echo "::error::Run tag ${source_run_id} is not a protected-main AWS Deploy run."
+                exit 1
+              }
+            run_status="$(jq -r '.status' <<< "${run_json}")"
+            completed_at="$(jq -er '.updated_at | select(type == "string")' <<< "${run_json}")"
+            completed_epoch="$(date -u -d "${completed_at}" +%s)"
+            age_seconds="$((now_epoch - completed_epoch))"
+
+            if [ "${run_status}" != completed ]; then
+              echo "Skipping run ${source_run_id}: status is ${run_status}."
+              continue
+            fi
+            if [ "${age_seconds}" -lt "${MINIMUM_AGE_SECONDS}" ]; then
+              echo "Skipping run ${source_run_id}: terminal age ${age_seconds}s is below ${MINIMUM_AGE_SECONDS}s."
+              continue
+            fi
+
+            # This is deliberately an immediate recheck, not a claim of mutual exclusion.
+            run_status="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${source_run_id}" --jq '.status')"
+            if [ "${run_status}" != completed ]; then
+              echo "Skipping run ${source_run_id}: it became ${run_status} before mutation."
+              continue
+            fi
+
+            run_filter="Name=tag:${run_tag},Values=${source_run_id}"
+            filters=("${repository_filter}" "${stack_filter}" "${environment_filter}" "${run_filter}")
+
+            instance_text="$(aws ec2 describe-instances \
+              --filters "${filters[@]}" "Name=instance-state-name,Values=pending,running,stopping,stopped" \
+              --query 'Reservations[].Instances[].InstanceId' --output text)"
+            split_text_array instance_ids "${instance_text}"
+            if ((${#instance_ids[@]})); then
+              assert_lifecycle_idle
+              echo "Terminating run ${source_run_id} instance(s): ${instance_ids[*]}"
+              aws ec2 terminate-instances --instance-ids "${instance_ids[@]}" > /dev/null
+              aws ec2 wait instance-terminated --instance-ids "${instance_ids[@]}"
+            fi
+
+            # EIPs can keep pre-created ENIs associated after instance termination. Disassociate
+            # and release them first, then wait for every ENI to become independently deletable.
+            address_json="$(aws ec2 describe-addresses --filters "${filters[@]}" --output json)"
+            address_rows="$(jq -r '.Addresses[]
+              | [.AllocationId, (.AssociationId // "-")] | @tsv' <<< "${address_json}")"
+            [ -z "${address_rows}" ] || assert_lifecycle_idle
+            while IFS=$'\t' read -r allocation_id association_id; do
+              [ -n "${allocation_id}" ] || continue
+              if [ "${association_id}" != - ]; then
+                aws ec2 disassociate-address --association-id "${association_id}"
+              fi
+
+              released=0
+              for release_attempt in {1..6}; do
+                if aws ec2 release-address --allocation-id "${allocation_id}"; then
+                  released=1
+                  break
+                fi
+                [ "${release_attempt}" -eq 6 ] || sleep 5
+              done
+              [ "${released}" -eq 1 ] \
+                || { echo "::error::Could not release ${allocation_id}."; exit 1; }
+            done <<< "${address_rows}"
+
+            interface_json=''
+            for interface_attempt in {1..12}; do
+              interface_json="$(aws ec2 describe-network-interfaces \
+                --filters "${filters[@]}" --output json)"
+              unavailable="$(jq -r \
+                '[.NetworkInterfaces[] | select(.Status != "available")] | length' <<< "${interface_json}")"
+              [ "${unavailable}" -eq 0 ] && break
+              if [ "${interface_attempt}" -eq 12 ]; then
+                echo "::error::Run ${source_run_id} still has ${unavailable} unavailable ENI(s)."
+                exit 1
+              fi
+              sleep 10
+            done
+            interface_text="$(jq -r '.NetworkInterfaces[].NetworkInterfaceId' <<< "${interface_json}")"
+            split_text_array interface_ids "${interface_text}"
+            ((${#interface_ids[@]} == 0)) || assert_lifecycle_idle
+            for interface_id in "${interface_ids[@]}"; do
+              aws ec2 delete-network-interface --network-interface-id "${interface_id}"
+            done
+
+            volume_json=''
+            for volume_attempt in {1..12}; do
+              volume_json="$(aws ec2 describe-volumes --filters "${filters[@]}" --output json)"
+              unavailable="$(jq -r \
+                '[.Volumes[] | select(.State != "available")] | length' <<< "${volume_json}")"
+              [ "${unavailable}" -eq 0 ] && break
+              if [ "${volume_attempt}" -eq 12 ]; then
+                echo "::error::Run ${source_run_id} still has ${unavailable} unavailable volume(s)."
+                exit 1
+              fi
+              sleep 10
+            done
+            volume_text="$(jq -r '.Volumes[].VolumeId' <<< "${volume_json}")"
+            split_text_array volume_ids "${volume_text}"
+            ((${#volume_ids[@]} == 0)) || assert_lifecycle_idle
+            for volume_id in "${volume_ids[@]}"; do
+              aws ec2 delete-volume --volume-id "${volume_id}"
+            done
+
+            group_text="$(aws ec2 describe-security-groups --filters "${filters[@]}" \
+              --query 'SecurityGroups[].GroupId' --output text)"
+            split_text_array group_ids "${group_text}"
+            ((${#group_ids[@]} == 0)) || assert_lifecycle_idle
+            for group_id in "${group_ids[@]}"; do
+              deleted=0
+              for delete_attempt in {1..6}; do
+                if aws ec2 delete-security-group --group-id "${group_id}"; then
+                  deleted=1
+                  break
+                fi
+                [ "${delete_attempt}" -eq 6 ] || sleep 5
+              done
+              [ "${deleted}" -eq 1 ] \
+                || { echo "::error::Could not delete security group ${group_id}."; exit 1; }
+            done
+
+            key_text="$(aws ec2 describe-key-pairs --filters "${filters[@]}" \
+              --query 'KeyPairs[].KeyName' --output text)"
+            split_text_array key_names "${key_text}"
+            ((${#key_names[@]} == 0)) || assert_lifecycle_idle
+            for key_name in "${key_names[@]}"; do
+              aws ec2 delete-key-pair --key-name "${key_name}"
+            done
+
+            # Re-query every supported resource class for this run. Every AWS call is captured
+            # and checked before parsing; an expired session or AccessDenied therefore fails.
+            deletion_verified=0
+            for verify_attempt in {1..6}; do
+              remaining_instance_text="$(aws ec2 describe-instances \
+                --filters "${filters[@]}" "Name=instance-state-name,Values=pending,running,stopping,stopped" \
+                --query 'Reservations[].Instances[].InstanceId' --output text)"
+              remaining_interface_text="$(aws ec2 describe-network-interfaces --filters "${filters[@]}" \
+                --query 'NetworkInterfaces[].NetworkInterfaceId' --output text)"
+              remaining_allocation_text="$(aws ec2 describe-addresses --filters "${filters[@]}" \
+                --query 'Addresses[].AllocationId' --output text)"
+              remaining_volume_text="$(aws ec2 describe-volumes --filters "${filters[@]}" \
+                --query 'Volumes[].VolumeId' --output text)"
+              remaining_group_text="$(aws ec2 describe-security-groups --filters "${filters[@]}" \
+                --query 'SecurityGroups[].GroupId' --output text)"
+              remaining_key_text="$(aws ec2 describe-key-pairs --filters "${filters[@]}" \
+                --query 'KeyPairs[].KeyPairId' --output text)"
+
+              split_text_array remaining_instance_ids "${remaining_instance_text}"
+              split_text_array remaining_interface_ids "${remaining_interface_text}"
+              split_text_array remaining_allocation_ids "${remaining_allocation_text}"
+              split_text_array remaining_volume_ids "${remaining_volume_text}"
+              split_text_array remaining_group_ids "${remaining_group_text}"
+              split_text_array remaining_key_ids "${remaining_key_text}"
+              remaining=$((${#remaining_instance_ids[@]} + ${#remaining_interface_ids[@]} + \
+                ${#remaining_allocation_ids[@]} + ${#remaining_volume_ids[@]} + \
+                ${#remaining_group_ids[@]} + ${#remaining_key_ids[@]}))
+              if [ "${remaining}" -eq 0 ]; then
+                deletion_verified=1
+                break
+              fi
+              [ "${verify_attempt}" -eq 6 ] || sleep 10
+            done
+            [ "${deletion_verified}" -eq 1 ] || {
+              echo "::error::Fallback left ${remaining} resource(s) for run ${source_run_id}."
+              exit 1
+            }
+          done
+
+          # Re-enumerate from the immutable repository id after cleanup. This catches resources
+          # created after the first snapshot and prevents a run-filtered sweep from claiming the
+          # repository is clean while malformed or grace-period resources still exist.
+          assert_lifecycle_idle
+          observed_runs=()
+          malformed_identity=0
+          owned_resource_count=0
+          capture_repository_rows
+          record_inventory "${instance_rows}"
+          record_inventory "${interface_rows}"
+          record_inventory "${address_rows}"
+          record_inventory "${volume_rows}"
+          record_inventory "${group_rows}"
+          record_inventory "${key_rows}"
+          [ "${malformed_identity}" -eq 0 ] || exit 1
+
+          sweep_performed=true
+          if [ "${owned_resource_count}" -ne 0 ]; then
+            sweep_performed=false
+            echo "Fallback completed safely, but ${owned_resource_count} repository-owned resource(s) remain inside the age window."
           fi
 
-          interface_ids="$(aws ec2 describe-network-interfaces \
-            --filters "${owned_by_this_repo}" "Name=status,Values=available" \
-            --query 'NetworkInterfaces[].NetworkInterfaceId' --output text)"
-          for interface_id in ${interface_ids}; do
-            echo "deleting network interface: ${interface_id}"
-            aws ec2 delete-network-interface --network-interface-id "${interface_id}"
-          done
-
-          allocation_ids="$(aws ec2 describe-addresses \
-            --filters "${owned_by_this_repo}" \
-            --query 'Addresses[].AllocationId' --output text)"
-          for allocation_id in ${allocation_ids}; do
-            echo "releasing Elastic IP: ${allocation_id}"
-            aws ec2 release-address --allocation-id "${allocation_id}"
-          done
-
-          volume_ids="$(aws ec2 describe-volumes \
-            --filters "${owned_by_this_repo}" "Name=status,Values=available" \
-            --query 'Volumes[].VolumeId' --output text)"
-          for volume_id in ${volume_ids}; do
-            echo "deleting volume: ${volume_id}"
-            aws ec2 delete-volume --volume-id "${volume_id}"
-          done
-
-          group_ids="$(aws ec2 describe-security-groups \
-            --filters "${owned_by_this_repo}" \
-            --query 'SecurityGroups[].GroupId' --output text)"
-          for group_id in ${group_ids}; do
-            echo "deleting security group: ${group_id}"
-            aws ec2 delete-security-group --group-id "${group_id}"
-          done
-
-          if [ -z "${instance_ids}${interface_ids}${allocation_ids}${volume_ids}${group_ids}" ]; then
-            echo "Nothing to reap: no resources tagged to this repository exist."
-          else
-            echo "Reaped. The account is clean again."
+          # Raw fallback deletion cannot safely force-unlock Terraform. Surface a stale lock for
+          # deliberate reconciliation instead of declaring the account healthy and failing later.
+          lock_key='nwarila-platform/windows-wsus/aws-poc.tfstate.tflock'
+          lock_json="$(aws s3api list-objects-v2 --bucket "${AWS_ACCOUNT_ID}-terraform" \
+            --prefix "${lock_key}" --output json)"
+          lock_exists="$(jq -r --arg key "${lock_key}" \
+            '[.Contents[]? | select(.Key == $key)] | length' <<< "${lock_json}")"
+          # Do not claim a clean sweep if a lifecycle started during the final AWS snapshot.
+          assert_lifecycle_idle
+          if [ "${lock_exists}" -ne 0 ]; then
+            echo "::error::Terraform lock remains after fallback cleanup; reconcile it before deploy."
+            exit 1
           fi
 
-      # A failing reaper means potentially stranded paid resources with nobody watching —
-      # that must surface as an issue, not a silently red schedule.
-      - name: Open an issue on failure
-        if: failure()
-        env:
-          GH_TOKEN: ${{ github.token }}
+          echo "performed=${sweep_performed}" >> "${GITHUB_OUTPUT}"
+
+  report:
+    name: AWS reaper incident
+    needs: [main-ref, aws-reaper]
+    if: always() && needs.main-ref.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      INCIDENT_TITLE: '[automation] AWS reaper fallback failed'
+      REAPER_RESULT: ${{ needs.aws-reaper.result }}
+      SWEEP_PERFORMED: ${{ needs.aws-reaper.outputs.performed }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Update or resolve the reaper incident
         run: |
           set -euo pipefail
-          gh issue create --repo "${GITHUB_REPOSITORY}" \
-            --title "Reaper failed: run ${GITHUB_RUN_ID}" \
-            --body "The scheduled teardown failed — check for stranded resources: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+
+          issue_number="$(gh issue list --repo "${GITHUB_REPOSITORY}" --state all --limit 100 \
+            --search '"[automation] AWS reaper fallback failed" in:title' \
+            --json number,title \
+            --jq '[.[] | select(.title == "[automation] AWS reaper fallback failed")] | sort_by(.number) | .[0].number // empty')"
+
+          if [ "${REAPER_RESULT}" = success ] && [ "${SWEEP_PERFORMED}" = true ]; then
+            if [ -n "${issue_number}" ] && \
+              [ "$(gh issue view "${issue_number}" --repo "${GITHUB_REPOSITORY}" --json state --jq .state)" = OPEN ]; then
+              gh issue close "${issue_number}" --repo "${GITHUB_REPOSITORY}" \
+                --reason completed --comment "Recovered in ${RUN_URL}."
+            else
+              echo "Fallback sweep is healthy; no open incident to resolve."
+            fi
+            exit 0
+          fi
+
+          if [ "${REAPER_RESULT}" = success ]; then
+            echo "Fallback sweep was safely deferred; leaving incident state unchanged."
+            exit 0
+          fi
+
+          message="Fallback result: ${REAPER_RESULT}. Inspect ${RUN_URL}. Deletion fails closed."
+          if [ -z "${issue_number}" ]; then
+            gh issue create --repo "${GITHUB_REPOSITORY}" \
+              --title "${INCIDENT_TITLE}" --body "${message}"
+          else
+            if [ "$(gh issue view "${issue_number}" --repo "${GITHUB_REPOSITORY}" --json state --jq .state)" = CLOSED ]; then
+              gh issue reopen "${issue_number}" --repo "${GITHUB_REPOSITORY}"
+            fi
+            gh issue comment "${issue_number}" --repo "${GITHUB_REPOSITORY}" --body "${message}"
+          fi

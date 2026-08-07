@@ -1,48 +1,93 @@
 # windows-wsus
 
-Deploys an **ephemeral WSUS server backed by WID** (Windows Internal Database) onto Windows
-Server 2025 in AWS — a full **deploy → configure → prove → destroy** lifecycle that runs on
-every pull request, on a weekly schedule, and on demand. Proven green end to end; each cycle
-costs about $0.09 and leaves nothing standing.
+Disposable AWS proof for a Windows Server 2025 WSUS server backed by Windows Internal Database
+(WID). The repository owns the application inputs and WSUS role; version-pinned platform
+frameworks own the Terraform and Ansible chassis.
 
-This is a `nwarila-platform` single-purpose application repo: it carries one Ansible role
-(`ansible/applications/wsus/`), its playbook, a dynamic inventory, and a plain tfvars. At run
-time the role is composed into a version-pinned checkout of
-[ansible-framework](https://github.com/nwarila-platform/ansible-framework), and the tfvars
-drives a version-pinned checkout of
-[aws-terraform-framework](https://github.com/nwarila-platform/aws-terraform-framework) — the
-frameworks own the *how*, this repo owns only the *what*.
+The normal operating state is unattended:
 
-## How it runs
+- pull requests run the credential-free `CI / required` gate;
+- every protected-`main` change and a weekly schedule provision one host, configure and verify it,
+  run a second idempotence converge, destroy it, and prove cleanup;
+- an hourly, age-gated reaper is a fallback for interrupted lifecycles;
+- dependency and framework-pin automation opens grouped, reviewable pull requests; and
+- each automation class maintains one durable incident issue and closes it on recovery.
 
-Nothing here needs an operator. `.github/workflows/aws-deploy.yml` runs the whole lifecycle:
-`terraform apply` inside an audited IAM boundary → Ansible over **SSH-in-SSM** (zero-ingress
-security group; the Elastic IP exists only so the SSM agent has an egress route) → WSUS
-serving HTTPS on 8531 with a delivered, thumbprint-pinned certificate → `terraform destroy`,
-always. `aws-reaper.yml` sweeps anything a hard-killed run leaves behind every 15 minutes,
-`pin-bump.yml` tracks the framework mains and merges bumps only after the lifecycle passes
-against them, and Dependabot does the same for action pins. Unattended failures file issues.
+No AWS credential is available to pull-request code. The privileged lifecycle accepts only the
+protected `main` ref through its workflow guard and OIDC trust policy.
 
-Manual run: **Actions → AWS Deploy → Run workflow**.
+## What a green proof establishes
 
-## Layout
+The AWS lifecycle proves the pinned Terraform framework can create the declared ephemeral host,
+the pinned Ansible framework can compose this role, and the target converges with healthy WSUS,
+WID, IIS, disk placement, and a thumbprint-pinned TLS endpoint. It also proves a second converge
+reports no changes and that no repository-owned EC2 resource or Terraform lock remains after
+destroy.
+
+The public proof intentionally cannot reach the placeholder corporate upstream, so category
+synchronization is disabled there. It proves the desired downstream configuration, not a
+successful upstream synchronization. See [Operations](docs/OPERATIONS.md) for the precise
+assurance boundary.
+
+## Repository layout
 
 | Path | Purpose |
 |---|---|
-| `ansible/applications/wsus/` | The role: WSUS on WID, SUSDB on E:, content on F:, IIS on G:, TLS on 8531 |
-| `ansible/playbooks/wsus-aws.yml` | Readiness play (SSM-SSH wait) + the composed WSUS play |
-| `ansible/inventory/aws_ec2.yml` | Dynamic inventory: finds the instance by Function tag, targets it as its instance id through SSM |
-| `terraform/aws.tfvars` | The one system, as framework input; single source of truth for the deploy subnet |
-| `.github/ansible-framework-pin` / `.github/terraform-framework-pin` | The framework checkouts, pinned by commit SHA |
-| `.github/workflows/` | `aws-deploy` (the lifecycle + required PR check), `aws-reaper` (15-min teardown sweep), `pin-bump` (self-validating pin tracking) |
-| `docs/reference/aws-iam/` | The audited IAM boundary as source documents; applied by `scripts/bootstrap-iam.sh` |
-| `docs/ansible-style-guide.md` | The org style & design guide |
-| `docs/TECH-DEBT.md` | Known debt, each entry with its exit criteria |
+| `ansible/applications/wsus/` | WSUS/WID role, validation, convergence, and independent verifier |
+| `ansible/playbooks/wsus-aws.yml` | Exact inventory preflight, Windows readiness, disk provisioning, and role invocation |
+| `terraform/aws.tfvars` | Data-only input for the pinned Terraform framework |
+| `.github/*-framework-pin` | Reviewed, immutable framework commit pins |
+| `.github/workflows/quality.yml` | Required credential-free source and composed-Ansible gate |
+| `.github/workflows/aws-deploy.yml` | Protected-main deploy, configure, verify, destroy lifecycle |
+| `.github/workflows/aws-reaper.yml` | Conservative fallback cleanup for old terminal runs |
+| `.github/workflows/pin-bump.yml` | Framework update discovery; opens one PR and never auto-merges |
+| `docs/reference/aws-iam/` | Reviewed IAM source documents and trust boundary |
+| `scripts/verify.sh` | Single local/CI verification entry point |
 
-## Operational notes
+The workflow builds its target inventory from Terraform output and verifies the live EC2
+repository/run identity before Ansible can mutate it. `ansible/inventory/aws_ec2.yml` remains a
+human-operated discovery aid; it is not the lifecycle's authority for target selection.
 
-- GitHub pauses scheduled workflows on public repos after ~60 days without repo activity;
-  pin-bump commits normally reset that clock, and GitHub emails a warning before pausing.
-- IAM changes are operator-applied: edit `docs/reference/aws-iam/`, then
-  `BOOTSTRAP_ARTIFACT_BUCKET=<bucket> ./scripts/bootstrap-iam.sh --apply <profile>` and
-  `--check-drift`. CI proves the boundary on every run; it cannot widen it.
+## Working on the repository
+
+Run the same gate as CI with the exact versions in `quality-tools.env`,
+`requirements-quality.txt`, and `requirements-quality.yml` installed:
+
+```bash
+QUALITY_ANSIBLE_FRAMEWORK=/path/to/pinned/ansible-framework \
+  QUALITY_REQUIRE_COMPOSED=1 \
+  ./scripts/verify.sh
+```
+
+`QUALITY_ANSIBLE_FRAMEWORK` must be a checkout at the SHA in
+`.github/ansible-framework-pin`. CI installs the complete pinned toolchain and is the canonical
+clean-runner result.
+
+Do not run the Terraform deployment locally while a GitHub lifecycle is nonterminal. To run an
+on-demand proof, use **Actions → AWS Deploy → Run workflow** on `main`.
+
+## IAM changes
+
+The deploy role cannot widen its own boundary. After reviewing a source-policy or OIDC change,
+materialize and apply it with an administrative profile, then check drift:
+
+```bash
+./scripts/bootstrap-iam.sh --apply <profile>
+./scripts/bootstrap-iam.sh --check-drift <profile>
+```
+
+The bootstrap and playbook both derive the artifact bucket as `<account-id>-ansible`; an optional
+legacy `BOOTSTRAP_ARTIFACT_BUCKET` value is accepted only when it equals that derived name.
+
+Apply IAM changes before merging a commit that depends on them. The first protected-main
+lifecycle is the acceptance test for that rollout.
+
+## Operating and support references
+
+- [Operations, incidents, IAM drift, dependency policy, and decommissioning](docs/OPERATIONS.md)
+- [WSUS role inputs and invariants](ansible/applications/wsus/README.md)
+- [Known debt and explicit exit criteria](docs/TECH-DEBT.md)
+- [Security reporting](SECURITY.md)
+- [IAM source-document contract](docs/reference/aws-iam/README.md)
+
+Licensed under the [MIT License](LICENSE).
