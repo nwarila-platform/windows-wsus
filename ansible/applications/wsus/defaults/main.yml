@@ -40,33 +40,22 @@ wsus_defaults:
     periodic_restart: '00:00:00'
     idle_timeout: '00:00:00'
     pinging_enabled: false
-  # Role-managed directory for the SUSDB maintenance scripts + timestamped run logs;
-  # overridable for hosts with a different maintenance layout.
-  maintenance:
-    dir: 'C:\ProgramData\wsus-maintenance'
-    # Weekly off-hours reindex window (time is target-local HH:MM); the ISO 8601 time limit
-    # bounds a hung or lock-blocked run.
-    reindex_schedule:
-      day: 'sunday'
-      time: '03:00'
-      time_limit: 'PT2H'
-    # WSUS Server Cleanup operations run by the scheduled cleanup; MS's full set — override to a
-    # subset if needed.
-    cleanup_operations:
-      - 'DeclineSupersededUpdates'
-      - 'DeclineExpiredUpdates'
-      - 'CleanupObsoleteComputers'
-      - 'CleanupObsoleteUpdates'
-      - 'CleanupUnneededContentFiles'
-      - 'CompressUpdates'
-    # Monthly first-week off-hours cleanup: 00:00 + PT2H finishes by 02:00, leaving a one-hour
-    # buffer before the 03:00 weekly reindex because IgnoreNew does not prevent cleanup/reindex
-    # concurrency. week maps to weeks_of_month (1 = first).
-    cleanup_schedule:
-      week: 1
-      day: 'sunday'
-      time: '00:00'
-      time_limit: 'PT2H'
+  # TLS for the WSUS SSL endpoint (8531). MVP: a locally generated self-signed certificate —
+  # trust distribution is deliberately out of scope. The artifact-pipeline coordinates below
+  # exist so a CA-issued PFX can replace self-signed without reshaping the config: the bucket
+  # comes from the playbook's wsus.bucket, and pfx_key is the object key inside it.
+  tls:
+    enabled: true
+    # Certificate subject / SAN. Empty => the machine's computer name.
+    dns_name: ''
+    # Pin an existing LocalMachine\My certificate by thumbprint. Empty => find-or-create a
+    # self-signed certificate for dns_name.
+    thumbprint: ''
+    # HTTPS port WSUS serves on; wsusutil configuressl rewrites client-facing URLs to it.
+    port: 8531
+    # Default object key for the future CA-issued PFX (delivered via s3_artifact_delivery;
+    # not fetched while thumbprint/self-signed satisfies the MVP).
+    pfx_key: 'applications/windows-wsus/tls/wsus.pfx'
   # Which languages' updates WSUS syncs/downloads (lowercase codes). The postinstall default is
   # ALL languages (a large, wasteful scope), so the role restricts it. Override to add languages.
   sync:
@@ -94,29 +83,5 @@ wsus_defaults:
     # The IIS default web content root, relocated to the IIS disk (G:) for STIG "IIS on its own drive".
     # Literal drive-qualified path (a %SystemDrive% token is treated as drift). C12c.
     wwwroot: 'G:\inetpub\wwwroot'
-    # IIS W3C log event destination (STIG V-218786). Valid: File | ETW | 'File,ETW'. File keeps the G: file
-    # logs; ETW adds a real-time event emit. Director (2026-07-18): ship File,ETW. C13e.
-    log_target_w3c: 'File,ETW'
-    # STIG-required W3C CUSTOM log fields (V-218788/V-218789) — a SEPARATE collection from the standard fields
-    # (logExtFileFlags), so the already-complete standard set does not cover them. C13d.
-    custom_log_fields:
-      - { field: 'Connection', source: 'Connection', source_type: 'RequestHeader' }
-      - { field: 'Warning', source: 'Warning', source_type: 'RequestHeader' }
-      - { field: 'Authorization', source: 'Authorization', source_type: 'RequestHeader' }
-      - { field: 'Content-Type', source: 'Content-Type', source_type: 'ResponseHeader' }
-    # IIS W3C log retention (days). IIS has no built-in retention; the C13g scheduled task deletes *.log
-    # older than this under iis.log_dir. Director (2026-07-18): 90. Overridable. C13f.
-    log_retention_days: 90
-    # Weekly off-hours schedule for the IIS log cleanup (02:00 sits between the 00:00 monthly WSUS cleanup
-    # and the 03:00 weekly SUSDB reindex). C13g.
-    log_cleanup_schedule:
-      day: 'sunday'
-      time: '02:00'
-      time_limit: 'PT1H'
-    # Enable the Microsoft-IIS-Configuration/Operational event channel (logs IIS config changes — a
-    # web-shell/config-tamper signal; operational-class = retention-safe, low volume). Set false to opt out. C13i.
-    config_channel_enabled: true
-    # Max size (bytes) for that channel; 20 MB mirrors the App/System sizing. C13i.
-    config_channel_max_bytes: 20971520
 # Disk identity and volume-format conventions are declared for windows_disk_manager in the
 # playbook; this file holds only wsus role defaults.

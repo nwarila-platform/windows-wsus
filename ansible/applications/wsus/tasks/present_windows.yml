@@ -372,135 +372,6 @@
 
     #endregion --- [ Main: WSUS Tuning ] -------------------------------------------------- #
 
-    #region ------ [ Main: WSUS Maintenance ] --------------------------------------------- #
-
-    # Role-managed home for the SUSDB maintenance scripts and their timestamped run logs.
-    # win_file state:directory is idempotent (creates if absent, no-op if present).
-    - name: 'MAIN | Ensure WSUS Maintenance Directory'
-      ansible.windows.win_file:
-        path: '{{ config.maintenance.dir }}'
-        state: directory
-
-    # Deploy MS's verbatim reindex script + the SqlClient/WID-pipe runner and the UpdateServices
-    # cleanup runner. Server 2025 has no sqlcmd, so the reindex runner GO-splits the script using
-    # the C06 idiom. win_copy is checksum-idempotent; C09b/C10b schedule the runners.
-    - name: 'MAIN | Deploy WSUS Maintenance Tooling'
-      ansible.windows.win_copy:
-        src: '{{ item }}'
-        dest: '{{ config.maintenance.dir }}\{{ item }}'
-      loop: ['SUSDBMaint.sql', 'Invoke-SusdbReindex.ps1', 'Invoke-WsusCleanup.ps1', 'Invoke-IisLogCleanup.ps1']
-      loop_control:
-        label: '{{ item }}'
-
-    # The credential-free scheduled reindex runs as SYSTEM, which is not a WID sysadmin by
-    # default. Grant it the same WID sysadmin the local admin already holds: sysadmin is required
-    # because db_owner cannot run sp_updatestats. SID-verified IF-NOT-EXISTS checks keep the
-    # SqlClient/WID-pipe C06/C09a idiom idempotent.
-    - name: 'MAIN | Grant SYSTEM WID sysadmin For Scheduled Reindex'
-      ansible.windows.win_shell: |
-        $ErrorActionPreference = 'Stop'
-        $changed = $false
-        $conn = $null
-        try {
-            $conn = New-Object System.Data.SqlClient.SqlConnection($env:WID_CONN)
-            $conn.Open()
-            $check = $conn.CreateCommand()
-            $check.CommandText = "SELECT COUNT(*) FROM sys.server_principals WHERE name = 'NT AUTHORITY\SYSTEM' AND type = 'U' AND sid = SUSER_SID('NT AUTHORITY\SYSTEM')"
-            if ([int]$check.ExecuteScalar() -eq 0) {
-                $make = $conn.CreateCommand()
-                $make.CommandText = "CREATE LOGIN [NT AUTHORITY\SYSTEM] FROM WINDOWS"
-                [void]$make.ExecuteNonQuery()
-                $changed = $true
-            }
-            $role = $conn.CreateCommand()
-            $role.CommandText = "SELECT COUNT(*) FROM sys.server_role_members rm JOIN sys.server_principals r ON rm.role_principal_id = r.principal_id JOIN sys.server_principals p ON rm.member_principal_id = p.principal_id WHERE r.name = 'sysadmin' AND p.name = 'NT AUTHORITY\SYSTEM'"
-            if ([int]$role.ExecuteScalar() -eq 0) {
-                $add = $conn.CreateCommand()
-                $add.CommandText = "ALTER SERVER ROLE sysadmin ADD MEMBER [NT AUTHORITY\SYSTEM]"
-                [void]$add.ExecuteNonQuery()
-                $changed = $true
-            }
-        } finally {
-            if ($conn -and $conn.State -eq 'Open') { $conn.Close() }
-        }
-        if ($changed) { Write-Output 'changed' } else { Write-Output 'nochange' }
-      environment:
-        WID_CONN: '{{ __wid_conn_master__ }}'
-      register: __susdb_grant_system__
-      changed_when: "__susdb_grant_system__.stdout | trim == 'changed'"
-
-    # Schedule the C09a runner weekly off-hours as SYSTEM: service_account stores no password,
-    # and SYSTEM has the required WID sysadmin grant above. IgnoreNew (2) prevents overlapping
-    # offline-lock reindexes; the time limit bounds a hung run. The fixed past start-boundary
-    # date anchors recurrence while day_of_week + target-local time drive the weekly schedule.
-    - name: 'MAIN | Schedule The SUSDB Reindex'
-      community.windows.win_scheduled_task:
-        name: 'WSUS SUSDB Reindex'
-        description: 'Weekly off-hours SUSDB reindex/defragment (MS SUSDBMaint.sql via SqlClient over the WID pipe). wsus role C09b.'
-        actions:
-          - path: 'powershell.exe'
-            arguments: '-NoProfile -ExecutionPolicy Bypass -File "{{ config.maintenance.dir }}\Invoke-SusdbReindex.ps1" -ScriptPath "{{ config.maintenance.dir }}\SUSDBMaint.sql" -LogDir "{{ config.maintenance.dir }}"'
-        triggers:
-          - type: weekly
-            days_of_week: '{{ config.maintenance.reindex_schedule.day }}'
-            start_boundary: '2020-01-01T{{ config.maintenance.reindex_schedule.time }}:00'
-        username: 'NT AUTHORITY\SYSTEM'
-        logon_type: service_account
-        run_level: highest
-        multiple_instances: 2
-        execution_time_limit: '{{ config.maintenance.reindex_schedule.time_limit }}'
-        state: present
-        enabled: true
-
-    # Schedule the C10a cleanup runner monthly (first Sunday 00:00, before the 03:00 weekly
-    # reindex) as SYSTEM: service_account stores no password, and SYSTEM has the C09b WID
-    # sysadmin grant (pre-tested). Operations come from the cleanup_operations default joined
-    # to the runner's comma-scalar, which its allowlist re-validates. IgnoreNew never overlaps;
-    # the time limit bounds a hung run.
-    - name: 'MAIN | Schedule The WSUS Server Cleanup'
-      community.windows.win_scheduled_task:
-        name: 'WSUS Server Cleanup'
-        description: 'Monthly (first Sunday, off-hours) WSUS Server Cleanup (Invoke-WsusServerCleanup). wsus role C10b.'
-        actions:
-          - path: 'powershell.exe'
-            arguments: '-NoProfile -ExecutionPolicy Bypass -File "{{ config.maintenance.dir }}\Invoke-WsusCleanup.ps1" -LogDir "{{ config.maintenance.dir }}" -Operations "{{ config.maintenance.cleanup_operations | join(",") }}"'
-        triggers:
-          - type: monthlydow
-            weeks_of_month: '{{ config.maintenance.cleanup_schedule.week }}'
-            days_of_week: '{{ config.maintenance.cleanup_schedule.day }}'
-            start_boundary: '2020-01-01T{{ config.maintenance.cleanup_schedule.time }}:00'
-        username: 'NT AUTHORITY\SYSTEM'
-        logon_type: service_account
-        run_level: highest
-        multiple_instances: 2
-        execution_time_limit: '{{ config.maintenance.cleanup_schedule.time_limit }}'
-        state: present
-        enabled: true
-
-    # Schedule the C13f IIS log cleanup weekly off-hours as SYSTEM (credential-free; SYSTEM already has
-    # FullControl on the IIS log dir via C13c — filesystem-only, NO WID grant). 02:00 sits between the 00:00
-    # monthly cleanup and the 03:00 weekly reindex. IgnoreNew never overlaps; the time limit bounds a hung run.
-    - name: 'MAIN | Schedule The IIS Log Cleanup'
-      community.windows.win_scheduled_task:
-        name: 'WSUS IIS Log Cleanup'
-        description: 'Weekly off-hours IIS W3C log cleanup (delete *.log older than iis.log_retention_days). wsus role C13g.'
-        actions:
-          - path: 'powershell.exe'
-            arguments: '-NoProfile -ExecutionPolicy Bypass -File "{{ config.maintenance.dir }}\Invoke-IisLogCleanup.ps1" -LogPath "{{ config.iis.log_dir }}" -MaxAgeDays {{ config.iis.log_retention_days }} -LogDir "{{ config.maintenance.dir }}"'
-        triggers:
-          - type: weekly
-            days_of_week: '{{ config.iis.log_cleanup_schedule.day }}'
-            start_boundary: '2020-01-01T{{ config.iis.log_cleanup_schedule.time }}:00'
-        username: 'NT AUTHORITY\SYSTEM'
-        logon_type: service_account
-        run_level: highest
-        multiple_instances: 2
-        execution_time_limit: '{{ config.iis.log_cleanup_schedule.time_limit }}'
-        state: present
-        enabled: true
-
-    #endregion --- [ Main: WSUS Maintenance ] --------------------------------------------- #
-
     #region ------ [ Main: WSUS Sync Configuration ] --------------------------------------- #
 
     # Restrict update languages (default en) so a sync doesn't pull every language (the
@@ -806,127 +677,101 @@
       loop_control:
         label: '{{ item.user }}'
 
-    # Harden the IIS W3C log config to STIG: logTargetW3C=File,ETW (V-218786) on siteDefaults + every site, and
-    # the four required custom fields (V-218788/9) in the siteDefaults customFields collection (separate from the
-    # standard fields). Config-object idiom (native-module template): normalized compare + full-tuple guard +
-    # self-heal + re-acquire-verify + changed/nochange. §8 win_shell (no native module for IIS log config).
-    - name: 'MAIN | Harden IIS W3C Log Config (STIG custom fields + File,ETW target)'
+    #endregion --- [ Main: IIS Logging + Relocation ] ------------------------------------- #
+
+    #region ------ [ Main: WSUS SSL (local certificate) ] ---------------------------------- #
+
+    # MVP TLS: a locally generated self-signed certificate serves the 8531 endpoint; trust
+    # distribution is deliberately out of scope. One idempotent step per concern, in the
+    # role's sentinel style: resolve/create the certificate, bind it to 8531 in IIS, then
+    # wsusutil configuressl so WSUS requires SSL on its client-facing virtual directories and
+    # hands clients the https URL. A CA-issued PFX later replaces only the first step
+    # (delivered from wsus.bucket + tls.pfx_key via s3_artifact_delivery).
+
+    - name: 'MAIN | Resolve Or Create The WSUS TLS Certificate'
+      when: config.tls.enabled | bool
+      ansible.windows.win_shell: |
+        $ErrorActionPreference = 'Stop'
+        $dns = $env:TLS_DNS_NAME
+        if (-not $dns) { $dns = $env:COMPUTERNAME }
+        $pinned = $env:TLS_THUMBPRINT
+        if ($pinned) {
+            $cert = Get-ChildItem Cert:\LocalMachine\My | Where-Object { $_.Thumbprint -eq $pinned }
+            if (-not $cert) { throw ("pinned thumbprint " + $pinned + " not found in LocalMachine\My") }
+            Write-Output ("nochange " + $cert.Thumbprint)
+            exit 0
+        }
+        $cert = Get-ChildItem Cert:\LocalMachine\My |
+            Where-Object { $_.Subject -eq ("CN=" + $dns) -and $_.NotAfter -gt (Get-Date) } |
+            Sort-Object NotAfter -Descending | Select-Object -First 1
+        if ($cert) {
+            Write-Output ("nochange " + $cert.Thumbprint)
+        } else {
+            $cert = New-SelfSignedCertificate -DnsName $dns -CertStoreLocation Cert:\LocalMachine\My `
+                -FriendlyName 'WSUS TLS (self-signed MVP)' -KeyExportPolicy NonExportable
+            Write-Output ("changed " + $cert.Thumbprint)
+        }
+      environment:
+        TLS_DNS_NAME: "{{ config.tls.dns_name | default('') }}"
+        TLS_THUMBPRINT: "{{ config.tls.thumbprint | default('') }}"
+      register: __tls_cert__
+      changed_when: "(__tls_cert__.stdout | trim).startswith('changed')"
+
+    - name: 'MAIN | Bind The Certificate To The WSUS 8531 HTTPS Endpoint'
+      when: config.tls.enabled | bool
       ansible.windows.win_shell: |
         $ErrorActionPreference = 'Stop'
         Import-Module WebAdministration
+        $thumb = $env:TLS_CERT_LINE.Split(' ')[1]
+        $port = [int]$env:TLS_PORT
+        $site = 'WSUS Administration'
         $changed = $false
-        function Normalize-Target([string]$t) {
-            if ([string]::IsNullOrWhiteSpace($t)) {
-                return ''
-            }
-            return (($t -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }) -join ',').ToLowerInvariant()
-        }
-        $wantTarget = $env:LOG_TARGET
-        $wantNorm = Normalize-Target $wantTarget
-        # logTargetW3C (a flags enum) is returned as a plain String by Get-WebConfigurationProperty /
-        # Get-ItemProperty — NOT a wrapper with .Value (unlike 'directory'), so read it via [string](...)
-        # (a .Value read yields empty and would loop-set + false-fail the verify).
-        $sdCur = [string](Get-WebConfigurationProperty -filter 'system.applicationHost/sites/siteDefaults/logFile' -name logTargetW3C)
-        if ((Normalize-Target $sdCur) -ne $wantNorm) {
-            Set-WebConfigurationProperty -filter 'system.applicationHost/sites/siteDefaults/logFile' -name logTargetW3C -value $wantTarget
+        $binding = Get-WebBinding -Name $site -Protocol https -Port $port -ErrorAction SilentlyContinue
+        if (-not $binding) {
+            New-WebBinding -Name $site -Protocol https -Port $port -IPAddress '*'
+            $binding = Get-WebBinding -Name $site -Protocol https -Port $port
             $changed = $true
         }
-        foreach ($s in @(Get-Website)) {
-            $cur = [string](Get-ItemProperty -LiteralPath ('IIS:\Sites' + [char]92 + $s.Name) -name logFile.logTargetW3C)
-            if ((Normalize-Target $cur) -ne $wantNorm) {
-                Set-ItemProperty -LiteralPath ('IIS:\Sites' + [char]92 + $s.Name) -name logFile.logTargetW3C -value $wantTarget
-                $changed = $true
-            }
+        $bound = Get-Item ("IIS:\SslBindings\0.0.0.0!" + $port) -ErrorAction SilentlyContinue
+        if (-not $bound -or $bound.Thumbprint -ne $thumb) {
+            if ($bound) { Remove-Item ("IIS:\SslBindings\0.0.0.0!" + $port) }
+            $cert = Get-Item ("Cert:\LocalMachine\My\" + $thumb)
+            New-Item ("IIS:\SslBindings\0.0.0.0!" + $port) -Value $cert | Out-Null
+            $changed = $true
         }
-        $cfFilter = 'system.applicationHost/sites/siteDefaults/logFile/customFields'
-        # PS 5.1: `@(pipeline | ConvertFrom-Json)` wraps a JSON array as ONE jagged element (member
-        # enumeration then makes $f.field an array -> DISP_E_TYPEMISMATCH on Add). Assign the command
-        # result first, THEN @() it, so each $f is a scalar-valued object.
-        $parsed = ConvertFrom-Json $env:CUSTOM_FIELDS
-        $want = @($parsed)
-        foreach ($f in $want) {
-            $existing = @(Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -filter ($cfFilter + '/add') -name '.' | Where-Object { $_.logFieldName -eq $f.field })
-            $exact = @($existing | Where-Object { $_.sourceName -eq $f.source -and $_.sourceType -eq $f.source_type })
-            if ($exact.Count -eq 0) {
-                if ($existing.Count -gt 0) {
-                    Remove-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -filter $cfFilter -name '.' -AtElement @{ logFieldName = $f.field }
-                }
-                Add-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -filter $cfFilter -name '.' -value @{ logFieldName = $f.field; sourceName = $f.source; sourceType = $f.source_type }
-                $changed = $true
-            }
-        }
-        $sdAfter = Normalize-Target ([string](Get-WebConfigurationProperty -filter 'system.applicationHost/sites/siteDefaults/logFile' -name logTargetW3C))
-        if ($sdAfter -ne $wantNorm) {
-            throw ('logTargetW3C did not persist on siteDefaults: got ' + $sdAfter)
-        }
-        $after = @(Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -filter ($cfFilter + '/add') -name '.')
-        foreach ($f in $want) {
-            $ok = @($after | Where-Object { $_.logFieldName -eq $f.field -and $_.sourceName -eq $f.source -and $_.sourceType -eq $f.source_type })
-            if ($ok.Count -eq 0) {
-                throw ('custom field did not persist: ' + $f.field)
-            }
-        }
-        if ($changed) {
-            Write-Output 'changed'
-        } else {
-            Write-Output 'nochange'
-        }
+        $verify = Get-Item ("IIS:\SslBindings\0.0.0.0!" + $port)
+        if ($verify.Thumbprint -ne $thumb) { throw 'ssl binding did not persist' }
+        if ($changed) { Write-Output 'changed' } else { Write-Output 'nochange' }
       environment:
-        LOG_TARGET: '{{ config.iis.log_target_w3c }}'
-        CUSTOM_FIELDS: '{{ config.iis.custom_log_fields | to_json }}'
-      register: __iis_log_hardening__
-      changed_when: "__iis_log_hardening__.stdout | trim == 'changed'"
+        TLS_CERT_LINE: "{{ __tls_cert__.stdout | trim }}"
+        TLS_PORT: "{{ config.tls.port }}"
+      register: __tls_binding__
+      changed_when: "__tls_binding__.stdout | trim == 'changed'"
 
-    #endregion --- [ Main: IIS Logging + Relocation ] ------------------------------------- #
-
-    #region ------ [ Main: Observability ] ------------------------------------------------- #
-
-    # Deploy pre-built Event Viewer custom views for meaningful operational visibility into the services.
-    # Event Viewer reads %ProgramData%\Microsoft\Event Viewer\Views\*.xml at startup (the folder exists on a
-    # fresh server); the views appear under "Custom Views" on the next open. Static XML, win_copy is
-    # checksum-idempotent. C13h.
-    - name: 'MAIN | Ensure Event Viewer Views Directory'
-      ansible.windows.win_file:
-        path: 'C:\ProgramData\Microsoft\Event Viewer\Views'
-        state: directory
-
-    - name: 'MAIN | Deploy WSUS/IIS/WID Event Viewer Custom Views'
-      ansible.windows.win_copy:
-        src: 'eventviewer/{{ item }}'
-        dest: 'C:\ProgramData\Microsoft\Event Viewer\Views\{{ item }}'
-      loop: ['WSUS.xml', 'IIS-WsusPool.xml', 'WID-SUSDB.xml']
-      loop_control:
-        label: '{{ item }}'
-
-    # Enable the IIS-Configuration Operational channel via the native EventLogConfiguration API (no wevtutil
-    # string-parsing). Guard on BOTH IsEnabled AND MaximumSizeInBytes so an already-enabled-but-wrong-size
-    # channel still converges; re-acquire + verify. Gated on iis.config_channel_enabled so a host can opt out.
-    # §8 win_shell (channel state has no native module). C13i.
-    - name: 'MAIN | Enable IIS Configuration Operational Event Channel'
-      when: config.iis.config_channel_enabled | bool
+    - name: 'MAIN | Require SSL On The Client-Facing WSUS Endpoints (wsusutil configuressl)'
+      when: config.tls.enabled | bool
       ansible.windows.win_shell: |
         $ErrorActionPreference = 'Stop'
-        $ch = $env:CHANNEL
-        $wantBytes = [long]$env:MAX_BYTES
-        $cfg = New-Object System.Diagnostics.Eventing.Reader.EventLogConfiguration $ch
-        if ((-not $cfg.IsEnabled) -or ($cfg.MaximumSizeInBytes -ne $wantBytes)) {
-            $cfg.IsEnabled = $true
-            $cfg.MaximumSizeInBytes = $wantBytes
-            $cfg.SaveChanges()
-            $c2 = New-Object System.Diagnostics.Eventing.Reader.EventLogConfiguration $ch
-            if ((-not $c2.IsEnabled) -or ($c2.MaximumSizeInBytes -ne $wantBytes)) {
-                throw ('channel ' + $ch + ' did not persist: enabled=' + $c2.IsEnabled + ' bytes=' + $c2.MaximumSizeInBytes)
-            }
-            Write-Output 'changed'
-        } else {
+        $dns = $env:TLS_DNS_NAME
+        if (-not $dns) { $dns = $env:COMPUTERNAME }
+        # ServerSupportsSsl mirrors what configuressl sets; skip when already configured for $dns.
+        $wsus = Get-WsusServer -Name localhost -PortNumber ([int]$env:TLS_PORT) -UseSsl -ErrorAction SilentlyContinue
+        if ($wsus) {
             Write-Output 'nochange'
+            exit 0
         }
+        & "$env:ProgramFiles\Update Services\Tools\wsusutil.exe" configuressl $dns | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw ('wsusutil configuressl failed with ' + $LASTEXITCODE) }
+        # Re-acquire over SSL to prove it took.
+        $wsus = Get-WsusServer -Name localhost -PortNumber ([int]$env:TLS_PORT) -UseSsl
+        if (-not $wsus) { throw 'WSUS did not answer over SSL after configuressl' }
+        Write-Output 'changed'
       environment:
-        CHANNEL: 'Microsoft-IIS-Configuration/Operational'
-        MAX_BYTES: '{{ config.iis.config_channel_max_bytes }}'
-      register: __iis_config_channel__
-      changed_when: "__iis_config_channel__.stdout | trim == 'changed'"
+        TLS_DNS_NAME: "{{ config.tls.dns_name | default('') }}"
+        TLS_PORT: "{{ config.tls.port }}"
+      register: __tls_configuressl__
+      changed_when: "__tls_configuressl__.stdout | trim == 'changed'"
 
-    #endregion --- [ Main: Observability ] ------------------------------------------------- #
+    #endregion --- [ Main: WSUS SSL (local certificate) ] ---------------------------------- #
 
 #endregion --- [ Script ] -------------------------------------------------------------------- #

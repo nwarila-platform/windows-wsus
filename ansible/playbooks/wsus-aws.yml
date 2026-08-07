@@ -153,5 +153,13 @@
           # convention (the state bucket is '<account-id>-terraform' the same way); it must
           # match the <artifact-bucket> value materialized into the IAM sources.
           bucket: "{{ aws_account_id }}-ansible"
+          # TLS (MVP): the role finds-or-creates a self-signed certificate (dns_name '' =>
+          # computer name), binds it to 8531, and runs wsusutil configuressl. Pin a
+          # CA-issued certificate later by setting thumbprint (delivered from bucket +
+          # tls.pfx_key); trust distribution is deliberately out of scope here.
+          tls:
+            enabled: true
+            dns_name: ''
+            thumbprint: ''
     #endregion --- [ Roles: Windows Server Update Service ] ----------------------------------- #
   #endregion --- [ Roles ] -------------------------------------------------------------------- #
