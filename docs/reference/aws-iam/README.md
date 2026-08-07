@@ -197,6 +197,11 @@ governs who may manage the groups. Treat the rule set as code-reviewed, not poli
   `security-group/*` leg, which is tag- and VPC-pinned, so a foreign rule cannot be reached without
   its foreign parent. EC2 exposes VPC context on the parent group, not the rule resource — this is
   why it looks loose and is not.
+- **`ec2:DisassociateAddress` is region-scoped only** (proven live, run 31183916280): Terraform
+  disassociates by association-id, and EC2 then resolves no taggable resource — the request
+  authorizes against `*/*`, so a `ResourceTag` condition fails closed and blocks every destroy.
+  The exposure is disruption-only (a sibling's EIP could be detached, not released or stolen);
+  Release/Associate stay tag-gated.
 - **SSM session teardown is region-scoped.** An assumed role's `${aws:userid}` is
   `<role-id>:<session-name>`, which is not an SSM session-id prefix, so using it to narrow the ARN
   would silently deny legitimate teardown.

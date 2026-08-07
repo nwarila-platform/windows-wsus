@@ -57,30 +57,19 @@
     - name: 'READY | Wait for EC2Launch provisioning to complete'
       ansible.builtin.raw: '"C:\Program Files\Amazon\EC2Launch\EC2Launch.exe" status -b'
 
+    # reg.exe on purpose: it parses identically under cmd (the boot default shell) and
+    # PowerShell, so both the set and the verify are shell-agnostic — and sshd reads
+    # DefaultShell per NEW session, so no service restart is needed: the next play's first
+    # connection already lands in PowerShell.
     - name: 'READY | Set PowerShell as the OpenSSH default shell'
-      # The sshd restart drops this task's own session — the verify below is the real check.
       ansible.builtin.raw: >-
-        powershell -NoProfile -NonInteractive -Command
-        "Set-ItemProperty -Path 'HKLM:\SOFTWARE\OpenSSH' -Name DefaultShell
-        -Value 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe';
-        Restart-Service sshd"
-      failed_when: false
-
-    - name: 'READY | Wait for sshd to return after the restart'
-      delegate_to: 'localhost'
-      ansible.builtin.command:
-        cmd: "{{ __ssh_probe__ }}"
-      register: '__sshd_back__'
-      retries: 12
-      delay: 5
-      until: __sshd_back__.rc == 0
-      failed_when: __sshd_back__.rc != 0
-      changed_when: false
+        reg add "HKLM\SOFTWARE\OpenSSH" /v DefaultShell /t REG_SZ
+        /d "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" /f
 
     - name: 'READY | Verify the default shell is PowerShell'
-      # A PowerShell-only expression: fails under cmd, answers the path once the flip landed.
-      ansible.builtin.raw: '(Get-ItemProperty "HKLM:\SOFTWARE\OpenSSH").DefaultShell'
+      ansible.builtin.raw: 'reg query "HKLM\SOFTWARE\OpenSSH" /v DefaultShell'
       register: '__default_shell__'
+      changed_when: false
       failed_when: "'powershell.exe' not in (__default_shell__.stdout | default('') | lower)"
 #endregion --- [ Play: Windows Readiness ] ---------------------------------------------------- #
 

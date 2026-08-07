@@ -138,10 +138,7 @@
     {
       "Sid": "AssociateEipToOurResources",
       "Effect": "Allow",
-      "Action": [
-        "ec2:AssociateAddress",
-        "ec2:DisassociateAddress"
-      ],
+      "Action": "ec2:AssociateAddress",
       "Resource": [
         "arn:aws:ec2:<region>:*:elastic-ip/*",
         "arn:aws:ec2:<region>:*:instance/*",
@@ -151,6 +148,17 @@
         "StringEquals": {
           "aws:RequestedRegion": "<region>",
           "ec2:ResourceTag/nwarila:management:repository-id": "<repository-id>"
+        }
+      }
+    },
+    {
+      "Sid": "DisassociateAddressRegionOnly",
+      "Effect": "Allow",
+      "Action": "ec2:DisassociateAddress",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "<region>"
         }
       }
     },
