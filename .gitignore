@@ -1,9 +1,24 @@
 # composition build tree (framework checkout + overlaid role) — never committed
-.compose/
+.frameworks/
+.quality/
+.quality-local.*/
 
 # ansible scratch
 *.retry
 *.log
+
+# Python/controller environments and caches
+.venv/
+venv/
+**/__pycache__/
+*.py[cod]
+
+# Terraform working data and local plans/state
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
 
 # build worktrees live outside the repo (../.worktrees) but guard anyway
 .worktrees/
@@ -11,6 +26,11 @@
 # local-only secrets / scratch (never commit credentials)
 *.secret
 temp-password*
+*.password
+*.pem
+*.key
+*.pfx
+*.p12
 
 # Working notes and audit trail — process records, not repository content. The whole tree is
 # ignored and was purged from history, so nothing under it can reach a commit by any path.
@@ -22,4 +42,3 @@ temp-password*
 ROADMAP.md
 AGENTS.md
 .claude/
-docs/session-runbook.md

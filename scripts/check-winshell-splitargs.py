@@ -21,7 +21,7 @@
 #   /root/.local/share/pipx/venvs/ansible-core/bin/python scripts/check-winshell-splitargs.py
 #   (optional: pass explicit task-file paths as args; default globs applications/*/tasks/*.yml)
 #
-# Exit 0 = clean; 1 = at least one block fails split_args or contains \' / \"; 3 = wrong python.
+# Exit 0 = clean; 1 = unreadable input, no blocks, or a block-level failure; 3 = wrong python.
 # =========================================================================================== #
 import sys
 import os
@@ -64,13 +64,19 @@ def main(argv):
         here = os.path.dirname(os.path.abspath(__file__))
         paths = sorted(glob.glob(os.path.join(
             here, '..', 'ansible', 'applications', '*', 'tasks', '*.yml')))
+    if not paths:
+        print("[FAIL discovery] no application task files found")
+        return 1
+
     problems = 0
     scanned = 0
     for path in paths:
         try:
-            docs = list(yaml.safe_load_all(open(path)))
-        except Exception as exc:  # noqa: BLE001 — report and continue
-            print("[SKIP] %s: YAML load error (%s)" % (path, exc))
+            with open(path, encoding='utf-8') as task_file:
+                docs = list(yaml.safe_load_all(task_file))
+        except Exception as exc:  # noqa: BLE001 — every unreadable input fails the gate
+            problems += 1
+            print("[FAIL YAML] %s: load error (%s)" % (path, exc))
             continue
         blocks = []
         for doc in docs:
@@ -89,6 +95,9 @@ def main(argv):
                 snippet = content[max(0, match.start() - 14):match.start() + 2]
                 print("[FAIL backslash-before-quote] %s :: %s (…%s) — use [char]92"
                       % (os.path.relpath(path), name, snippet))
+    if scanned == 0:
+        problems += 1
+        print("[FAIL discovery] no win_shell/win_command free-form blocks found")
     print("\nscanned %d win_shell/win_command block(s); %d problem(s)" % (scanned, problems))
     return 1 if problems else 0
 

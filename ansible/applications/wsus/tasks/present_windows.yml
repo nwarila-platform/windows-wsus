@@ -6,25 +6,36 @@
 # the v3 loader via first_found). Receives the merged running configuration as 'config'.
 #
 # Disk provisioning is delegated to windows_disk_manager, which the playbook runs first. The wsus
-# role builds WID and WSUS content paths from the database and content letters; its IIS letter is
-# only a distinctness-check input, while IIS paths are literal. Matching those letters to the
-# provisioner's declaration is required but unenforced. This role's configuration invariants live
-# in tasks/validate.yml.
+# role builds WID and WSUS content paths from the database and content letters; its IIS letter
+# anchors both literal IIS paths. The playbook feeds both roles one shared layout, and this role's
+# independently reusable configuration invariants are enforced in tasks/validate.yml.
 #
 # =========================================================================================== #
 ---
 #region ------ [ Script ] -------------------------------------------------------------------- #
 
+- name: 'MAIN | Resolve The Windows System Drive'
+  ansible.windows.win_shell: |
+    $ErrorActionPreference = 'Stop'
+    $systemDrive = [string]$env:SystemDrive
+
+    if ($systemDrive -notmatch '^[A-Za-z]:$') {
+        throw "The process SystemDrive value is missing or invalid: [$systemDrive]"
+    }
+
+    $systemDrive.ToUpperInvariant()
+  register: __wsus_system_drive__
+  changed_when: false
+
 - name: 'INFO | Entering OS Tasks (present_windows - wsus)'
   vars:
-    # Application paths derive from this role's configured letters. The disk-manager declaration
-    # must assign the same letters; the README documents the cross-role drift limitation.
+    # Application paths derive from the same layout the playbook passes to the disk manager.
     __content_dir__: "{{ config.data_disks.content.drive_letter }}:\\{{ config.content_subdir }}"
     __wid_data_dir__: "{{ config.data_disks.db.drive_letter }}:\\{{ config.db_subdir }}"
     # WID instance's fixed default data directory under %SystemDrive% (MS-specified; SUSDB installs
-    # here — measured on the target). Derived from the gathered SystemDrive fact, NOT literal C:
-    # and NOT from db_subdir (which names the configurable E: TARGET; the source is fixed by WID).
-    __wid_source_dir__: "{{ ansible_facts.env.SystemDrive }}\\Windows\\WID\\Data"
+    # here — measured on the target). Derived from the explicit read-only probe above, NOT literal
+    # C: and NOT from db_subdir (which names the configurable E: TARGET; the source is fixed by WID).
+    __wid_source_dir__: "{{ __wsus_system_drive__.stdout | trim }}\\Windows\\WID\\Data"
     # Fixed WID master named-pipe connection string (architectural constant: the WID instance pipe is
     # MICROSOFT##WID; named pipes are case-insensitive). Env-passed (WID_CONN) to the SqlClient blocks so the
     # literal is defined once and no raw \\.\pipe\ backslashes sit in PowerShell source (split_args-safety).
@@ -73,17 +84,27 @@
     # + the UpdateServices PowerShell module (C07's Get-WsusServer). DO NOT set
     # include_sub_features: it maps to -IncludeAllSubFeature and would also pull
     # UpdateServices-DB (SQL Server Connectivity), which a WID build must NOT have.
-    # Idempotent: changed only when the cmdlet returns a non-empty FeatureResult (a converged
-    # re-run reports exitcode NoChangeNeeded). The module never reboots — it only reports
-    # reboot_required; C04 deliberately does not act on it (measured at P4 first).
-    - name: 'MAIN | Install WSUS Server Role (WID)'
+    # Install HTTP logging in the same feature transaction so a host that requires a reboot
+    # takes it once, before postinstall or any database mutation.  A converged rerun reports
+    # NoChangeNeeded and reboot_required=false.
+    - name: 'MAIN | Install WSUS Server Role (WID) And IIS HTTP Logging'
       ansible.windows.win_feature:
         name:
           - 'UpdateServices'
           - 'UpdateServices-WidDB'
           - 'UpdateServices-Services'
+          - 'Web-Http-Logging'
         include_management_tools: true
         state: present
+      register: __wsus_features__
+
+    - name: 'MAIN | Reboot After Windows Feature Installation When Required'
+      when: __wsus_features__.reboot_required | default(false) | bool
+      ansible.windows.win_reboot:
+        msg: 'Ansible is rebooting after WSUS/IIS feature installation'
+        pre_reboot_delay: 5
+        post_reboot_delay: 15
+        reboot_timeout: 1200
 
     # Target directory for the SUSDB relocation (C06 — community procedure, MS-unsupported,
     # Director-approved 2026-07-16) on the dedicated DB volume. Must exist before the WID
@@ -151,29 +172,140 @@
 
     #region ------ [ Main: SUSDB Relocation ] ----------------------------------------------- #
 
-    # One DB flow for both supported paths. The block runs only when wsusutil postinstall
-    # produced a fresh C: SUSDB during this run; the only branch is whether the E: target
-    # already contains a complete SUSDB pair.
-    - name: 'MAIN | Relocate SUSDB To The Data Volume'
-      when: __wsus_postinstall__ is changed
-      vars:
-        __susdb_target_present_count__: >-
-          {{
-            (__susdb_target_probe__ | default({})).get('results', [])
-            | selectattr('stat.exists')
-            | list
-            | length
-          }}
-        __susdb_target__: >-
-          {{
-            'empty' if (__susdb_target_present_count__ | int) == 0
-            else ('present' if (__susdb_target_present_count__ | int) == 2 else 'partial')
-          }}
-      block:
+    # Observe attachment and file state on every run.  The old gate depended on postinstall being
+    # changed in this run, so interruption after detach left all future runs skipping relocation.
+    - name: 'MAIN | Observe The Attached SUSDB Location'
+      ansible.windows.win_shell: |
+        $ErrorActionPreference = 'Stop'
+        $conn = New-Object System.Data.SqlClient.SqlConnection($env:WID_CONN)
+        try {
+            $conn.Open()
+            $cmd = $conn.CreateCommand()
+            $cmd.CommandText = "SELECT physical_name FROM sys.master_files WHERE database_id = DB_ID('SUSDB');"
+            $reader = $cmd.ExecuteReader()
+            $files = @()
+            while ($reader.Read()) { $files += [string]$reader['physical_name'] }
+            $reader.Close()
+        } finally {
+            if ($conn.State -eq 'Open') { $conn.Close() }
+        }
+        if ($files.Count -eq 0) { Write-Output 'absent'; return }
+        $targetPrefix = $env:WID_DATA_DIR.TrimEnd([char]92) + [char]92
+        $sourcePrefix = $env:WID_SOURCE_DIR.TrimEnd([char]92) + [char]92
+        if (@($files | Where-Object { -not $_.StartsWith($targetPrefix, [System.StringComparison]::OrdinalIgnoreCase) }).Count -eq 0) {
+            Write-Output 'target'
+        } elseif (@($files | Where-Object { -not $_.StartsWith($sourcePrefix, [System.StringComparison]::OrdinalIgnoreCase) }).Count -eq 0) {
+            Write-Output 'source'
+        } else {
+            Write-Output 'other'
+        }
+      environment:
+        WID_CONN: '{{ __wid_conn_master__ }}'
+        WID_DATA_DIR: '{{ __wid_data_dir__ }}'
+        WID_SOURCE_DIR: '{{ __wid_source_dir__ }}'
+      register: __susdb_location_probe__
+      changed_when: false
 
-        # MS's wid-to-sql sequence stops WSUS + IIS before detach: WsusService and W3SVC
-        # hold SUSDB connections. The WID engine service stays running to execute detach.
-        - name: 'MAIN | Stop WSUS Services For Relocation'
+    - name: 'MAIN | Observe SUSDB Source And Target File Pairs'
+      ansible.windows.win_stat:
+        path: '{{ item.path }}'
+        get_checksum: false
+      loop:
+        - { label: 'source-mdf', path: '{{ __wid_source_dir__ }}\SUSDB.mdf' }
+        - { label: 'source-ldf', path: '{{ __wid_source_dir__ }}\SUSDB_log.ldf' }
+        - { label: 'target-mdf', path: '{{ __wid_data_dir__ }}\SUSDB.mdf' }
+        - { label: 'target-ldf', path: '{{ __wid_data_dir__ }}\SUSDB_log.ldf' }
+      loop_control:
+        label: '{{ item.label }}'
+      register: __susdb_file_probe__
+
+    - name: 'MAIN | Resolve The Observed SUSDB State'
+      ansible.builtin.set_fact:
+        __susdb_location__: '{{ __susdb_location_probe__.stdout | trim }}'
+        __susdb_source_count__: >-
+          {{ (__susdb_file_probe__.results[0:2] | selectattr('stat.exists') | list | length) }}
+        __susdb_target_count__: >-
+          {{ (__susdb_file_probe__.results[2:4] | selectattr('stat.exists') | list | length) }}
+
+    # Authority table before any detach:
+    #   attached=source + complete source => source wins; discard ANY unattached target and
+    #     rebuild it byte-for-byte, even when the target pair looks complete.
+    #   attached=target + complete target => target wins; source is removed only after health.
+    #   attached=absent + only one complete pair => that pair is the recovery source.
+    #   attached=absent + both complete pairs => ambiguous and MUST fail without mutation.
+    # A complete-but-stale target is therefore never adopted over an attached source database.
+    - name: 'MAIN | Discard Any Unattached Target While Source SUSDB Is Authoritative'
+      when:
+        - __susdb_location__ == 'source'
+        - __susdb_source_count__ | int == 2
+        - __susdb_target_count__ | int > 0
+      ansible.windows.win_file:
+        path: '{{ __wid_data_dir__ }}\{{ item }}'
+        state: absent
+      loop: ['SUSDB.mdf', 'SUSDB_log.ldf']
+      loop_control:
+        label: '{{ item }}'
+
+    - name: 'MAIN | Normalize The Source-Authoritative SUSDB Target State'
+      when:
+        - __susdb_location__ == 'source'
+        - __susdb_source_count__ | int == 2
+        - __susdb_target_count__ | int > 0
+      ansible.builtin.set_fact:
+        __susdb_target_count__: 0
+
+    # A killed copy can leave one target file while no database is attached. A complete source
+    # pair makes that partial target safely disposable; two complete pairs remain ambiguous.
+    - name: 'MAIN | Remove An Incomplete Recoverable Unattached SUSDB Target Pair'
+      when:
+        - __susdb_location__ == 'absent'
+        - __susdb_source_count__ | int == 2
+        - __susdb_target_count__ | int == 1
+      ansible.windows.win_file:
+        path: '{{ __wid_data_dir__ }}\{{ item }}'
+        state: absent
+      loop: ['SUSDB.mdf', 'SUSDB_log.ldf']
+      loop_control:
+        label: '{{ item }}'
+
+    - name: 'MAIN | Normalize The Recoverable Unattached SUSDB Target State'
+      when:
+        - __susdb_location__ == 'absent'
+        - __susdb_source_count__ | int == 2
+        - __susdb_target_count__ | int == 1
+      ansible.builtin.set_fact:
+        __susdb_target_count__: 0
+
+    - name: 'MAIN | Classify The SUSDB Recovery Action'
+      ansible.builtin.set_fact:
+        __susdb_recovery_action__: >-
+          {% if __susdb_location__ == 'target' and (__susdb_target_count__ | int) == 2 and (__susdb_source_count__ | int) in [0, 2] %}
+          converged
+          {% elif __susdb_location__ == 'source' and (__susdb_source_count__ | int) == 2 and (__susdb_target_count__ | int) == 0 %}
+          rebuild_from_source
+          {% elif __susdb_location__ == 'absent' and (__susdb_source_count__ | int) == 2 and (__susdb_target_count__ | int) == 0 %}
+          copy_from_source
+          {% elif __susdb_location__ == 'absent' and (__susdb_source_count__ | int) == 0 and (__susdb_target_count__ | int) == 2 %}
+          attach_target
+          {% else %}
+          invalid
+          {% endif %}
+
+    - name: 'MAIN | Assert SUSDB Has One Recoverable State'
+      ansible.builtin.assert:
+        that:
+          - (__susdb_recovery_action__ | trim) != 'invalid'
+        fail_msg: >-
+          Refusing an ambiguous SUSDB recovery: attached={{ __susdb_location__ }},
+          source_files={{ __susdb_source_count__ }}, target_files={{ __susdb_target_count__ }}.
+          An unattached database with two complete pairs has no authoritative copy and is never
+          guessed; partial/mixed/foreign attachment states also fail without detach or attach.
+        quiet: true
+
+    - name: 'MAIN | Converge SUSDB Attachment To The Data Volume'
+      when: (__susdb_recovery_action__ | trim) != 'converged'
+      block:
+        - name: 'MAIN | Stop WSUS Consumers For SUSDB Relocation'
           ansible.windows.win_service:
             name: '{{ item }}'
             state: stopped
@@ -181,49 +313,26 @@
           loop_control:
             label: '{{ item }}'
 
-        # Detach the C: SUSDB that postinstall just created. sp_detach_db leaves the files
-        # on disk so they remain the source/fallback until the E: attach verifies healthy.
-        - name: 'MAIN | Detach SUSDB For Relocation'
+        - name: 'MAIN | Detach The System-Volume SUSDB'
+          when: __susdb_location__ == 'source'
           ansible.windows.win_shell: |
             $ErrorActionPreference = 'Stop'
-            $conn = $null
+            $conn = New-Object System.Data.SqlClient.SqlConnection($env:WID_CONN)
             try {
-                $conn = New-Object System.Data.SqlClient.SqlConnection($env:WID_CONN)
                 $conn.Open()
                 $cmd = $conn.CreateCommand()
                 $cmd.CommandText = 'ALTER DATABASE SUSDB SET SINGLE_USER WITH ROLLBACK IMMEDIATE; EXEC master.dbo.sp_detach_db @dbname = N''SUSDB'';'
                 $cmd.ExecuteNonQuery() | Out-Null
             } finally {
-                if ($conn -and $conn.State -eq 'Open') { $conn.Close() }
+                if ($conn.State -eq 'Open') { $conn.Close() }
             }
             Write-Output 'detached'
           environment:
             WID_CONN: '{{ __wid_conn_master__ }}'
-          register: __susdb_detach__
           changed_when: true
 
-        - name: 'MAIN | Detect SUSDB Files At Relocation Target'
-          ansible.windows.win_stat:
-            path: '{{ __wid_data_dir__ }}\{{ item }}'
-            get_checksum: false
-          loop: ['SUSDB.mdf', 'SUSDB_log.ldf']
-          loop_control:
-            label: '{{ item }}'
-          register: __susdb_target_probe__
-
-        - name: 'MAIN | Assert Relocation Target Is Complete Or Empty'
-          ansible.builtin.assert:
-            that:
-              - __susdb_target__ != 'partial'
-            fail_msg: >-
-              Refusing to relocate SUSDB: exactly one of {{ __wid_data_dir__ }}\SUSDB.mdf and
-              {{ __wid_data_dir__ }}\SUSDB_log.ldf exists. That partial target is anomalous;
-              refusing before any copy or attach so the existing file is not overwritten.
-            quiet: true
-
-        # Copy only when the target is fully empty. A complete target is the OS-swap-kept-disks
-        # path and is attached in place; a partial target failed closed above.
-        - name: 'MAIN | Copy SUSDB Files To Relocation Target'
+        - name: 'MAIN | Copy A Complete SUSDB Pair To The Data Volume'
+          when: __susdb_target_count__ | int == 0
           ansible.windows.win_copy:
             src: '{{ __wid_source_dir__ }}\{{ item }}'
             dest: '{{ __wid_data_dir__ }}\{{ item }}'
@@ -231,19 +340,13 @@
           loop: ['SUSDB.mdf', 'SUSDB_log.ldf']
           loop_control:
             label: '{{ item }}'
-          when: __susdb_target__ == 'empty'
 
-        # Attach the E: database and verify ONLINE + read-write + every file under the exact
-        # E: prefix. On unhealthy attach, detach best-effort and throw; database files are
-        # never deleted by this task.
-        - name: 'MAIN | Attach SUSDB From Relocation Target'
+        - name: 'MAIN | Attach SUSDB From The Data Volume'
           ansible.windows.win_shell: |
             $ErrorActionPreference = 'Stop'
-            $dir = $env:WID_DATA_DIR
-            $dirSql = $dir.Replace("'", "''")
-            $conn = $null
+            $dirSql = $env:WID_DATA_DIR.Replace("'", "''")
+            $conn = New-Object System.Data.SqlClient.SqlConnection($env:WID_CONN)
             try {
-                $conn = New-Object System.Data.SqlClient.SqlConnection($env:WID_CONN)
                 $conn.Open()
                 $cmd = $conn.CreateCommand()
                 $cmd.CommandText = "CREATE DATABASE SUSDB ON (FILENAME = N'$dirSql\SUSDB.mdf'), (FILENAME = N'$dirSql\SUSDB_log.ldf') FOR ATTACH;"
@@ -251,90 +354,147 @@
                 $cmd.CommandText = "SELECT d.state_desc AS s, d.is_read_only AS ro, m.physical_name AS pn FROM sys.databases d JOIN sys.master_files m ON m.database_id = d.database_id WHERE d.name = 'SUSDB';"
                 $reader = $cmd.ExecuteReader()
                 $state = $null
-                $ro = $null
+                $readOnly = $null
                 $files = @()
                 while ($reader.Read()) {
                     $state = [string]$reader['s']
-                    $ro = [int]$reader['ro']
+                    $readOnly = [int]$reader['ro']
                     $files += [string]$reader['pn']
                 }
                 $reader.Close()
-                $prefix = $dir.TrimEnd([char]92) + [char]92
+                $prefix = $env:WID_DATA_DIR.TrimEnd([char]92) + [char]92
                 $offTarget = @($files | Where-Object { -not $_.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase) })
-                if ($state -ne 'ONLINE' -or $ro -ne 0 -or $files.Count -lt 2 -or $offTarget.Count -gt 0) {
+                if ($state -ne 'ONLINE' -or $readOnly -ne 0 -or $files.Count -lt 2 -or $offTarget.Count -gt 0) {
                     try {
                         $detach = $conn.CreateCommand()
                         $detach.CommandText = 'ALTER DATABASE SUSDB SET SINGLE_USER WITH ROLLBACK IMMEDIATE; EXEC master.dbo.sp_detach_db @dbname = N''SUSDB'';'
                         $detach.ExecuteNonQuery() | Out-Null
-                    } catch {
-                        Write-Output 'detach-after-unhealthy-failed'
-                    }
-                    throw ("SUSDB attach unhealthy (state=$state ro=$ro files=$($files -join ';')) - detach attempted, NOT dropped; database files are untouched on disk")
+                    } catch {}
+                    throw ("attached SUSDB failed target health verification: state=$state readOnly=$readOnly files=$($files -join ';')")
                 }
             } finally {
-                if ($conn -and $conn.State -eq 'Open') { $conn.Close() }
+                if ($conn.State -eq 'Open') { $conn.Close() }
             }
             Write-Output 'attached'
           environment:
             WID_CONN: '{{ __wid_conn_master__ }}'
             WID_DATA_DIR: '{{ __wid_data_dir__ }}'
-          register: __susdb_attach__
           changed_when: true
 
-        - name: 'MAIN | Start WSUS Services After Relocation'
+      rescue:
+        # Best effort restores serviceability from a complete pair, then the play still fails so
+        # unattended proof cannot hide the interrupted/failed relocation.
+        - name: 'RECOVER | Reattach The Best Complete SUSDB Pair'
+          ansible.windows.win_shell: |
+            $ErrorActionPreference = 'Stop'
+            $conn = New-Object System.Data.SqlClient.SqlConnection($env:WID_CONN)
+            try {
+                $conn.Open()
+                $probe = $conn.CreateCommand()
+                $probe.CommandText = "SELECT COUNT(*) FROM sys.databases WHERE name = 'SUSDB';"
+                if ([int]$probe.ExecuteScalar() -gt 0) { Write-Output 'already-attached'; return }
+                $candidates = @($env:WID_DATA_DIR, $env:WID_SOURCE_DIR) | Select-Object -Unique
+                $errors = @()
+                foreach ($dir in $candidates) {
+                    $complete = (Test-Path -LiteralPath (Join-Path $dir 'SUSDB.mdf')) -and (Test-Path -LiteralPath (Join-Path $dir 'SUSDB_log.ldf'))
+                    if (-not $complete) { continue }
+                    try {
+                        $dirSql = $dir.Replace("'", "''")
+                        $attach = $conn.CreateCommand()
+                        $attach.CommandText = "CREATE DATABASE SUSDB ON (FILENAME = N'$dirSql\SUSDB.mdf'), (FILENAME = N'$dirSql\SUSDB_log.ldf') FOR ATTACH;"
+                        $attach.ExecuteNonQuery() | Out-Null
+                        $health = $conn.CreateCommand()
+                        $health.CommandText = "SELECT state_desc + ':' + CONVERT(varchar(1), is_read_only) FROM sys.databases WHERE name = 'SUSDB';"
+                        if ([string]$health.ExecuteScalar() -ne 'ONLINE:0') { throw 'attached database is not ONLINE/read-write' }
+                        Write-Output ('recovered:' + $dir)
+                        return
+                    } catch {
+                        $errors += ($dir + '=' + $_.Exception.Message)
+                        try {
+                            $detach = $conn.CreateCommand()
+                            $detach.CommandText = 'IF DB_ID(''SUSDB'') IS NOT NULL BEGIN ALTER DATABASE SUSDB SET SINGLE_USER WITH ROLLBACK IMMEDIATE; EXEC master.dbo.sp_detach_db @dbname = N''SUSDB''; END'
+                            $detach.ExecuteNonQuery() | Out-Null
+                        } catch {}
+                    }
+                }
+                throw ('no complete healthy SUSDB pair could be recovered: ' + ($errors -join '; '))
+            } finally {
+                if ($conn.State -eq 'Open') { $conn.Close() }
+            }
+          environment:
+            WID_CONN: '{{ __wid_conn_master__ }}'
+            WID_DATA_DIR: '{{ __wid_data_dir__ }}'
+            WID_SOURCE_DIR: '{{ __wid_source_dir__ }}'
+          register: __susdb_recovery__
+          failed_when: false
+          changed_when: "(__susdb_recovery__.stdout | trim).startswith('recovered:')"
+
+        - name: 'RECOVER | Fail After SUSDB Relocation Recovery'
+          ansible.builtin.fail:
+            msg: >-
+              SUSDB relocation failed at '{{ ansible_failed_task.name | default('unknown task') }}'.
+              Best-effort recovery result: {{ __susdb_recovery__.stdout | default('no output') | trim }}.
+              The run remains failed so this interruption cannot be reported as proof.
+
+      always:
+        - name: 'RECOVER | Restore WSUS Consumer Services'
           ansible.windows.win_service:
             name: '{{ item }}'
             state: started
           loop: ['W3SVC', 'WsusService']
           loop_control:
             label: '{{ item }}'
+          failed_when: false
 
-        # Independent health gate for the C: delete: re-derive ONLINE + read-write +
-        # all-files-on-E immediately before removing the postinstall originals.
-        - name: 'MAIN | Probe SUSDB Relocation Health (delete gate)'
-          ansible.windows.win_shell: |
-            $ErrorActionPreference = 'Stop'
-            $dir = $env:WID_DATA_DIR
-            $conn = $null
-            try {
-                $conn = New-Object System.Data.SqlClient.SqlConnection($env:WID_CONN)
-                $conn.Open()
-                $cmd = $conn.CreateCommand()
-                $cmd.CommandText = "SELECT d.state_desc AS s, d.is_read_only AS ro, m.physical_name AS pn FROM sys.databases d JOIN sys.master_files m ON m.database_id = d.database_id WHERE d.name = 'SUSDB';"
-                $reader = $cmd.ExecuteReader()
-                $state = $null
-                $ro = $null
-                $files = @()
-                while ($reader.Read()) {
-                    $state = [string]$reader['s']
-                    $ro = [int]$reader['ro']
-                    $files += [string]$reader['pn']
-                }
-                $reader.Close()
-            } finally {
-                if ($conn -and $conn.State -eq 'Open') { $conn.Close() }
-            }
-            $prefix = $dir.TrimEnd([char]92) + [char]92
-            $offTarget = @($files | Where-Object { -not $_.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase) })
-            if ($state -eq 'ONLINE' -and $ro -eq 0 -and $files.Count -ge 2 -and $offTarget.Count -eq 0) {
-                Write-Output 'healthy'
-            } else {
-                Write-Output 'unsafe'
-            }
-          environment:
-            WID_CONN: '{{ __wid_conn_master__ }}'
-            WID_DATA_DIR: '{{ __wid_data_dir__ }}'
-          register: __susdb_relocated_healthy__
-          changed_when: false
+    - name: 'MAIN | Ensure WSUS Services Are Running After SUSDB Convergence'
+      ansible.windows.win_service:
+        name: '{{ item }}'
+        state: started
+      loop: ['W3SVC', 'WsusService']
+      loop_control:
+        label: '{{ item }}'
 
-        - name: 'MAIN | Remove SUSDB Originals From System Volume'
-          ansible.windows.win_file:
-            path: '{{ __wid_source_dir__ }}\{{ item }}'
-            state: absent
-          loop: ['SUSDB.mdf', 'SUSDB_log.ldf']
-          loop_control:
-            label: '{{ item }}'
-          when: __susdb_relocated_healthy__.stdout | trim == 'healthy'
+    - name: 'MAIN | Verify SUSDB Relocation Health'
+      ansible.windows.win_shell: |
+        $ErrorActionPreference = 'Stop'
+        $conn = New-Object System.Data.SqlClient.SqlConnection($env:WID_CONN)
+        try {
+            $conn.Open()
+            $cmd = $conn.CreateCommand()
+            $cmd.CommandText = "SELECT d.state_desc AS s, d.is_read_only AS ro, m.physical_name AS pn FROM sys.databases d JOIN sys.master_files m ON m.database_id = d.database_id WHERE d.name = 'SUSDB';"
+            $reader = $cmd.ExecuteReader()
+            $state = $null
+            $ro = $null
+            $files = @()
+            while ($reader.Read()) {
+                $state = [string]$reader['s']
+                $ro = [int]$reader['ro']
+                $files += [string]$reader['pn']
+            }
+            $reader.Close()
+        } finally {
+            if ($conn.State -eq 'Open') { $conn.Close() }
+        }
+        $prefix = $env:WID_DATA_DIR.TrimEnd([char]92) + [char]92
+        $offTarget = @($files | Where-Object { -not $_.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase) })
+        if ($state -ne 'ONLINE' -or $ro -ne 0 -or $files.Count -lt 2 -or $offTarget.Count -gt 0) {
+            throw ("SUSDB is unsafe: state=$state readOnly=$ro files=$($files -join ';')")
+        }
+        $null = Get-WsusServer
+        Write-Output 'healthy'
+      environment:
+        WID_CONN: '{{ __wid_conn_master__ }}'
+        WID_DATA_DIR: '{{ __wid_data_dir__ }}'
+      register: __susdb_relocated_healthy__
+      changed_when: false
+
+    - name: 'MAIN | Remove SUSDB Originals From System Volume'
+      ansible.windows.win_file:
+        path: '{{ __wid_source_dir__ }}\{{ item }}'
+        state: absent
+      loop: ['SUSDB.mdf', 'SUSDB_log.ldf']
+      loop_control:
+        label: '{{ item }}'
 
     #endregion --- [ Main: SUSDB Relocation ] ----------------------------------------------- #
 
@@ -409,54 +569,9 @@
       register: __wsus_lang_cfg__
       changed_when: "__wsus_lang_cfg__.stdout | trim == 'changed'"
 
-    # Gated one-time category-only bootstrap loads catalog metadata (no update files) early for the
-    # C11c/d product/classification tree. PROVE-STARTED (Director): confirm acceptance, then write the
-    # durable ServerId marker without waiting ~1-2hr; it survives history expiry/failed syncs and a
-    # re-created SUSDB self-heals. 'inflight' resumes an already-running sync; §8 WSUS-cmdlet win_shell.
-    - name: 'MAIN | Bootstrap WSUS Category Sync (trigger + mark)'
-      ansible.windows.win_shell: |
-        $ErrorActionPreference = 'Stop'
-        $w = Get-WsusServer
-        $s = $w.GetSubscription()
-        $serverId = [string]$w.GetConfiguration().ServerId
-        $key = 'HKLM:\SOFTWARE\nwarila-platform\wsus'
-        $marked = (Get-ItemProperty -Path $key -Name 'category_bootstrap_server_id' -ErrorAction SilentlyContinue).category_bootstrap_server_id
-        if ($marked -and $marked -eq $serverId) {
-            Write-Output 'nochange'
-            return
-        }
-        $status = [string]$s.GetSynchronizationStatus()
-        if ($status -eq 'NotProcessing') {
-            $preHist = @($s.GetSynchronizationHistory()).Count
-            $s.StartSynchronizationForCategoryOnly()
-            $deadline = (Get-Date).AddSeconds([int]$env:ACCEPT_TIMEOUT)
-            do {
-                Start-Sleep -Seconds 3
-                $accepted = ([string]$s.GetSynchronizationStatus() -ne 'NotProcessing') -or (@($s.GetSynchronizationHistory()).Count -gt $preHist)
-            } while (-not $accepted -and (Get-Date) -lt $deadline)
-            if (-not $accepted) {
-                throw 'category sync not accepted within bootstrap_accept_timeout_sec of StartSynchronizationForCategoryOnly'
-            }
-            $result = 'started'
-        } else {
-            $result = 'inflight'
-        }
-        if (-not (Test-Path $key)) {
-            New-Item -Path $key -Force | Out-Null
-        }
-        New-ItemProperty -Path $key -Name 'category_bootstrap_server_id' -Value $serverId -PropertyType String -Force | Out-Null
-        Write-Output $result
-      environment:
-        ACCEPT_TIMEOUT: '{{ config.sync.bootstrap_accept_timeout_sec }}'
-      register: __wsus_bootstrap__
-      changed_when: "__wsus_bootstrap__.stdout | trim in ['started', 'inflight']"
-
-    # Point this WSUS at the required upstream WSUS for the downstream topology; validate.yml
-    # owns the primary input contract, and this shell guard is defense-in-depth. Save only on
-    # a five-field diff, then re-acquire and verify because Save() does not validate reachability.
-    # WSUS refuses config Save() while a synchronization is running, and the C11b prove-started
-    # bootstrap leaves an MU category sync running on a fresh install — so stop it and wait for idle before Save.
-    # Booleans arrive as lower env strings and are parsed with ToBoolean.
+    # Configure the source BEFORE any synchronization.  The former ordering started a Microsoft
+    # Update category sync, marked it on acceptance, then stopped it to save this downstream
+    # source. Save only on a five-field diff and verify the persisted values.
     - name: 'MAIN | Configure Upstream WSUS Source'
       ansible.windows.win_shell: |
         $ErrorActionPreference = 'Stop'
@@ -502,21 +617,116 @@
       register: __wsus_source__
       changed_when: "__wsus_source__.stdout | trim == 'changed'"
 
+    # A TCP check is intentionally conditional: the repository's AWS play is presently an honest
+    # configuration smoke because its placeholder corporate upstream is unreachable. Enabling the
+    # bootstrap converts this to functional proof and therefore requires a reachable source.
+    - name: 'MAIN | Wait For The Configured Upstream WSUS Endpoint'
+      when: config.sync.bootstrap_enabled | bool
+      ansible.windows.win_wait_for:
+        host: "{{ config.upstream_server }}"
+        port: "{{ config.sync.upstream_port | int }}"
+        state: started
+        connect_timeout: 5
+        timeout: 120
+
+    - name: 'INFO | Synchronization Proof Is Deliberately Disabled'
+      when: not (config.sync.bootstrap_enabled | bool)
+      ansible.builtin.debug:
+        msg: >-
+          WSUS topology was configured, but sync.bootstrap_enabled=false: this run is a
+          configuration smoke and does not claim upstream reachability or synchronization.
+
+    # A durable marker now means a terminal Succeeded history record. Acceptance and an in-flight
+    # status are never recorded as success. The fingerprint invalidates the marker whenever source
+    # or language policy changes; a failed/timed-out sync leaves no marker and retries next run.
+    - name: 'MAIN | Bootstrap WSUS Category Sync To Terminal Success'
+      when: config.sync.bootstrap_enabled | bool
+      ansible.windows.win_shell: |
+        $ErrorActionPreference = 'Stop'
+        $w = Get-WsusServer
+        $s = $w.GetSubscription()
+        $cfg = $w.GetConfiguration()
+        $serverId = [string]$cfg.ServerId
+        $fingerprintInput = @(
+            $env:UPSTREAM_SERVER.Trim().ToLowerInvariant(),
+            $env:UPSTREAM_PORT,
+            $env:UPSTREAM_SSL.ToLowerInvariant(),
+            $env:REPLICA.ToLowerInvariant(),
+            $env:WSUS_LANGS.ToLowerInvariant()
+        ) -join '|'
+        $sha = [System.Security.Cryptography.SHA256]::Create()
+        try {
+            $fingerprint = ([System.BitConverter]::ToString(
+                $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($fingerprintInput))
+            )).Replace('-', '')
+        } finally {
+            $sha.Dispose()
+        }
+        $key = 'HKLM:\SOFTWARE\nwarila-platform\wsus'
+        $marker = Get-ItemProperty -Path $key -ErrorAction SilentlyContinue
+        if ($marker.category_bootstrap_server_id -eq $serverId -and
+            $marker.category_bootstrap_fingerprint -eq $fingerprint) {
+            Write-Output 'nochange'
+            return
+        }
+
+        $startedHere = $false
+        if ([string]$s.GetSynchronizationStatus() -eq 'NotProcessing') {
+            $preHist = @($s.GetSynchronizationHistory()).Count
+            $s.StartSynchronizationForCategoryOnly()
+            $startedHere = $true
+            $acceptDeadline = (Get-Date).AddSeconds([int]$env:ACCEPT_TIMEOUT)
+            do {
+                Start-Sleep -Seconds 3
+                $accepted = ([string]$s.GetSynchronizationStatus() -ne 'NotProcessing') -or
+                    (@($s.GetSynchronizationHistory()).Count -gt $preHist)
+            } while (-not $accepted -and (Get-Date) -lt $acceptDeadline)
+            if (-not $accepted) {
+                throw 'category sync was not accepted within bootstrap_accept_timeout_sec'
+            }
+        }
+
+        $deadline = (Get-Date).AddSeconds([int]$env:COMPLETION_TIMEOUT)
+        while ([string]$s.GetSynchronizationStatus() -ne 'NotProcessing' -and
+               (Get-Date) -lt $deadline) {
+            Start-Sleep -Seconds ([int]$env:POLL_SECONDS)
+        }
+        if ([string]$s.GetSynchronizationStatus() -ne 'NotProcessing') {
+            throw 'category sync did not reach a terminal state within bootstrap_completion_timeout_sec'
+        }
+        $history = @($s.GetSynchronizationHistory() | Sort-Object EndTime -Descending)
+        if ($history.Count -eq 0) {
+            throw 'category sync reached idle without a synchronization history record'
+        }
+        $latest = $history[0]
+        if ([string]$latest.Result -ne 'Succeeded') {
+            throw ('category sync terminal result was ' + [string]$latest.Result + ', not Succeeded')
+        }
+        if (-not (Test-Path $key)) {
+            New-Item -Path $key -Force | Out-Null
+        }
+        New-ItemProperty -Path $key -Name 'category_bootstrap_server_id' -Value $serverId -PropertyType String -Force | Out-Null
+        New-ItemProperty -Path $key -Name 'category_bootstrap_fingerprint' -Value $fingerprint -PropertyType String -Force | Out-Null
+        if ($startedHere) { Write-Output 'changed' } else { Write-Output 'completed' }
+      environment:
+        ACCEPT_TIMEOUT: '{{ config.sync.bootstrap_accept_timeout_sec }}'
+        COMPLETION_TIMEOUT: '{{ config.sync.bootstrap_completion_timeout_sec }}'
+        POLL_SECONDS: '{{ config.sync.bootstrap_poll_sec }}'
+        UPSTREAM_SERVER: '{{ config.upstream_server | string | trim }}'
+        UPSTREAM_PORT: '{{ config.sync.upstream_port }}'
+        UPSTREAM_SSL: '{{ config.sync.upstream_use_ssl | bool | lower }}'
+        REPLICA: '{{ config.sync.replica | bool | lower }}'
+        WSUS_LANGS: '{{ config.sync.update_languages | map("lower") | sort | join(",") }}'
+      register: __wsus_bootstrap__
+      changed_when: "__wsus_bootstrap__.stdout | trim in ['changed', 'completed']"
+
     #endregion --- [ Main: WSUS Sync Configuration ] -------------------------------------- #
 
     #region ------ [ Main: IIS Logging + Relocation ] ------------------------------------- #
 
-    # WSUS's UpdateServices install (C04) pulls in the Web-Server role but NOT the HTTP Logging role
-    # service, so the HttpLoggingModule that writes W3C logs is absent — the C12b logFile config (directory
-    # on G:) is correct but produces NO file until this module exists (root-caused live 2026-07-18: 0 logs on
-    # G: with correct config + traffic + flush; installing Web-Http-Logging => logs write to
-    # G:\inetpub\logs\LogFiles\W3SVC*\u_ex*.log on the next request). Native + idempotent (changed only on
-    # first install); no reboot (measured — the module hot-loads and IIS writes immediately). Enable logging
-    # here, then the next task points it at G:.
-    - name: 'MAIN | Install IIS HTTP Logging Role Service'
-      ansible.windows.win_feature:
-        name: Web-Http-Logging
-        state: present
+    # Web-Http-Logging was installed with the WSUS feature set above, before the reboot and
+    # postinstall boundary.  The tasks below can therefore treat active W3C logging as an
+    # invariant rather than mutating Windows features midway through configuration.
 
     # IIS site-level log paths can override siteDefaults, so the role repoints both to the
     # literal G: path for STIG-auditable active logging off the system volume. Validate the
@@ -685,150 +895,372 @@
     # (bucket = wsus.bucket, keys tls.pfx_key and tls.pfx_key + '.password'). The CONTROLLER
     # downloads both through the read-only artifact-reader role (s3_artifact_delivery get) —
     # the target never holds an S3 credential — then copies the PFX up, imports it with the
-    # password as a no_log argument, binds it to tls.port in IIS, and wsusutil configuressl
-    # flips the client-facing endpoints to HTTPS. tls.thumbprint is TRUST-BUT-VERIFY: when
-    # set, the imported certificate must match it, proving the S3 object was not modified or
-    # swapped since the pin was recorded. Trust distribution stays out of scope.
+    # password as a no_log argument, validates it without persisting its key, imports the exact
+    # pinned leaf, binds it to tls.port in IIS, and wsusutil configuressl flips client-facing
+    # endpoints to HTTPS. Trust distribution stays out of scope.
 
-    # set_fact evaluates config HERE (where the loader's include scope holds it) and stores
-    # host facts — the one variable class guaranteed visible inside the included delivery
-    # role, whose own scope does not see this file's include vars.
-    - name: 'MAIN | Resolve The Delivery Coordinates'
+    - name: 'MAIN | Deliver, Validate, Import, And Bind The TLS Certificate'
       when: config.tls.enabled | bool
-      ansible.builtin.set_fact:
-        __tls_staging__: "{{ lookup('ansible.builtin.env', 'RUNNER_TEMP') | default('/tmp', true) }}"
-        __tls_bucket__: "{{ config.bucket }}"
-        __tls_pfx_key__: "{{ config.tls.pfx_key }}"
+      block:
+        - name: 'MAIN | Resolve The Pinned TLS Identity'
+          ansible.builtin.set_fact:
+            __tls_thumbprint__: '{{ config.tls.thumbprint | trim | upper }}'
 
-    - name: 'MAIN | Download The TLS Certificate And Password To The Controller'
-      when: config.tls.enabled | bool
-      ansible.builtin.include_role:
-        name: 's3_artifact_delivery'
-        tasks_from: 'get'
-      vars:
-        s3_artifact_delivery_reader_role_arn: "arn:aws:iam::{{ aws_account_id }}:role/windows-wsus-artifact-reader"
-        s3_artifact_delivery_session_name: 'wsus-tls-delivery'
-        s3_artifact_delivery_bucket: "{{ __tls_bucket__ }}"
-        s3_artifact_delivery_region: "{{ aws_region }}"
-        s3_artifact_delivery_controller_objects:
-          - object_key: "{{ __tls_pfx_key__ }}"
-            destination: "{{ __tls_staging__ }}/wsus-tls.pfx"
-          - object_key: "{{ __tls_pfx_key__ }}.password"
-            destination: "{{ __tls_staging__ }}/wsus-tls.pfx.password"
+        # Skip controller delivery on a converged second pass. Binding and live validation below
+        # still run every time, so drift is repaired without counting two ephemeral S3 downloads.
+        - name: 'MAIN | Probe The Pinned Certificate In The Machine Store'
+          ansible.windows.win_shell: |
+            $ErrorActionPreference = 'Stop'
+            $cert = Get-Item (Join-Path 'Cert:\LocalMachine\My' $env:TLS_THUMBPRINT) -ErrorAction SilentlyContinue
+            if (-not $cert -or -not $cert.HasPrivateKey -or $cert.NotBefore -gt (Get-Date) -or
+                $cert.NotAfter -lt (Get-Date).AddDays([int]$env:MINIMUM_VALIDITY_DAYS)) {
+                Write-Output 'absent'
+                return
+            }
+            $certificateDns = $cert.GetNameInfo(
+                [System.Security.Cryptography.X509Certificates.X509NameType]::DnsName, $false
+            ).Trim().ToLowerInvariant()
+            $wantedDns = $env:TLS_DNS_NAME.Trim().ToLowerInvariant()
+            $dnsMatches = $certificateDns -eq $wantedDns
+            if (-not $dnsMatches -and $certificateDns.StartsWith('*.')) {
+                $suffix = $certificateDns.Substring(1)
+                $dnsMatches = $wantedDns.EndsWith($suffix) -and
+                    ($wantedDns.Split('.').Count -eq $certificateDns.Split('.').Count)
+            }
+            if ($dnsMatches) { Write-Output 'present' } else { Write-Output 'absent' }
+          environment:
+            TLS_THUMBPRINT: '{{ __tls_thumbprint__ }}'
+            TLS_DNS_NAME: '{{ config.tls.dns_name }}'
+            MINIMUM_VALIDITY_DAYS: '{{ config.tls.minimum_validity_days }}'
+          register: __tls_store_probe__
+          changed_when: false
 
-    - name: 'MAIN | Copy The Certificate To The Target'
-      when: config.tls.enabled | bool
-      ansible.windows.win_copy:
-        src: "{{ __tls_staging__ }}/wsus-tls.pfx"
-        dest: 'C:\Windows\Temp\wsus-tls.pfx'
+        - name: 'MAIN | Create A Unique TLS Staging Directory On The Controller'
+          when: __tls_store_probe__.stdout | trim != 'present'
+          delegate_to: localhost
+          become: false
+          ansible.builtin.tempfile:
+            state: directory
+            prefix: 'windows-wsus-tls-'
+          register: __tls_controller_temp__
+          changed_when: false
 
-    - name: 'MAIN | Import The Certificate Into The Machine Store'
-      when: config.tls.enabled | bool
-      ansible.windows.win_certificate_store:
-        path: 'C:\Windows\Temp\wsus-tls.pfx'
-        # Read on the CONTROLLER and passed as an in-memory, no_log module argument — the
-        # password never exists as a file on the target.
-        password: "{{ lookup('ansible.builtin.file', __tls_staging__ ~ '/wsus-tls.pfx.password') | trim }}"
-        store_location: 'LocalMachine'
-        store_name: 'My'
-        key_storage: 'machine'
-        # The imported private key cannot be re-exported from the store.
-        key_exportable: false
-        state: 'present'
-      no_log: true
-      register: '__tls_import__'
+        - name: 'MAIN | Restrict The Controller TLS Staging Directory'
+          when: __tls_store_probe__.stdout | trim != 'present'
+          delegate_to: localhost
+          become: false
+          ansible.builtin.file:
+            path: '{{ __tls_controller_temp__.path }}'
+            state: directory
+            mode: '0700'
+          changed_when: false
 
-    - name: 'MAIN | Remove The Copied Certificate From The Target'
-      when: config.tls.enabled | bool
-      ansible.windows.win_file:
-        path: 'C:\Windows\Temp\wsus-tls.pfx'
-        state: 'absent'
+        # Host facts cross the included role's scope boundary; unique paths prevent a failed or
+        # concurrent run from reusing stale PFX/password bytes.
+        - name: 'MAIN | Resolve The Unique TLS Delivery Coordinates'
+          when: __tls_store_probe__.stdout | trim != 'present'
+          ansible.builtin.set_fact:
+            __tls_staging__: '{{ __tls_controller_temp__.path }}'
+            __tls_bucket__: '{{ config.bucket }}'
+            __tls_pfx_key__: '{{ config.tls.pfx_key }}'
 
-    # TRUST BUT VERIFY: the pin proves the delivered object is the certificate the operator
-    # recorded — a swapped or modified PFX in the bucket fails here, before anything binds.
-    - name: 'MAIN | Verify The Delivered Certificate Against The Pinned Thumbprint'
-      when: (config.tls.enabled | bool) and (config.tls.thumbprint | default('') | trim | length > 0)
-      ansible.builtin.assert:
-        that:
-          - (config.tls.thumbprint | trim | upper) in (__tls_import__.thumbprints | map('upper') | list)
-        fail_msg: >-
-          The certificate delivered from s3://{{ config.bucket }}/{{ config.tls.pfx_key }}
-          does not match tls.thumbprint {{ config.tls.thumbprint | trim | upper }} — the
-          object may have been modified or replaced. Imported thumbprint(s):
-          {{ __tls_import__.thumbprints | join(', ') }}.
-        quiet: true
+        - name: 'MAIN | Download The TLS Certificate And Password To The Controller'
+          when: __tls_store_probe__.stdout | trim != 'present'
+          ansible.builtin.include_role:
+            name: 's3_artifact_delivery'
+            tasks_from: 'get'
+          vars:
+            s3_artifact_delivery_reader_role_arn: "arn:aws:iam::{{ aws_account_id }}:role/windows-wsus-artifact-reader"
+            s3_artifact_delivery_session_name: 'wsus-tls-delivery'
+            s3_artifact_delivery_bucket: '{{ __tls_bucket__ }}'
+            s3_artifact_delivery_region: '{{ aws_region }}'
+            s3_artifact_delivery_controller_objects:
+              - object_key: '{{ __tls_pfx_key__ }}'
+                destination: '{{ __tls_staging__ }}/certificate.pfx'
+              - object_key: '{{ __tls_pfx_key__ }}.password'
+                destination: '{{ __tls_staging__ }}/certificate.pfx.password'
 
-    - name: 'MAIN | Resolve The Certificate Thumbprint'
-      when: config.tls.enabled | bool
-      ansible.builtin.set_fact:
-        __tls_thumbprint__: "{{ __tls_import__.thumbprints | first }}"
+        - name: 'MAIN | Read The PFX Password Into Protected Memory'
+          when: __tls_store_probe__.stdout | trim != 'present'
+          ansible.builtin.set_fact:
+            __tls_pfx_password__: "{{ lookup('ansible.builtin.file', __tls_staging__ ~ '/certificate.pfx.password') | trim }}"
+          no_log: true
 
-    - name: 'MAIN | Bind The Certificate To The WSUS HTTPS Endpoint'
-      when: config.tls.enabled | bool
-      ansible.windows.win_shell: |
-        $ErrorActionPreference = 'Stop'
-        Import-Module WebAdministration
-        $thumb = $env:TLS_THUMBPRINT
-        $port = [int]$env:TLS_PORT
-        $site = 'WSUS Administration'
-        $changed = $false
-        $binding = Get-WebBinding -Name $site -Protocol https -Port $port -ErrorAction SilentlyContinue
-        if (-not $binding) {
-            New-WebBinding -Name $site -Protocol https -Port $port -IPAddress '*'
-            $changed = $true
-        }
-        $sslPath = 'IIS:\SslBindings\0.0.0.0!' + $port
-        $bound = Get-Item $sslPath -ErrorAction SilentlyContinue
-        if (-not $bound -or $bound.Thumbprint -ne $thumb) {
-            if ($bound) { Remove-Item $sslPath }
-            $cert = Get-Item (Join-Path 'Cert:\LocalMachine\My' $thumb)
-            New-Item $sslPath -Value $cert | Out-Null
-            $changed = $true
-        }
-        $verify = Get-Item $sslPath
-        if ($verify.Thumbprint -ne $thumb) { throw 'ssl binding did not persist' }
-        if ($changed) { Write-Output 'changed' } else { Write-Output 'nochange' }
-      environment:
-        TLS_THUMBPRINT: "{{ __tls_thumbprint__ }}"
-        TLS_PORT: "{{ config.tls.port }}"
-      register: '__tls_binding__'
-      changed_when: "__tls_binding__.stdout | trim == 'changed'"
+        - name: 'MAIN | Create A Unique TLS Staging Directory On The Target'
+          when: __tls_store_probe__.stdout | trim != 'present'
+          ansible.windows.win_tempfile:
+            state: directory
+            prefix: 'windows-wsus-tls-'
+          register: __tls_target_temp__
+          changed_when: false
 
-    # Microsoft's documented order: set Require-SSL on the five client-facing virtual
-    # directories FIRST, then wsusutil configuressl registers the https URL. The URL it
-    # prints is the authoritative verification — it only reports https once the flags are
-    # genuinely set (proven live: with flags unset it echoed http://...:8530).
-    - name: 'MAIN | Require SSL On The Client-Facing WSUS Endpoints (wsusutil configuressl)'
-      when: config.tls.enabled | bool
-      ansible.windows.win_shell: |
-        $ErrorActionPreference = 'Stop'
-        Import-Module WebAdministration
-        $dns = $env:TLS_DNS_NAME
-        if (-not $dns) { $dns = $env:COMPUTERNAME }
-        $vdirs = @('ApiRemoting30', 'ClientWebService', 'DSSAuthWebService', 'ServerSyncWebService', 'SimpleAuthWebService')
-        $changed = $false
-        foreach ($name in $vdirs) {
-            # The access section is locked at the apphost level (overrideModeDefault=Deny), so
-            # the setting must live in applicationHost.config via a location path — the same
-            # storage the IIS console uses for its Require SSL checkbox.
-            $location = 'WSUS Administration/' + $name
-            $value = (Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Location $location -Filter 'system.webServer/security/access' -Name 'sslFlags').Value
-            $text = [string]$value
-            if ($text -ne 'Ssl' -and $text -ne '8') {
-                Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Location $location -Filter 'system.webServer/security/access' -Name 'sslFlags' -Value 'Ssl'
+        - name: 'MAIN | Copy The Certificate To The Unique Target Path'
+          when: __tls_store_probe__.stdout | trim != 'present'
+          ansible.windows.win_copy:
+            src: '{{ __tls_staging__ }}/certificate.pfx'
+            dest: '{{ __tls_target_temp__.path }}\certificate.pfx'
+          changed_when: false
+
+        # Load with EphemeralKeySet so validation cannot persist the private key.  Import happens
+        # only after private-key, pin, DNS identity, activation, and expiry checks all pass.
+        - name: 'MAIN | Validate The PFX Before Import'
+          when: __tls_store_probe__.stdout | trim != 'present'
+          ansible.windows.win_shell: |
+            $ErrorActionPreference = 'Stop'
+            $flags = [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::EphemeralKeySet
+            $cert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new(
+                $env:PFX_PATH, $env:PFX_PASSWORD, $flags)
+            $wantThumb = $env:TLS_THUMBPRINT.Replace(' ', '').ToUpperInvariant()
+            $gotThumb = $cert.Thumbprint.Replace(' ', '').ToUpperInvariant()
+            if (-not $cert.HasPrivateKey) { throw 'PFX leaf certificate has no private key' }
+            if ($gotThumb -ne $wantThumb) { throw "PFX thumbprint $gotThumb does not match pinned $wantThumb" }
+            $now = Get-Date
+            if ($cert.NotBefore -gt $now) { throw ('certificate is not active until ' + $cert.NotBefore.ToString('o')) }
+            $minimumExpiry = $now.AddDays([int]$env:MINIMUM_VALIDITY_DAYS)
+            if ($cert.NotAfter -lt $minimumExpiry) { throw ('certificate expires too soon: ' + $cert.NotAfter.ToString('o')) }
+            $certificateDns = $cert.GetNameInfo(
+                [System.Security.Cryptography.X509Certificates.X509NameType]::DnsName, $false
+            ).Trim().ToLowerInvariant()
+            $wantedDns = $env:TLS_DNS_NAME.Trim().ToLowerInvariant()
+            $dnsMatches = $certificateDns -eq $wantedDns
+            if (-not $dnsMatches -and $certificateDns.StartsWith('*.')) {
+                $suffix = $certificateDns.Substring(1)
+                $dnsMatches = $wantedDns.EndsWith($suffix) -and
+                    ($wantedDns.Split('.').Count -eq $certificateDns.Split('.').Count)
+            }
+            if (-not $dnsMatches) { throw "certificate DNS name $certificateDns does not match $wantedDns" }
+            Write-Output ('validated:' + $gotThumb)
+          environment:
+            PFX_PATH: '{{ __tls_target_temp__.path }}\certificate.pfx'
+            PFX_PASSWORD: '{{ __tls_pfx_password__ }}'
+            TLS_THUMBPRINT: '{{ __tls_thumbprint__ }}'
+            TLS_DNS_NAME: '{{ config.tls.dns_name }}'
+            MINIMUM_VALIDITY_DAYS: '{{ config.tls.minimum_validity_days }}'
+          no_log: true
+          changed_when: false
+
+        - name: 'MAIN | Import The Validated Certificate Into The Machine Store'
+          when: __tls_store_probe__.stdout | trim != 'present'
+          ansible.windows.win_certificate_store:
+            path: '{{ __tls_target_temp__.path }}\certificate.pfx'
+            password: '{{ __tls_pfx_password__ }}'
+            store_location: 'LocalMachine'
+            store_name: 'My'
+            key_storage: 'machine'
+            key_exportable: false
+            state: present
+          no_log: true
+          register: __tls_import__
+
+        # Do not rely on win_certificate_store.thumbprints: some collection versions return
+        # that list only when an import changed the store. Query the converged store directly.
+        - name: 'MAIN | Assert The Pinned Leaf Exists In The Machine Store'
+          when: __tls_store_probe__.stdout | trim != 'present'
+          ansible.windows.win_shell: |
+            $ErrorActionPreference = 'Stop'
+            $cert = Get-Item (Join-Path 'Cert:\LocalMachine\My' $env:TLS_THUMBPRINT) -ErrorAction Stop
+            if ($cert.Thumbprint.ToUpperInvariant() -ne $env:TLS_THUMBPRINT) {
+                throw ('machine-store thumbprint differs from pin: ' + $cert.Thumbprint)
+            }
+            if (-not $cert.HasPrivateKey) { throw 'pinned machine-store certificate has no private key' }
+            Write-Output 'present'
+          environment:
+            TLS_THUMBPRINT: '{{ __tls_thumbprint__ }}'
+          changed_when: false
+
+        - name: 'MAIN | Bind The Pinned Certificate To The WSUS HTTPS Endpoint'
+          ansible.windows.win_shell: |
+            $ErrorActionPreference = 'Stop'
+            Import-Module WebAdministration
+            $thumb = $env:TLS_THUMBPRINT
+            $port = [int]$env:TLS_PORT
+            $site = 'WSUS Administration'
+            $changed = $false
+            $binding = Get-WebBinding -Name $site -Protocol https -Port $port -ErrorAction SilentlyContinue
+            if (-not $binding) {
+                New-WebBinding -Name $site -Protocol https -Port $port -IPAddress '*'
                 $changed = $true
             }
+            $sslPath = 'IIS:\SslBindings\0.0.0.0!' + $port
+            $bound = Get-Item $sslPath -ErrorAction SilentlyContinue
+            if (-not $bound -or $bound.Thumbprint -ne $thumb) {
+                if ($bound) { Remove-Item $sslPath }
+                $cert = Get-Item (Join-Path 'Cert:\LocalMachine\My' $thumb)
+                if (-not $cert.HasPrivateKey) { throw 'pinned certificate in LocalMachine/My has no private key' }
+                New-Item $sslPath -Value $cert | Out-Null
+                $changed = $true
+            }
+            $verify = Get-Item $sslPath
+            if ($verify.Thumbprint -ne $thumb) { throw 'SSL binding did not persist the pinned thumbprint' }
+            if ($changed) { Write-Output 'changed' } else { Write-Output 'nochange' }
+          environment:
+            TLS_THUMBPRINT: '{{ __tls_thumbprint__ }}'
+            TLS_PORT: '{{ config.tls.port }}'
+          register: __tls_binding__
+          changed_when: "__tls_binding__.stdout | trim == 'changed'"
+
+        - name: 'MAIN | Require SSL On The Client-Facing WSUS Endpoints'
+          ansible.windows.win_shell: |
+            $ErrorActionPreference = 'Stop'
+            Import-Module WebAdministration
+            $dns = $env:TLS_DNS_NAME
+            $vdirs = @('ApiRemoting30', 'ClientWebService', 'DSSAuthWebService', 'ServerSyncWebService', 'SimpleAuthWebService')
+            $changed = $false
+            foreach ($name in $vdirs) {
+                $location = 'WSUS Administration/' + $name
+                $value = (Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Location $location -Filter 'system.webServer/security/access' -Name 'sslFlags').Value
+                $text = [string]$value
+                if ($text -ne 'Ssl' -and $text -ne '8') {
+                    Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Location $location -Filter 'system.webServer/security/access' -Name 'sslFlags' -Value 'Ssl'
+                    $changed = $true
+                }
+            }
+            $wsusutil = Join-Path $env:ProgramFiles 'Update Services\Tools\wsusutil.exe'
+            $out = & $wsusutil configuressl $dns 2>&1
+            $text = ($out -join ' ')
+            if ($LASTEXITCODE -ne 0) { throw ('wsusutil configuressl failed rc=' + $LASTEXITCODE + ' output=' + $text) }
+            if ($text -notmatch 'https://') { throw ('configuressl still reports a non-SSL URL: ' + $text) }
+            if ($changed) { Write-Output 'changed' } else { Write-Output 'nochange' }
+          environment:
+            TLS_DNS_NAME: '{{ config.tls.dns_name }}'
+          register: __tls_configuressl__
+          changed_when: "__tls_configuressl__.stdout | trim == 'changed'"
+
+        # Validate what IIS actually serves, independently of the certificate-store and binding
+        # APIs. Trust distribution is out of scope, so the callback permits the private CA while
+        # the task explicitly verifies the pinned peer identity and validity window.
+        - name: 'VERIFY | Complete A Live TLS Handshake With The Pinned Certificate'
+          ansible.windows.win_shell: |
+            $ErrorActionPreference = 'Stop'
+            $tcp = New-Object System.Net.Sockets.TcpClient
+            $ssl = $null
+            try {
+                $tcp.Connect('127.0.0.1', [int]$env:TLS_PORT)
+                $callback = { param($sender, $certificate, $chain, $errors) return $true }
+                $ssl = New-Object System.Net.Security.SslStream($tcp.GetStream(), $false, $callback)
+                $ssl.AuthenticateAsClient($env:TLS_DNS_NAME)
+                $peer = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($ssl.RemoteCertificate)
+                if ($peer.Thumbprint.ToUpperInvariant() -ne $env:TLS_THUMBPRINT) {
+                    throw ('live endpoint served unexpected thumbprint ' + $peer.Thumbprint)
+                }
+                if ($peer.NotAfter -lt (Get-Date).AddDays([int]$env:MINIMUM_VALIDITY_DAYS)) {
+                    throw ('live endpoint certificate expires too soon: ' + $peer.NotAfter.ToString('o'))
+                }
+                Write-Output 'healthy'
+            } finally {
+                if ($ssl) { $ssl.Dispose() }
+                $tcp.Dispose()
+            }
+          environment:
+            TLS_PORT: '{{ config.tls.port }}'
+            TLS_DNS_NAME: '{{ config.tls.dns_name }}'
+            TLS_THUMBPRINT: '{{ __tls_thumbprint__ }}'
+            MINIMUM_VALIDITY_DAYS: '{{ config.tls.minimum_validity_days }}'
+          register: __tls_live_probe__
+          retries: 12
+          delay: 5
+          until: __tls_live_probe__.rc == 0
+          changed_when: false
+
+      always:
+        - name: 'CLEANUP | Remove The Unique TLS Staging Directory From The Target'
+          when:
+            - __tls_target_temp__ is defined
+            - __tls_target_temp__.path is defined
+          ansible.windows.win_file:
+            path: '{{ __tls_target_temp__.path }}'
+            state: absent
+          changed_when: false
+
+        - name: 'CLEANUP | Remove The Unique TLS Staging Directory From The Controller'
+          when:
+            - __tls_controller_temp__ is defined
+            - __tls_controller_temp__.path is defined
+          delegate_to: localhost
+          become: false
+          ansible.builtin.file:
+            path: '{{ __tls_controller_temp__.path }}'
+            state: absent
+          changed_when: false
+
+        - name: 'CLEANUP | Clear The In-Memory PFX Password Fact'
+          when: __tls_pfx_password__ is defined
+          ansible.builtin.set_fact:
+            __tls_pfx_password__: null
+          no_log: true
+
+    # Independent read-only acceptance gate.  This re-derives the externally meaningful state
+    # rather than trusting task return values; it is also safe to run after a second converge.
+    - name: 'VERIFY | Assert The Complete WSUS Runtime Contract'
+      ansible.windows.win_shell: |
+        $ErrorActionPreference = 'Stop'
+        Import-Module WebAdministration
+        foreach ($serviceName in @('MSSQL$MICROSOFT##WID', 'W3SVC', 'WsusService')) {
+            $service = Get-Service -Name $serviceName -ErrorAction Stop
+            if ($service.Status -ne 'Running') { throw "$serviceName is $($service.Status), not Running" }
         }
-        $wsusutil = Join-Path $env:ProgramFiles 'Update Services\Tools\wsusutil.exe'
-        $out = & $wsusutil configuressl $dns 2>&1
-        $text = ($out -join ' ')
-        if ($LASTEXITCODE -ne 0) { throw ('wsusutil configuressl failed rc=' + $LASTEXITCODE + ' output=' + $text) }
-        if ($text -notmatch 'https://') { throw ('configuressl still reports a non-SSL URL: ' + $text) }
-        if ($changed) { Write-Output 'changed' } else { Write-Output 'nochange' }
+        foreach ($path in @($env:CONTENT_DIR, $env:WID_DATA_DIR, $env:IIS_LOG_DIR, $env:IIS_WWWROOT)) {
+            if (-not (Test-Path -LiteralPath $path -PathType Container)) { throw "required directory is absent: $path" }
+        }
+        $wsus = Get-WsusServer
+        $cfg = $wsus.GetConfiguration()
+        $wantPort = [int]$env:UPSTREAM_PORT
+        $wantSsl = [System.Convert]::ToBoolean($env:UPSTREAM_SSL)
+        $wantReplica = [System.Convert]::ToBoolean($env:REPLICA)
+        if ($cfg.SyncFromMicrosoftUpdate -or
+            $cfg.UpstreamWsusServerName -ne $env:UPSTREAM_SERVER -or
+            $cfg.UpstreamWsusServerPortNumber -ne $wantPort -or
+            $cfg.UpstreamWsusServerUseSsl -ne $wantSsl -or
+            $cfg.IsReplicaServer -ne $wantReplica) {
+            throw 'persisted WSUS upstream source differs from the desired contract'
+        }
+        $pool = Get-Item 'IIS:\AppPools\WsusPool' -ErrorAction Stop
+        if ([string]$pool.state -ne 'Started') { throw ('WsusPool is ' + [string]$pool.state) }
+        $defaultSite = Get-Website -Name 'Default Web Site' -ErrorAction Stop
+        if (-not [string]::Equals($defaultSite.physicalPath.TrimEnd([char]92), $env:IIS_WWWROOT.TrimEnd([char]92), [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw ('Default Web Site root differs from ' + $env:IIS_WWWROOT)
+        }
+        $globalLog = (Get-WebConfigurationProperty -Filter 'system.applicationHost/sites/siteDefaults/logFile' -Name directory).Value
+        if (-not [string]::Equals(([string]$globalLog).TrimEnd([char]92), $env:IIS_LOG_DIR.TrimEnd([char]92), [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw ('IIS siteDefaults log path differs from ' + $env:IIS_LOG_DIR)
+        }
+        foreach ($site in @(Get-Website)) {
+            if (-not [string]::Equals(([string]$site.logFile.directory).TrimEnd([char]92), $env:IIS_LOG_DIR.TrimEnd([char]92), [System.StringComparison]::OrdinalIgnoreCase)) {
+                throw ($site.Name + ' log path differs from ' + $env:IIS_LOG_DIR)
+            }
+        }
+        if ([System.Convert]::ToBoolean($env:TLS_ENABLED)) {
+            $binding = Get-Item ('IIS:\SslBindings\0.0.0.0!' + [int]$env:TLS_PORT) -ErrorAction Stop
+            if ($binding.Thumbprint -ne $env:TLS_THUMBPRINT) { throw 'IIS SSL binding differs from the pinned certificate' }
+            foreach ($name in @('ApiRemoting30', 'ClientWebService', 'DSSAuthWebService', 'ServerSyncWebService', 'SimpleAuthWebService')) {
+                $location = 'WSUS Administration/' + $name
+                $flags = [string](Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Location $location -Filter 'system.webServer/security/access' -Name 'sslFlags').Value
+                if ($flags -ne 'Ssl' -and $flags -ne '8') { throw ($location + ' does not require SSL') }
+            }
+        }
+        if ([System.Convert]::ToBoolean($env:BOOTSTRAP_ENABLED)) {
+            $serverId = [string]$cfg.ServerId
+            $marker = Get-ItemProperty 'HKLM:\SOFTWARE\nwarila-platform\wsus' -ErrorAction Stop
+            if ($marker.category_bootstrap_server_id -ne $serverId -or
+                [string]::IsNullOrWhiteSpace($marker.category_bootstrap_fingerprint)) {
+                throw 'terminal-success category bootstrap marker is absent or stale'
+            }
+        }
+        Write-Output 'healthy'
       environment:
-        TLS_DNS_NAME: "{{ config.tls.dns_name | default('') }}"
-      register: '__tls_configuressl__'
-      changed_when: "__tls_configuressl__.stdout | trim == 'changed'"
+        CONTENT_DIR: '{{ __content_dir__ }}'
+        WID_DATA_DIR: '{{ __wid_data_dir__ }}'
+        IIS_LOG_DIR: '{{ config.iis.log_dir }}'
+        IIS_WWWROOT: '{{ config.iis.wwwroot }}'
+        UPSTREAM_SERVER: '{{ config.upstream_server | string | trim }}'
+        UPSTREAM_PORT: '{{ config.sync.upstream_port }}'
+        UPSTREAM_SSL: '{{ config.sync.upstream_use_ssl | bool | lower }}'
+        REPLICA: '{{ config.sync.replica | bool | lower }}'
+        TLS_ENABLED: '{{ config.tls.enabled | bool | lower }}'
+        TLS_PORT: '{{ config.tls.port }}'
+        TLS_THUMBPRINT: '{{ config.tls.thumbprint | trim | upper }}'
+        BOOTSTRAP_ENABLED: '{{ config.sync.bootstrap_enabled | bool | lower }}'
+      changed_when: false
 
     #endregion --- [ Main: WSUS SSL (delivered certificate) ] ------------------------------- #
 

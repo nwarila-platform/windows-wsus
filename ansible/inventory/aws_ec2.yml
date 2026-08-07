@@ -12,8 +12,10 @@
 # an IP address: it is the target of `aws ssm start-session` in the ProxyCommand below.
 #
 # Credentials come from the caller's AWS environment (in CI, the OIDC session). The private
-# key path matches where the workflow installs the AWS_EC2_SSH_PRIVATE_KEY secret — the
-# private half of the org-shared 'nwarila-ec2-key' pair.
+# The protected lifecycle does not consume this file: it builds an exact inventory from
+# Terraform output and passes its runner-local ephemeral key explicitly. A human using this
+# broad discovery aid must supply the correct ephemeral/private key with `--private-key` or an
+# SSH agent; no long-lived repository key path is encoded here.
 #
 # =========================================================================================== #
 plugin: 'amazon.aws.aws_ec2'
@@ -25,9 +27,11 @@ filters:
   tag:Function: 'wsus'
   instance-state-name: 'running'
 
-# The framework stamps Name = <hostname> (non-overwritable), so hosts keep their tfvars name.
+# Instance ids are globally unique inside the account/region and are also the SSM target.  Using
+# Name here allowed two stale/current instances with the same Name tag to collapse into one
+# inventory host and made an apparently successful zero/one-host run ambiguous.
 hostnames:
-  - 'tag:Name'
+  - 'instance-id'
 
 groups:
   wsus_servers: true
@@ -47,7 +51,6 @@ compose:
   # bootstrap argv through verbatim, where a PowerShell login shell re-parses and breaks it.
   ansible_shell_type: '"cmd" if ec2_platform == "windows" else "sh"'
   ansible_connection: '"ssh"'
-  ansible_ssh_private_key_file: '"~/.ssh/nwarila-ec2-key.pem"'
   ansible_ssh_common_args: >-
     '-o StrictHostKeyChecking=accept-new
     -o ProxyCommand="aws ssm start-session --target %h --document-name AWS-StartSSHSession

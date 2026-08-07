@@ -21,7 +21,8 @@
         "arn:aws:ec2:<region>:*:instance/*",
         "arn:aws:ec2:<region>:*:volume/*",
         "arn:aws:ec2:<region>:*:network-interface/*",
-        "arn:aws:ec2:<region>:*:elastic-ip/*"
+        "arn:aws:ec2:<region>:*:elastic-ip/*",
+        "arn:aws:ec2:<region>:<account-id>:key-pair/<key-pair-name>"
       ],
       "Condition": {
         "StringEquals": {
@@ -29,7 +30,8 @@
             "RunInstances",
             "CreateVolume",
             "CreateNetworkInterface",
-            "AllocateAddress"
+            "AllocateAddress",
+            "ImportKeyPair"
           ],
           "aws:RequestTag/nwarila:management:repository-id": "<repository-id>"
         }
@@ -116,6 +118,18 @@
         "ec2:DeleteTags"
       ],
       "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "<region>",
+          "ec2:ResourceTag/nwarila:management:repository-id": "<repository-id>"
+        }
+      }
+    },
+    {
+      "Sid": "DeleteEphemeralCiKeyPair",
+      "Effect": "Allow",
+      "Action": "ec2:DeleteKeyPair",
+      "Resource": "arn:aws:ec2:<region>:<account-id>:key-pair/<key-pair-name>",
       "Condition": {
         "StringEquals": {
           "aws:RequestedRegion": "<region>",
