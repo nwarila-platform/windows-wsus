@@ -924,15 +924,18 @@
                 Write-Output 'absent'
                 return
             }
-            $certificateDns = $cert.GetNameInfo(
-                [System.Security.Cryptography.X509Certificates.X509NameType]::DnsName, $false
-            ).Trim().ToLowerInvariant()
+            # GetNameInfo returns one arbitrary DNS name; a multi-SAN certificate matches when ANY
+            # of its DNS names does. DnsNameList enumerates every SAN entry with a CN fallback.
             $wantedDns = $env:TLS_DNS_NAME.Trim().ToLowerInvariant()
-            $dnsMatches = $certificateDns -eq $wantedDns
-            if (-not $dnsMatches -and $certificateDns.StartsWith('*.')) {
-                $suffix = $certificateDns.Substring(1)
-                $dnsMatches = $wantedDns.EndsWith($suffix) -and
-                    ($wantedDns.Split('.').Count -eq $certificateDns.Split('.').Count)
+            $certificateNames = @($cert.DnsNameList | ForEach-Object { "$($_.Unicode)".Trim().ToLowerInvariant() })
+            $dnsMatches = $false
+            foreach ($certificateDns in $certificateNames) {
+                if ($certificateDns -eq $wantedDns) { $dnsMatches = $true; break }
+                if ($certificateDns.StartsWith('*.')) {
+                    $suffix = $certificateDns.Substring(1)
+                    if ($wantedDns.EndsWith($suffix) -and
+                        ($wantedDns.Split('.').Count -eq $certificateDns.Split('.').Count)) { $dnsMatches = $true; break }
+                }
             }
             if ($dnsMatches) { Write-Output 'present' } else { Write-Output 'absent' }
           environment:
@@ -1034,17 +1037,22 @@
                     if ($cert.NotBefore -gt $now) { throw ('certificate is not active until ' + $cert.NotBefore.ToString('o')) }
                     $minimumExpiry = $now.AddDays([int]$env:MINIMUM_VALIDITY_DAYS)
                     if ($cert.NotAfter -lt $minimumExpiry) { throw ('certificate expires too soon: ' + $cert.NotAfter.ToString('o')) }
-                    $certificateDns = $cert.GetNameInfo(
-                        [System.Security.Cryptography.X509Certificates.X509NameType]::DnsName, $false
-                    ).Trim().ToLowerInvariant()
+                    # GetNameInfo returns one arbitrary DNS name; a multi-SAN certificate matches
+                    # when ANY of its DNS names does. DnsNameList enumerates every SAN entry.
                     $wantedDns = $env:TLS_DNS_NAME.Trim().ToLowerInvariant()
-                    $dnsMatches = $certificateDns -eq $wantedDns
-                    if (-not $dnsMatches -and $certificateDns.StartsWith('*.')) {
-                        $suffix = $certificateDns.Substring(1)
-                        $dnsMatches = $wantedDns.EndsWith($suffix) -and
-                            ($wantedDns.Split('.').Count -eq $certificateDns.Split('.').Count)
+                    $certificateNames = @($cert.DnsNameList | ForEach-Object { "$($_.Unicode)".Trim().ToLowerInvariant() })
+                    $dnsMatches = $false
+                    foreach ($certificateDns in $certificateNames) {
+                        if ($certificateDns -eq $wantedDns) { $dnsMatches = $true; break }
+                        if ($certificateDns.StartsWith('*.')) {
+                            $suffix = $certificateDns.Substring(1)
+                            if ($wantedDns.EndsWith($suffix) -and
+                                ($wantedDns.Split('.').Count -eq $certificateDns.Split('.').Count)) { $dnsMatches = $true; break }
+                        }
                     }
-                    if (-not $dnsMatches) { throw "certificate DNS name $certificateDns does not match $wantedDns" }
+                    if (-not $dnsMatches) {
+                        throw ('certificate DNS names (' + ($certificateNames -join ', ') + ") do not match ${wantedDns}")
+                    }
                     Write-Output ('validated:' + $gotThumb)
                 } finally {
                     $cert.Dispose()
