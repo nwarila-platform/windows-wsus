@@ -526,8 +526,89 @@
               }
           }
 
+          function New-WsusServerManager {
+              $os64 = [System.Environment]::Is64BitOperatingSystem
+              $process64 = [System.Environment]::Is64BitProcess
+              $powerShellVersion = [string]$PSVersionTable.PSVersion
+              $powerShellEdition = [string]$PSVersionTable.PSEdition
+              $assemblyPath = '<loaded-assembly-not-resolved>'
+              $runtimeContext = 'assembly=[' + $assemblyPath + '] os64=[' + $os64 +
+                  '] process64=[' + $process64 + '] powershell=[' + $powerShellVersion +
+                  '] edition=[' + $powerShellEdition + ']'
+              if (-not $process64) {
+                  throw ('64-bit PowerShell is required for IIS management: ' + $runtimeContext)
+              }
+              $typeName = 'Microsoft.Web.Administration.ServerManager'
+
+              function Resolve-LoadedWsusServerManagerType([string]$requestedTypeName) {
+                  foreach ($loadedAssembly in [System.AppDomain]::CurrentDomain.GetAssemblies()) {
+                      if ($loadedAssembly.GetName().Name -ne 'Microsoft.Web.Administration') {
+                          continue
+                      }
+                      $candidateType = $loadedAssembly.GetType(
+                          $requestedTypeName, $false, $false)
+                      if ($null -ne $candidateType) {
+                          return $candidateType
+                      }
+                  }
+                  return $null
+              }
+
+              try {
+                  $serverManagerType = Resolve-LoadedWsusServerManagerType $typeName
+              } catch {
+                  throw ('Unable to inspect loaded IIS management assemblies: ' + $runtimeContext +
+                      ' errorId=[' + [string]$_.FullyQualifiedErrorId + '] exception=[' +
+                      $_.Exception.ToString() + ']')
+              }
+              if ($null -eq $serverManagerType) {
+                  $windowsDirectory = [string]$env:WINDIR
+                  if ([string]::IsNullOrWhiteSpace($windowsDirectory)) {
+                      throw ('WINDIR is unavailable; cannot locate the IIS management assembly: ' +
+                          $runtimeContext)
+                  }
+                  $assemblyPath = Join-Path $windowsDirectory `
+                      'System32\inetsrv\Microsoft.Web.Administration.dll'
+                  $runtimeContext = 'assembly=[' + $assemblyPath + '] os64=[' + $os64 +
+                      '] process64=[' + $process64 + '] powershell=[' + $powerShellVersion +
+                      '] edition=[' + $powerShellEdition + ']'
+                  if (-not (Test-Path -LiteralPath $assemblyPath -PathType Leaf)) {
+                      throw ('IIS management assembly is absent: ' + $runtimeContext)
+                  }
+                  try {
+                      $null = Add-Type -LiteralPath $assemblyPath -ErrorAction Stop
+                      $serverManagerType = Resolve-LoadedWsusServerManagerType $typeName
+                  } catch {
+                      throw ('Unable to load or resolve IIS management assembly: ' +
+                          $runtimeContext + ' errorId=[' + [string]$_.FullyQualifiedErrorId +
+                          '] exception=[' + $_.Exception.ToString() + ']')
+                  }
+              }
+              if ($null -eq $serverManagerType) {
+                  throw ('IIS management TypeNotFound: type=' + $typeName + ' ' + $runtimeContext)
+              }
+              $loadedAssemblyPath = [string]$serverManagerType.Assembly.Location
+              if (-not [string]::IsNullOrWhiteSpace($loadedAssemblyPath)) {
+                  $assemblyPath = $loadedAssemblyPath
+              }
+              $runtimeContext = 'assembly=[' + $assemblyPath + '] os64=[' + $os64 +
+                  '] process64=[' + $process64 + '] powershell=[' + $powerShellVersion +
+                  '] edition=[' + $powerShellEdition + ']'
+              try {
+                  $serverManager = [System.Activator]::CreateInstance($serverManagerType)
+              } catch {
+                  throw ('Unable to construct IIS ServerManager: ' + $runtimeContext +
+                      ' errorId=[' + [string]$_.FullyQualifiedErrorId + '] exception=[' +
+                      $_.Exception.ToString() + ']')
+              }
+              if ($null -eq $serverManager) {
+                  throw ('IIS ServerManager construction returned null: ' + $runtimeContext)
+              }
+              return $serverManager
+          }
+
           function Get-WsusAccessSslState([string]$location) {
-              $serverManager = [Microsoft.Web.Administration.ServerManager]::new()
+              $serverManager = New-WsusServerManager
               try {
                   $configuration = $serverManager.GetApplicationHostConfiguration()
                   $section = $configuration.GetSection(
@@ -557,7 +638,7 @@
           }
 
           function Set-WsusAccessSslValue([string]$location, [string]$desiredValue) {
-              $serverManager = [Microsoft.Web.Administration.ServerManager]::new()
+              $serverManager = New-WsusServerManager
               try {
                   $configuration = $serverManager.GetApplicationHostConfiguration()
                   $section = $configuration.GetSection(
@@ -2454,8 +2535,89 @@
             )
             $changed = $false
 
+            function New-WsusServerManager {
+                $os64 = [System.Environment]::Is64BitOperatingSystem
+                $process64 = [System.Environment]::Is64BitProcess
+                $powerShellVersion = [string]$PSVersionTable.PSVersion
+                $powerShellEdition = [string]$PSVersionTable.PSEdition
+                $assemblyPath = '<loaded-assembly-not-resolved>'
+                $runtimeContext = 'assembly=[' + $assemblyPath + '] os64=[' + $os64 +
+                    '] process64=[' + $process64 + '] powershell=[' + $powerShellVersion +
+                    '] edition=[' + $powerShellEdition + ']'
+                if (-not $process64) {
+                    throw ('64-bit PowerShell is required for IIS management: ' + $runtimeContext)
+                }
+                $typeName = 'Microsoft.Web.Administration.ServerManager'
+
+                function Resolve-LoadedWsusServerManagerType([string]$requestedTypeName) {
+                    foreach ($loadedAssembly in [System.AppDomain]::CurrentDomain.GetAssemblies()) {
+                        if ($loadedAssembly.GetName().Name -ne 'Microsoft.Web.Administration') {
+                            continue
+                        }
+                        $candidateType = $loadedAssembly.GetType(
+                            $requestedTypeName, $false, $false)
+                        if ($null -ne $candidateType) {
+                            return $candidateType
+                        }
+                    }
+                    return $null
+                }
+
+                try {
+                    $serverManagerType = Resolve-LoadedWsusServerManagerType $typeName
+                } catch {
+                    throw ('Unable to inspect loaded IIS management assemblies: ' + $runtimeContext +
+                        ' errorId=[' + [string]$_.FullyQualifiedErrorId + '] exception=[' +
+                        $_.Exception.ToString() + ']')
+                }
+                if ($null -eq $serverManagerType) {
+                    $windowsDirectory = [string]$env:WINDIR
+                    if ([string]::IsNullOrWhiteSpace($windowsDirectory)) {
+                        throw ('WINDIR is unavailable; cannot locate the IIS management assembly: ' +
+                            $runtimeContext)
+                    }
+                    $assemblyPath = Join-Path $windowsDirectory `
+                        'System32\inetsrv\Microsoft.Web.Administration.dll'
+                    $runtimeContext = 'assembly=[' + $assemblyPath + '] os64=[' + $os64 +
+                        '] process64=[' + $process64 + '] powershell=[' + $powerShellVersion +
+                        '] edition=[' + $powerShellEdition + ']'
+                    if (-not (Test-Path -LiteralPath $assemblyPath -PathType Leaf)) {
+                        throw ('IIS management assembly is absent: ' + $runtimeContext)
+                    }
+                    try {
+                        $null = Add-Type -LiteralPath $assemblyPath -ErrorAction Stop
+                        $serverManagerType = Resolve-LoadedWsusServerManagerType $typeName
+                    } catch {
+                        throw ('Unable to load or resolve IIS management assembly: ' +
+                            $runtimeContext + ' errorId=[' + [string]$_.FullyQualifiedErrorId +
+                            '] exception=[' + $_.Exception.ToString() + ']')
+                    }
+                }
+                if ($null -eq $serverManagerType) {
+                    throw ('IIS management TypeNotFound: type=' + $typeName + ' ' + $runtimeContext)
+                }
+                $loadedAssemblyPath = [string]$serverManagerType.Assembly.Location
+                if (-not [string]::IsNullOrWhiteSpace($loadedAssemblyPath)) {
+                    $assemblyPath = $loadedAssemblyPath
+                }
+                $runtimeContext = 'assembly=[' + $assemblyPath + '] os64=[' + $os64 +
+                    '] process64=[' + $process64 + '] powershell=[' + $powerShellVersion +
+                    '] edition=[' + $powerShellEdition + ']'
+                try {
+                    $serverManager = [System.Activator]::CreateInstance($serverManagerType)
+                } catch {
+                    throw ('Unable to construct IIS ServerManager: ' + $runtimeContext +
+                        ' errorId=[' + [string]$_.FullyQualifiedErrorId + '] exception=[' +
+                        $_.Exception.ToString() + ']')
+                }
+                if ($null -eq $serverManager) {
+                    throw ('IIS ServerManager construction returned null: ' + $runtimeContext)
+                }
+                return $serverManager
+            }
+
             function Get-WsusAccessSslState([string]$location) {
-                $serverManager = [Microsoft.Web.Administration.ServerManager]::new()
+                $serverManager = New-WsusServerManager
                 try {
                     $configuration = $serverManager.GetApplicationHostConfiguration()
                     $section = $configuration.GetSection(
@@ -2485,7 +2647,7 @@
             }
 
             function Set-WsusAccessSslValue([string]$location, [string]$desiredValue) {
-                $serverManager = [Microsoft.Web.Administration.ServerManager]::new()
+                $serverManager = New-WsusServerManager
                 try {
                     $configuration = $serverManager.GetApplicationHostConfiguration()
                     $section = $configuration.GetSection(
@@ -2689,6 +2851,86 @@
           $ErrorActionPreference = 'Stop'
           $Ansible.Changed = $false
           Import-Module WebAdministration
+          function New-WsusServerManager {
+              $os64 = [System.Environment]::Is64BitOperatingSystem
+              $process64 = [System.Environment]::Is64BitProcess
+              $powerShellVersion = [string]$PSVersionTable.PSVersion
+              $powerShellEdition = [string]$PSVersionTable.PSEdition
+              $assemblyPath = '<loaded-assembly-not-resolved>'
+              $runtimeContext = 'assembly=[' + $assemblyPath + '] os64=[' + $os64 +
+                  '] process64=[' + $process64 + '] powershell=[' + $powerShellVersion +
+                  '] edition=[' + $powerShellEdition + ']'
+              if (-not $process64) {
+                  throw ('64-bit PowerShell is required for IIS management: ' + $runtimeContext)
+              }
+              $typeName = 'Microsoft.Web.Administration.ServerManager'
+
+              function Resolve-LoadedWsusServerManagerType([string]$requestedTypeName) {
+                  foreach ($loadedAssembly in [System.AppDomain]::CurrentDomain.GetAssemblies()) {
+                      if ($loadedAssembly.GetName().Name -ne 'Microsoft.Web.Administration') {
+                          continue
+                      }
+                      $candidateType = $loadedAssembly.GetType(
+                          $requestedTypeName, $false, $false)
+                      if ($null -ne $candidateType) {
+                          return $candidateType
+                      }
+                  }
+                  return $null
+              }
+
+              try {
+                  $serverManagerType = Resolve-LoadedWsusServerManagerType $typeName
+              } catch {
+                  throw ('Unable to inspect loaded IIS management assemblies: ' + $runtimeContext +
+                      ' errorId=[' + [string]$_.FullyQualifiedErrorId + '] exception=[' +
+                      $_.Exception.ToString() + ']')
+              }
+              if ($null -eq $serverManagerType) {
+                  $windowsDirectory = [string]$env:WINDIR
+                  if ([string]::IsNullOrWhiteSpace($windowsDirectory)) {
+                      throw ('WINDIR is unavailable; cannot locate the IIS management assembly: ' +
+                          $runtimeContext)
+                  }
+                  $assemblyPath = Join-Path $windowsDirectory `
+                      'System32\inetsrv\Microsoft.Web.Administration.dll'
+                  $runtimeContext = 'assembly=[' + $assemblyPath + '] os64=[' + $os64 +
+                      '] process64=[' + $process64 + '] powershell=[' + $powerShellVersion +
+                      '] edition=[' + $powerShellEdition + ']'
+                  if (-not (Test-Path -LiteralPath $assemblyPath -PathType Leaf)) {
+                      throw ('IIS management assembly is absent: ' + $runtimeContext)
+                  }
+                  try {
+                      $null = Add-Type -LiteralPath $assemblyPath -ErrorAction Stop
+                      $serverManagerType = Resolve-LoadedWsusServerManagerType $typeName
+                  } catch {
+                      throw ('Unable to load or resolve IIS management assembly: ' +
+                          $runtimeContext + ' errorId=[' + [string]$_.FullyQualifiedErrorId +
+                          '] exception=[' + $_.Exception.ToString() + ']')
+                  }
+              }
+              if ($null -eq $serverManagerType) {
+                  throw ('IIS management TypeNotFound: type=' + $typeName + ' ' + $runtimeContext)
+              }
+              $loadedAssemblyPath = [string]$serverManagerType.Assembly.Location
+              if (-not [string]::IsNullOrWhiteSpace($loadedAssemblyPath)) {
+                  $assemblyPath = $loadedAssemblyPath
+              }
+              $runtimeContext = 'assembly=[' + $assemblyPath + '] os64=[' + $os64 +
+                  '] process64=[' + $process64 + '] powershell=[' + $powerShellVersion +
+                  '] edition=[' + $powerShellEdition + ']'
+              try {
+                  $serverManager = [System.Activator]::CreateInstance($serverManagerType)
+              } catch {
+                  throw ('Unable to construct IIS ServerManager: ' + $runtimeContext +
+                      ' errorId=[' + [string]$_.FullyQualifiedErrorId + '] exception=[' +
+                      $_.Exception.ToString() + ']')
+              }
+              if ($null -eq $serverManager) {
+                  throw ('IIS ServerManager construction returned null: ' + $runtimeContext)
+              }
+              return $serverManager
+          }
           if ([System.Convert]::ToBoolean($env:TLS_ENABLED)) {
               $wsusSitePath = 'IIS:\Sites\WSUS Administration'
               if (-not (Test-Path -LiteralPath $wsusSitePath)) {
@@ -2860,7 +3102,7 @@
                   (-not [string]::Equals([string]$setup.ServerCertificateName, $env:TLS_DNS_NAME, [System.StringComparison]::OrdinalIgnoreCase))) {
                   throw 'persisted WSUS SSL hostname or port differs from the desired TLS contract'
               }
-              $serverManager = [Microsoft.Web.Administration.ServerManager]::new()
+              $serverManager = New-WsusServerManager
               try {
                   $configuration = $serverManager.GetApplicationHostConfiguration()
                   foreach ($name in @('ApiRemoting30', 'ClientWebService', 'DSSAuthWebService', 'ServerSyncWebService', 'SimpleAuthWebService')) {
