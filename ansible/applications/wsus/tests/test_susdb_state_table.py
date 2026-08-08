@@ -467,19 +467,78 @@ class HttpsListenerContractTest(unittest.TestCase):
         script = task["ansible.windows.win_shell"]
 
         self.assertIn("$desiredBinding = '*:' + $port + ':'", script)
-        self.assertIn("[string]$_.bindingInformation, $desiredBinding", script)
-        self.assertIn("-IPAddress '*' -SslFlags 0", script)
+        self.assertIn("Get-WebBinding -Name $configuredSite.Name -ErrorAction Stop", script)
+        self.assertNotIn(
+            "Get-WebBinding -Name $configuredSite.Name -Protocol", script
+        )
+        self.assertIn("'^(?<address>.*):(?<port>[0-9]{1,5}):(?<host>.*)$'", script)
+        self.assertIn("'^(?<port>[0-9]{1,5})(?::|$)'", script)
+        self.assertIn("Site = [string]$configuredSite.Name", script)
+        self.assertIn("Protocol = [string]$configuredBinding.protocol", script)
+        foreign_guard = script.index("if ($foreignBindings.Count -gt 0)")
+        mutation_guard = script.index(
+            "if ($bindingDrift -or $certificateDriftBefore)"
+        )
+        self.assertLess(foreign_guard, mutation_guard)
+        self.assertIn("refusing mutation", script[foreign_guard:mutation_guard])
+        self.assertIn("function Get-WsusHttpsBindingRecords", script)
+        self.assertIn("$ownedHttpsBindings.Count -ne 1", script)
+        self.assertIn("$desiredBindings.Count -ne 1", script)
+        self.assertIn("$nonDesiredTargetPortBindings.Count -gt 0", script)
+        self.assertIn("[int]($desiredBindings[0].SslFlags) -ne 0", script)
+        self.assertIn("$boundBefore = Get-Item $sslPath", script)
+        self.assertIn("$certificateDriftBefore = -not $boundBefore", script)
+
+        stop = script.index(
+            "Stop-Website -Name $siteName -ErrorAction Stop | Out-Null"
+        )
+        remove_binding = script.index("Remove-WebBinding -Name $siteName")
+        create_binding = script.index(
+            "New-WebBinding -Name $siteName -Protocol https"
+        )
+        replace_certificate = script.index("Remove-Item $sslPath -ErrorAction Stop")
+        post_binding_probe = script.index(
+            "$bound = Get-Item $sslPath -ErrorAction SilentlyContinue",
+            create_binding,
+        )
+        post_binding_drift = script.index("$certificateDrift = -not $bound", post_binding_probe)
+        self.assertLess(mutation_guard, stop)
+        self.assertLess(stop, remove_binding)
+        self.assertLess(stop, create_binding)
+        self.assertLess(create_binding, post_binding_probe)
+        self.assertLess(post_binding_probe, post_binding_drift)
+        self.assertLess(post_binding_drift, replace_certificate)
+        self.assertIn("for ($attempt = 0; $attempt -lt 20; $attempt++)", script)
+        self.assertIn("did not stop within 10 seconds", script)
+        self.assertIn("-Confirm:$false | Out-Null", script)
         self.assertIn(
-            "Set-WebBinding -Name $site -BindingInformation $desiredBinding -PropertyName sslFlags -Value '0'",
+            "foreach ($candidate in @($ownedHttpsBindings) + @($ownedTargetPortBindings))",
             script,
         )
-        self.assertIn("$verifySiteBinding.Count -ne 1", script)
-        self.assertIn("[int]($verifySiteBinding[0].sslFlags) -ne 0", script)
+        self.assertIn("$seenBindings.ContainsKey($key)", script)
+        self.assertIn("WSUS HTTP payload binding on 8530", script)
+        self.assertIn("-IPAddress '*' -SslFlags 0", script)
+        self.assertIn("$verifyOwnedBindings.Count -ne 1", script)
+        self.assertIn("$verifyOwnedHttpsBindings.Count -ne 1", script)
+        self.assertIn("exactly one HTTPS binding total", script)
+        self.assertIn("[int]($verifyOwnedBindings[0].SslFlags) -ne 0", script)
+        self.assertNotIn("Restart-Service", script)
+        self.assertNotIn("Stop-Service", script)
+        self.assertNotIn("Start-Website", script)
+        self.assertEqual(script.count("Write-Output 'changed'"), 1)
+        self.assertEqual(script.count("Write-Output 'nochange'"), 1)
+        self.assertEqual(
+            task["changed_when"], "__tls_binding__.stdout | trim == 'changed'"
+        )
 
         verify_script = named_task(RUNTIME_VERIFY_TASK)["ansible.windows.win_shell"]
         self.assertIn("$desiredBinding = '*:' + [int]$env:TLS_PORT + ':'", verify_script)
+        self.assertIn("$siteBindings = @(Get-WebBinding", verify_script)
+        self.assertIn("$desiredSiteBindings = @($siteBindings", verify_script)
         self.assertIn("$siteBindings.Count -ne 1", verify_script)
-        self.assertIn("[int]($siteBindings[0].sslFlags) -ne 0", verify_script)
+        self.assertIn("$desiredSiteBindings.Count -ne 1", verify_script)
+        self.assertIn("[int]($desiredSiteBindings[0].sslFlags) -ne 0", verify_script)
+        self.assertIn("exactly one HTTPS binding total", verify_script)
 
     def test_live_probe_sends_http_request_with_intended_sni_and_host(self):
         task = named_task(TLS_LIVE_TASK)
@@ -497,34 +556,121 @@ class HttpsListenerContractTest(unittest.TestCase):
         ]
 
         ssl_value_guard = helper.index("$usingSslText -notmatch '^[01]$'")
-        pre_ssl_noop = helper.index("if ($usingSsl -eq 0)")
         port_read = helper.index("$portText = [string]$setup.PortNumber")
+        pre_ssl_recovery = helper.index("if ($usingSsl -eq 0)")
         absent_guard = helper.index("if (-not (Test-Path -LiteralPath $sitePath))")
         auto_start_mutation = helper.index(
             "Set-ItemProperty -LiteralPath $sitePath -Name serverAutoStart -Value $true | Out-Null"
         )
-        self.assertLess(ssl_value_guard, pre_ssl_noop)
-        self.assertLess(pre_ssl_noop, port_read)
+        self.assertLess(ssl_value_guard, port_read)
+        self.assertLess(port_read, pre_ssl_recovery)
         self.assertLess(absent_guard, auto_start_mutation)
-        self.assertIn("Write-Output 'nochange'", helper[pre_ssl_noop:port_read])
         self.assertIn("$port -lt 1 -or $port -gt 65535", helper)
         self.assertNotIn("$env:TLS_PORT", helper)
         self.assertIn("Get-WebItemState -PSPath $sitePath -ErrorAction Stop", helper)
-        self.assertIn("$siteState -eq 'Stopped'", helper)
-        self.assertIn("Start-Website -Name $siteName | Out-Null", helper)
+        self.assertIn("function Start-WsusWebsiteBounded", helper)
+        self.assertEqual(
+            helper.count(
+                "Start-Website -Name $siteName -ErrorAction Stop | Out-Null"
+            ),
+            1,
+        )
         self.assertIn("$siteState -eq 'Started'", helper)
         self.assertIn("for ($attempt = 0; $attempt -lt 10; $attempt++)", helper)
         self.assertIn("if (Test-LoopbackListener $port)", helper)
         self.assertIn("if (-not $listenerReady)", helper)
         self.assertNotIn("$tlsChanged", helper)
-        self.assertIn("Stop-Website -Name $siteName | Out-Null", helper)
+        self.assertIn(
+            "Stop-Website -Name $siteName -ErrorAction Stop | Out-Null", helper
+        )
         self.assertNotIn("Restart-Service", helper)
         self.assertNotIn("Stop-Service", helper)
         self.assertIn("$connect.Wait(1000)", helper)
         self.assertIn("for ($attempt = 0; $attempt -lt 30; $attempt++)", helper)
         self.assertIn("$siteState -eq 'Started' -and $listenerReady", helper)
         self.assertIn("serverAutoStart=true", helper)
-        for diagnostic in ("W3SVC=", "httpsBindings=[", "httpSysSsl=[", "httpSysIpListen=["):
+        auto_start_settle = helper.index(
+            "# reconciliation a bounded chance to start the site before issuing an explicit start."
+        )
+        explicit_start = helper.rindex("Start-WsusWebsiteBounded $port")
+        self.assertLess(auto_start_mutation, auto_start_settle)
+        self.assertLess(auto_start_settle, explicit_start)
+
+        retry_helper = helper[
+            helper.index("function Start-WsusWebsiteBounded") : helper.index(
+                "function Test-LoopbackListener"
+            )
+        ]
+        self.assertIn("for ($attempt = 0; $attempt -lt 20; $attempt++)", retry_helper)
+        self.assertIn("[int64]$current.HResult -eq -2147024713", helper)
+        self.assertIn("$current = $current.InnerException", helper)
+        self.assertIn("if (-not (Test-AlreadyExistsHResult $_.Exception))", retry_helper)
+        self.assertIn(
+            "Start-Website failed with a non-retryable exception", retry_helper
+        )
+        self.assertIn("Format-ExceptionChain $_.Exception", retry_helper)
+        self.assertIn("Get-WsusListenerFailureDetailsSafe $listenerPort", retry_helper)
+        self.assertIn("Assert-WsusPortExclusive $listenerPort", retry_helper)
+        self.assertIn("view=requestq", retry_helper)
+        self.assertIn("Test-HttpSysPortRegistration", retry_helper)
+        self.assertIn("if ($currentState -eq 'Started')", retry_helper)
+        self.assertIn("lastAlreadyExists=[", retry_helper)
+        self.assertIn("function Repair-WsusOwnedPortBindings", helper)
+        self.assertIn("if (Repair-WsusOwnedPortBindings $port)", helper)
+        self.assertIn("Remove-WebBinding -Name $siteName", helper)
+        self.assertIn(
+            "New-WebBinding -Name $siteName -Protocol https -Port $listenerPort",
+            helper,
+        )
+        self.assertIn("WSUS site target-port bindings became unnormalized", helper)
+        self.assertIn("$owned.Count -eq 1 -and $desired.Count -eq 1", helper)
+        self.assertIn("function Get-OrRepairCurrentSslMapping", helper)
+        self.assertIn("Preserve the currently serving certificate here", helper)
+        self.assertIn("$recoveryThumbprint = '{{ config.tls.thumbprint | trim | upper }}'", helper)
+        self.assertIn("configured TLS recovery thumbprint is invalid", helper)
+        self.assertIn("the exact pinned recovery leaf with", helper)
+        self.assertIn("Stop-WsusWebsiteBounded 'pre-API SSL mapping recovery'", helper)
+        self.assertIn("New-Item $sslPath -Value $recoveryCertificate | Out-Null", helper)
+        self.assertIn("pre-API SSL mapping recovery did not persist thumbprint", helper)
+        self.assertIn("$mapping = Get-OrRepairCurrentSslMapping $listenerPort", helper)
+        self.assertIn("New-Item $mapping.Path -Value $mapping.Certificate | Out-Null", helper)
+        self.assertIn("$verifyMapping = Get-Item $mapping.Path -ErrorAction Stop", helper)
+        repair_call = helper.index("if (Repair-WsusOwnedPortBindings $port)")
+        mapping_preflight = helper.index(
+            "$currentSslMapping = Get-OrRepairCurrentSslMapping $port"
+        )
+        self.assertIn("$currentSslMapping.Changed", helper)
+        normalized_guard = retry_helper.index(
+            "WSUS site target-port bindings became unnormalized"
+        )
+        start_command = retry_helper.index(
+            "Start-Website -Name $siteName -ErrorAction Stop | Out-Null"
+        )
+        self.assertLess(mapping_preflight, repair_call)
+        self.assertLess(repair_call, helper.rindex("Start-WsusWebsiteBounded $port"))
+        self.assertLess(mapping_preflight, helper.rindex("Start-WsusWebsiteBounded $port"))
+        self.assertLess(normalized_guard, start_command)
+        self.assertIn("function Repair-PreSslWsusApiAccess", helper)
+        self.assertIn("if (Repair-PreSslWsusApiAccess)", helper)
+        self.assertIn("-Name 'sslFlags' -Value 'None'", helper)
+        self.assertIn("pre-SSL WSUS API access rollback did not persist", helper)
+        pre_ssl_repair_call = helper.index("if (Repair-PreSslWsusApiAccess)")
+        pre_ssl_start_call = helper.index("Start-WsusWebsiteBounded $port $false")
+        self.assertLess(pre_ssl_repair_call, pre_ssl_start_call)
+        self.assertIn("function Limit-DiagnosticText", helper)
+        self.assertIn("$text.Substring(0, $maxLength)", helper)
+        self.assertNotIn("Write-Output", retry_helper)
+        for limit in ("2048", "4096", "512"):
+            with self.subTest(diagnostic_limit=limit):
+                self.assertIn(limit, helper)
+        for diagnostic in (
+            "W3SVC=",
+            "allBindings=[",
+            "httpSysSsl=[",
+            "httpSysIpListen=[",
+            "httpSysServiceState=[",
+            "recentWasW3svcHttpEvents=[",
+        ):
             with self.subTest(diagnostic=diagnostic):
                 self.assertIn(diagnostic, helper)
 
