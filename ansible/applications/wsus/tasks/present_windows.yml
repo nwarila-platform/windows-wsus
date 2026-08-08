@@ -1113,6 +1113,37 @@
             TLS_THUMBPRINT: '{{ __tls_thumbprint__ }}'
           changed_when: false
 
+        # The ephemeral proof host is its own only client: after configuressl the WSUS console
+        # and the health verify connect to https://<dns_name>:<tls_port>, so the box must
+        # resolve the service name locally and trust its own self-signed leaf. Distributing
+        # trust to real clients stays out of scope.
+        - name: 'MAIN | Resolve The WSUS Service Name To The Local Host'
+          community.windows.win_hosts:
+            canonical_name: '{{ config.tls.dns_name }}'
+            ip_address: '127.0.0.1'
+            state: present
+
+        - name: 'MAIN | Trust The Self-Signed Service Certificate Locally'
+          ansible.windows.win_shell: |
+            $ErrorActionPreference = 'Stop'
+            $cert = Get-Item (Join-Path 'Cert:\LocalMachine\My' $env:TLS_THUMBPRINT) -ErrorAction Stop
+            if ($cert.Subject -ne $cert.Issuer) {
+                Write-Output 'ca-issued'
+                return
+            }
+            if (Test-Path (Join-Path 'Cert:\LocalMachine\Root' $env:TLS_THUMBPRINT)) {
+                Write-Output 'trusted'
+                return
+            }
+            $store = New-Object System.Security.Cryptography.X509Certificates.X509Store('Root', 'LocalMachine')
+            $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
+            try { $store.Add($cert) } finally { $store.Close() }
+            Write-Output 'changed'
+          environment:
+            TLS_THUMBPRINT: '{{ __tls_thumbprint__ }}'
+          register: __tls_local_trust__
+          changed_when: "__tls_local_trust__.stdout | trim == 'changed'"
+
         - name: 'MAIN | Bind The Pinned Certificate To The WSUS HTTPS Endpoint'
           ansible.windows.win_shell: |
             $ErrorActionPreference = 'Stop'
