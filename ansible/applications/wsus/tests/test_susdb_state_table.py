@@ -17,6 +17,7 @@ POSTINSTALL_TASK = "MAIN | Run WSUS Post-Installation (WID, content on F:)"
 CLASSIFIER_TASK = "MAIN | Classify The SUSDB Recovery Action"
 SUSDB_HEALTH_TASK = "MAIN | Verify SUSDB Relocation Health"
 SUSDB_CLEANUP_TASK = "MAIN | Remove SUSDB Originals From System Volume"
+WSUS_SERVICES_TASK = "MAIN | Ensure WSUS Services Are Running After SUSDB Convergence"
 CONTENT_RECONCILE_TASK = "MAIN | Reconcile The WSUS Content Location"
 CONTENT_USERS_ACL_TASK = "MAIN | Grant Users Browse Access On The Content Root"
 CONTENT_ACL_TASK = "MAIN | Grant WSUS Service Rights On The Content Cache"
@@ -27,6 +28,9 @@ WSUSPOOL_TASK = "MAIN | Tune WsusPool Application Pool"
 TLS_STORE_PROBE_TASK = "MAIN | Probe The Pinned Certificate In The Machine Store"
 TLS_PFX_VALIDATE_TASK = "MAIN | Validate The PFX Before Import"
 TLS_BINDING_TASK = "MAIN | Bind The Pinned Certificate To The WSUS HTTPS Endpoint"
+TLS_CONFIGURESSL_TASK = "MAIN | Require SSL On The Client-Facing WSUS Endpoints"
+TLS_PRE_API_LISTENER_TASK = "MAIN | Reconcile Existing WSUS HTTPS Listener Before API Access"
+TLS_LISTENER_TASK = "MAIN | Activate And Verify The WSUS HTTPS Listener"
 TLS_LIVE_TASK = "VERIFY | Complete A Live HTTPS Request To The WSUS Client Endpoint"
 RUNTIME_VERIFY_TASK = "VERIFY | Assert The Complete WSUS Runtime Contract"
 
@@ -486,6 +490,92 @@ class HttpsListenerContractTest(unittest.TestCase):
         self.assertIn("Host: $($env:TLS_DNS_NAME):$($env:TLS_PORT)", script)
         self.assertIn("did not return HTTP 200", script)
         self.assertEqual(task["changed_when"], False)
+
+    def test_listener_activation_is_bounded_idempotent_and_site_scoped(self):
+        helper = named_task(ROLE_BLOCK_TASK)["vars"][
+            "__wsus_https_listener_reconciler__"
+        ]
+
+        ssl_value_guard = helper.index("$usingSslText -notmatch '^[01]$'")
+        pre_ssl_noop = helper.index("if ($usingSsl -eq 0)")
+        port_read = helper.index("$portText = [string]$setup.PortNumber")
+        absent_guard = helper.index("if (-not (Test-Path -LiteralPath $sitePath))")
+        auto_start_mutation = helper.index(
+            "Set-ItemProperty -LiteralPath $sitePath -Name serverAutoStart -Value $true | Out-Null"
+        )
+        self.assertLess(ssl_value_guard, pre_ssl_noop)
+        self.assertLess(pre_ssl_noop, port_read)
+        self.assertLess(absent_guard, auto_start_mutation)
+        self.assertIn("Write-Output 'nochange'", helper[pre_ssl_noop:port_read])
+        self.assertIn("$port -lt 1 -or $port -gt 65535", helper)
+        self.assertNotIn("$env:TLS_PORT", helper)
+        self.assertIn("Get-WebItemState -PSPath $sitePath -ErrorAction Stop", helper)
+        self.assertIn("$siteState -eq 'Stopped'", helper)
+        self.assertIn("Start-Website -Name $siteName | Out-Null", helper)
+        self.assertIn("$siteState -eq 'Started'", helper)
+        self.assertIn("for ($attempt = 0; $attempt -lt 10; $attempt++)", helper)
+        self.assertIn("if (Test-LoopbackListener $port)", helper)
+        self.assertIn("if (-not $listenerReady)", helper)
+        self.assertNotIn("$tlsChanged", helper)
+        self.assertIn("Stop-Website -Name $siteName | Out-Null", helper)
+        self.assertNotIn("Restart-Service", helper)
+        self.assertNotIn("Stop-Service", helper)
+        self.assertIn("$connect.Wait(1000)", helper)
+        self.assertIn("for ($attempt = 0; $attempt -lt 30; $attempt++)", helper)
+        self.assertIn("$siteState -eq 'Started' -and $listenerReady", helper)
+        self.assertIn("serverAutoStart=true", helper)
+        for diagnostic in ("W3SVC=", "httpsBindings=[", "httpSysSsl=[", "httpSysIpListen=["):
+            with self.subTest(diagnostic=diagnostic):
+                self.assertIn(diagnostic, helper)
+
+        expected_invocations = {
+            TLS_PRE_API_LISTENER_TASK: (
+                "__pre_api_tls_listener_activation__.stdout | trim == 'changed'"
+            ),
+            TLS_LISTENER_TASK: "__tls_listener_activation__.stdout | trim == 'changed'",
+        }
+        for task_name, changed_when in expected_invocations.items():
+            with self.subTest(task=task_name):
+                task = named_task(task_name)
+                script = task["ansible.windows.win_shell"]
+                self.assertIn("{{ __wsus_https_listener_reconciler__ }}", script)
+                self.assertIn("Invoke-LocalWsusHttpsListenerReconcile", script)
+                self.assertNotIn("environment", task)
+                self.assertEqual(task["changed_when"], changed_when)
+
+        tasks = list(walk_tasks(yaml.safe_load(TASK_FILE.read_text(encoding="utf-8"))))
+        names = [item.get("name") for item in tasks]
+        listener_invocations = {
+            item["name"]
+            for item in tasks
+            if "Invoke-LocalWsusHttpsListenerReconcile"
+            in item.get("ansible.windows.win_shell", "")
+        }
+        self.assertEqual(listener_invocations, set(expected_invocations))
+        self.assertLess(names.index(WSUS_SERVICES_TASK), names.index(TLS_PRE_API_LISTENER_TASK))
+        for api_task in (
+            SUSDB_HEALTH_TASK,
+            CONTENT_RECONCILE_TASK,
+            LANGUAGE_TASK,
+            UPSTREAM_TASK,
+            BOOTSTRAP_TASK,
+            RUNTIME_VERIFY_TASK,
+        ):
+            with self.subTest(precedes_api_task=api_task):
+                self.assertLess(names.index(TLS_PRE_API_LISTENER_TASK), names.index(api_task))
+        self.assertLess(names.index(TLS_BINDING_TASK), names.index(TLS_LISTENER_TASK))
+        self.assertLess(names.index(TLS_CONFIGURESSL_TASK), names.index(TLS_LISTENER_TASK))
+        self.assertLess(names.index(TLS_LISTENER_TASK), names.index(TLS_LIVE_TASK))
+
+    def test_runtime_verifier_rechecks_site_start_and_auto_start_before_the_api(self):
+        script = named_task(RUNTIME_VERIFY_TASK)["ansible.windows.win_shell"]
+
+        state_check = script.index("$wsusSiteState -ne 'Started'")
+        api_helper = script.index("{{ __wsus_api_invoker__ }}")
+        self.assertLess(state_check, api_helper)
+        self.assertIn("IIS:\\Sites\\WSUS Administration", script)
+        self.assertIn("Get-WebItemState -PSPath $wsusSitePath -ErrorAction Stop", script)
+        self.assertIn("$wsusSite.serverAutoStart", script)
 
 
 if __name__ == "__main__":
