@@ -759,16 +759,72 @@ class HttpsListenerContractTest(unittest.TestCase):
         self.assertLess(normalized_guard, start_command)
         self.assertIn("function Repair-PreSslWsusApiAccess", helper)
         self.assertIn("if (Repair-PreSslWsusApiAccess)", helper)
-        self.assertIn("-Name 'sslFlags' -Value 0 -ErrorAction Stop | Out-Null", helper)
-        self.assertNotIn("-Value 'None'", helper)
+        access_reader_start = helper.index("function Get-WsusAccessSslState")
+        access_writer_start = helper.index("function Set-WsusAccessSslValue")
+        rollback_start = helper.index("function Repair-PreSslWsusApiAccess")
+        rollback_end = helper.index("if ($usingSsl -eq 1)", rollback_start)
+        access_reader = helper[access_reader_start:access_writer_start]
+        access_writer = helper[access_writer_start:rollback_start]
+        rollback = helper[rollback_start:rollback_end]
+        self.assertNotIn("Get-WebConfigurationProperty", access_reader + rollback)
+        self.assertNotIn("Set-WebConfigurationProperty", access_writer + rollback)
+        self.assertIn("[Microsoft.Web.Administration.ServerManager]::new()", access_reader)
+        self.assertIn("GetApplicationHostConfiguration()", access_reader)
+        self.assertIn(
+            ".GetSection(\n                'system.webServer/security/access', $location)",
+            access_reader,
+        )
+        self.assertIn("$section.GetAttribute('sslFlags')", access_reader)
+        self.assertIn("$value = $attribute.Value", access_reader)
+        self.assertIn("finally {", access_reader)
+        self.assertIn("[void]$serverManager.Dispose()", access_reader)
+        self.assertIn("[Microsoft.Web.Administration.ServerManager]::new()", access_writer)
+        self.assertIn("if ($null -eq $section) {", access_writer)
+        self.assertIn("IIS returned no access section for", access_writer)
+        self.assertIn(
+            "if ($null -eq $section.GetAttribute('sslFlags')) {", access_writer
+        )
+        self.assertIn("IIS returned no access.sslFlags attribute for", access_writer)
+        self.assertIn("$section.SetAttributeValue('sslFlags', $desiredValue)", access_writer)
+        self.assertIn("[void]$serverManager.CommitChanges()", access_writer)
+        self.assertIn("finally {", access_writer)
+        self.assertIn("[void]$serverManager.Dispose()", access_writer)
+        self.assertIn("Set-WsusAccessSslValue $location 'None'", rollback)
+        self.assertIn("$afterWrite = Get-WsusAccessSslState $location", rollback)
+        self.assertNotIn("Write-Output", access_reader + access_writer + rollback)
+        rollback_vdirs = rollback[
+            rollback.index("$sslRequiredVdirs = @(") : rollback.index(
+                "$repaired = $false"
+            )
+        ]
+        actual_rollback_vdirs = [
+            line.strip().rstrip(",").strip("'")
+            for line in rollback_vdirs.splitlines()
+            if line.strip().startswith("'")
+        ]
+        self.assertEqual(
+            actual_rollback_vdirs,
+            [
+                "ApiRemoting30",
+                "ClientWebService",
+                "DSSAuthWebService",
+                "ServerSyncWebService",
+                "SimpleAuthWebService",
+            ],
+        )
         self.assertIn("pre-SSL WSUS API access rollback did not persist", helper)
-        self.assertIn("type=[' + $valueType +", helper)
+        self.assertIn("$afterWrite.Type + '] expected=[None|0]'", helper)
+        self.assertIn("$state.Type + '] expected=[None|0]'", helper)
         self.assertIn("expected=[None|0]", helper)
-        zero_write = helper.index("-Name 'sslFlags' -Value 0")
+        rollback_write = helper.index("Set-WsusAccessSslValue $location 'None'")
+        immediate_readback = helper.index(
+            "$afterWrite = Get-WsusAccessSslState $location", rollback_write
+        )
         rollback_verify = helper.index(
             "pre-SSL WSUS API access rollback did not persist"
         )
-        self.assertLess(zero_write, rollback_verify)
+        self.assertLess(rollback_write, immediate_readback)
+        self.assertLess(immediate_readback, rollback_verify)
         pre_ssl_repair_call = helper.index("if (Repair-PreSslWsusApiAccess)")
         pre_ssl_start_call = helper.index("Start-WsusWebsiteBounded $port $false")
         self.assertLess(pre_ssl_repair_call, pre_ssl_start_call)
@@ -847,7 +903,7 @@ class HttpsListenerContractTest(unittest.TestCase):
         self.assertLess(names.index(TLS_LISTENER_TASK), names.index(TLS_LIVE_TASK))
         self.assertLess(names.index(TLS_LIVE_TASK), names.index(RUNTIME_VERIFY_TASK))
 
-    def test_ssl_vdir_convergence_uses_numeric_flags_and_two_phase_proof(self):
+    def test_ssl_vdir_convergence_uses_apphost_commit_and_two_phase_proof(self):
         task = named_task(TLS_CONFIGURESSL_TASK)
         script = task["ansible.windows.win_shell"]
         exact_vdirs = [
@@ -876,26 +932,47 @@ class HttpsListenerContractTest(unittest.TestCase):
             self.assertNotIn(excluded_vdir, vdirs_block)
 
         self.assertIn("function Get-WsusAccessSslState", script)
+        self.assertIn("function Set-WsusAccessSslValue", script)
         self.assertIn("function Test-ExactRequiredSsl", script)
         self.assertIn("function Assert-WsusVdirsRequireSsl", script)
         self.assertIn("function Repair-WsusVdirsRequireSsl", script)
-        self.assertIn("-PSPath 'MACHINE/WEBROOT/APPHOST'", script)
-        self.assertIn("-Location $location", script)
-        self.assertIn("-Filter 'system.webServer/security/access'", script)
-        self.assertIn("-Name 'sslFlags' `\n            -Value 8 `", script)
-        self.assertIn("-ErrorAction Stop | Out-Null", script)
-        self.assertNotIn("-Value 'Ssl'", script)
+        self.assertNotIn("Get-WebConfigurationProperty", script)
+        self.assertNotIn("Set-WebConfigurationProperty", script)
+        reader_start = script.index("function Get-WsusAccessSslState")
+        writer_start = script.index("function Set-WsusAccessSslValue")
+        exact_test_start = script.index("function Test-ExactRequiredSsl")
+        reader = script[reader_start:writer_start]
+        writer = script[writer_start:exact_test_start]
+        for function_body in (reader, writer):
+            with self.subTest(server_manager_function=function_body.splitlines()[0]):
+                self.assertIn(
+                    "[Microsoft.Web.Administration.ServerManager]::new()",
+                    function_body,
+                )
+                self.assertIn("GetApplicationHostConfiguration()", function_body)
+                self.assertIn("finally {", function_body)
+                self.assertIn("[void]$serverManager.Dispose()", function_body)
+                self.assertNotIn("Write-Output", function_body)
+        self.assertIn("$section.GetAttribute('sslFlags')", reader)
+        self.assertIn("$value = $attribute.Value", reader)
+        self.assertIn("if ($null -eq $section) {", writer)
+        self.assertIn("IIS returned no access section for", writer)
+        self.assertIn("if ($null -eq $section.GetAttribute('sslFlags')) {", writer)
+        self.assertIn("IIS returned no access.sslFlags attribute for", writer)
+        self.assertIn("$section.SetAttributeValue('sslFlags', $desiredValue)", writer)
+        self.assertIn("[void]$serverManager.CommitChanges()", writer)
+        self.assertIn("Set-WsusAccessSslValue $location 'Ssl'", script)
         self.assertIn("$state.Text -eq 'Ssl' -or $state.Text -eq '8'", script)
 
-        numeric_write = script.index("-Value 8")
+        apphost_write = script.index("Set-WsusAccessSslValue $location 'Ssl'")
         immediate_read = script.index(
-            "$afterWrite = Get-WsusAccessSslState $location", numeric_write
+            "$afterWrite = Get-WsusAccessSslState $location", apphost_write
         )
         immediate_assert = script.index(
             "IIS access.sslFlags write did not persist", immediate_read
         )
         full_assert = script.index("Assert-WsusVdirsRequireSsl", immediate_assert)
-        self.assertLess(numeric_write, immediate_read)
+        self.assertLess(apphost_write, immediate_read)
         self.assertLess(immediate_read, immediate_assert)
         self.assertLess(immediate_assert, full_assert)
 
@@ -932,29 +1009,41 @@ class HttpsListenerContractTest(unittest.TestCase):
             "'SimpleAuthWebService')) {"
         )
         self.assertIn(verifier_vdir_loop, verifier)
-        self.assertIn("-Name 'sslFlags' `\n            -ErrorAction Stop", verifier)
-        self.assertIn("IIS returned no access.sslFlags value for", verifier)
+        verifier_access = verifier[
+            verifier.index("$serverManager = [Microsoft.Web.Administration.ServerManager]::new()") : verifier.index(
+                "if ([System.Convert]::ToBoolean($env:BOOTSTRAP_ENABLED))"
+            )
+        ]
+        self.assertNotIn("Get-WebConfigurationProperty", verifier_access)
+        self.assertNotIn("Set-WebConfigurationProperty", verifier_access)
+        self.assertIn("GetApplicationHostConfiguration()", verifier_access)
+        self.assertIn("$section.GetAttribute('sslFlags')", verifier_access)
+        self.assertIn("$value = $attribute.Value", verifier_access)
+        self.assertIn("finally {", verifier_access)
+        self.assertIn("[void]$serverManager.Dispose()", verifier_access)
         self.assertIn("does not require exact SSL: sslFlags=[", verifier)
         self.assertIn("] type=[", verifier)
         self.assertIn("expected=[Ssl|8]", verifier)
-        self.assertNotIn("Set-WebConfigurationProperty", verifier)
+        self.assertNotIn("SetAttributeValue", verifier_access)
+        self.assertNotIn("CommitChanges", verifier_access)
         self.assertFalse(verifier_task.get("changed_when", False))
 
-    def test_ssl_vdir_null_default_is_repairable_but_missing_attribute_is_fatal(self):
-        def modeled_action(attribute_present, value):
-            if not attribute_present:
+    def test_ssl_vdir_null_default_is_repairable_but_missing_schema_is_fatal(self):
+        def modeled_action(section_present, attribute_present, value):
+            if not section_present or not attribute_present:
                 return "fatal"
             text = "<null>" if value is None else str(value).strip()
             return "exact" if text.lower() in {"ssl", "8"} else "repair"
 
         expected = {
-            (False, None): "fatal",
-            (True, None): "repair",
-            (True, "None"): "repair",
-            (True, "0"): "repair",
-            (True, "Ssl"): "exact",
-            (True, 8): "exact",
-            (True, "SslNegotiateCert"): "repair",
+            (False, False, None): "fatal",
+            (True, False, None): "fatal",
+            (True, True, None): "repair",
+            (True, True, "None"): "repair",
+            (True, True, "0"): "repair",
+            (True, True, "Ssl"): "exact",
+            (True, True, 8): "exact",
+            (True, True, "SslNegotiateCert"): "repair",
         }
         for state, action in expected.items():
             with self.subTest(state=state):
@@ -963,31 +1052,43 @@ class HttpsListenerContractTest(unittest.TestCase):
         script = named_task(TLS_CONFIGURESSL_TASK)["ansible.windows.win_shell"]
         reader = script[
             script.index("function Get-WsusAccessSslState") : script.index(
-                "function Test-ExactRequiredSsl"
+                "function Set-WsusAccessSslValue"
             )
         ]
+        self.assertNotIn("Get-WebConfigurationProperty", reader)
+        self.assertIn("GetApplicationHostConfiguration()", reader)
+        self.assertIn("if ($null -eq $section) {", reader)
+        self.assertIn("IIS returned no access section for", reader)
         self.assertIn("if ($null -eq $attribute) {", reader)
         self.assertIn("IIS returned no access.sslFlags attribute for", reader)
-        self.assertNotIn("$null -eq $attribute.Value", reader)
         self.assertIn("$value = $attribute.Value", reader)
-        self.assertIn("if ($null -eq $value) {", reader)
-        self.assertIn("Text = '<null>'", reader)
-        self.assertIn("Type = '<null>'", reader)
+        self.assertIn("$valueText = '<null>'", reader)
+        self.assertIn("$valueType = '<null>'", reader)
+        self.assertIn("if ($null -ne $value) {", reader)
+        self.assertLess(
+            reader.index("if ($null -eq $section)"),
+            reader.index("if ($null -eq $attribute)"),
+        )
         self.assertLess(
             reader.index("if ($null -eq $attribute)"),
             reader.index("$value = $attribute.Value"),
         )
         self.assertLess(
-            reader.index("if ($null -eq $value)"),
-            reader.index("Text = '<null>'"),
+            reader.index("$value = $attribute.Value"),
+            reader.index("if ($null -ne $value)"),
         )
 
         verifier = powershell_script(named_task(RUNTIME_VERIFY_TASK))
-        self.assertIn(
-            "if ($null -eq $attribute -or $null -eq $attribute.Value)",
-            verifier,
-        )
-        self.assertIn("IIS returned no access.sslFlags value for", verifier)
+        verifier_access = verifier[
+            verifier.index("$serverManager = [Microsoft.Web.Administration.ServerManager]::new()") : verifier.index(
+                "if ([System.Convert]::ToBoolean($env:BOOTSTRAP_ENABLED))"
+            )
+        ]
+        self.assertIn("if ($null -eq $section) {", verifier_access)
+        self.assertIn("if ($null -eq $attribute) {", verifier_access)
+        self.assertIn("$flags = '<null>'", verifier_access)
+        self.assertIn("$valueType = '<null>'", verifier_access)
+        self.assertIn("if ($null -ne $value) {", verifier_access)
 
     def test_runtime_verifier_rechecks_site_start_and_auto_start_before_the_api(self):
         task = named_task(RUNTIME_VERIFY_TASK)
