@@ -940,6 +940,55 @@ class HttpsListenerContractTest(unittest.TestCase):
         self.assertNotIn("Set-WebConfigurationProperty", verifier)
         self.assertFalse(verifier_task.get("changed_when", False))
 
+    def test_ssl_vdir_null_default_is_repairable_but_missing_attribute_is_fatal(self):
+        def modeled_action(attribute_present, value):
+            if not attribute_present:
+                return "fatal"
+            text = "<null>" if value is None else str(value).strip()
+            return "exact" if text.lower() in {"ssl", "8"} else "repair"
+
+        expected = {
+            (False, None): "fatal",
+            (True, None): "repair",
+            (True, "None"): "repair",
+            (True, "0"): "repair",
+            (True, "Ssl"): "exact",
+            (True, 8): "exact",
+            (True, "SslNegotiateCert"): "repair",
+        }
+        for state, action in expected.items():
+            with self.subTest(state=state):
+                self.assertEqual(modeled_action(*state), action)
+
+        script = named_task(TLS_CONFIGURESSL_TASK)["ansible.windows.win_shell"]
+        reader = script[
+            script.index("function Get-WsusAccessSslState") : script.index(
+                "function Test-ExactRequiredSsl"
+            )
+        ]
+        self.assertIn("if ($null -eq $attribute) {", reader)
+        self.assertIn("IIS returned no access.sslFlags attribute for", reader)
+        self.assertNotIn("$null -eq $attribute.Value", reader)
+        self.assertIn("$value = $attribute.Value", reader)
+        self.assertIn("if ($null -eq $value) {", reader)
+        self.assertIn("Text = '<null>'", reader)
+        self.assertIn("Type = '<null>'", reader)
+        self.assertLess(
+            reader.index("if ($null -eq $attribute)"),
+            reader.index("$value = $attribute.Value"),
+        )
+        self.assertLess(
+            reader.index("if ($null -eq $value)"),
+            reader.index("Text = '<null>'"),
+        )
+
+        verifier = powershell_script(named_task(RUNTIME_VERIFY_TASK))
+        self.assertIn(
+            "if ($null -eq $attribute -or $null -eq $attribute.Value)",
+            verifier,
+        )
+        self.assertIn("IIS returned no access.sslFlags value for", verifier)
+
     def test_runtime_verifier_rechecks_site_start_and_auto_start_before_the_api(self):
         task = named_task(RUNTIME_VERIFY_TASK)
         module = task["ansible.windows.win_powershell"]
