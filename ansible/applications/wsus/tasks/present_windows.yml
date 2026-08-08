@@ -2419,10 +2419,17 @@
                     -Filter 'system.webServer/security/access' `
                     -Name 'sslFlags' `
                     -ErrorAction Stop
-                if ($null -eq $attribute -or $null -eq $attribute.Value) {
-                    throw ('IIS returned no access.sslFlags value for ' + $location)
+                if ($null -eq $attribute) {
+                    throw ('IIS returned no access.sslFlags attribute for ' + $location)
                 }
                 $value = $attribute.Value
+                if ($null -eq $value) {
+                    return [pscustomobject]@{
+                        Location = $location
+                        Text = '<null>'
+                        Type = '<null>'
+                    }
+                }
                 return [pscustomobject]@{
                     Location = $location
                     Text = ([string]$value).Trim()
