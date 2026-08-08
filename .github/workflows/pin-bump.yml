@@ -23,6 +23,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
+      actions: write
       contents: write
       pull-requests: write
     env:
@@ -49,10 +50,54 @@ jobs:
           [[ "${terraform_candidate}" =~ ^[0-9a-f]{40}$ ]] \
             || { echo "::error::Could not resolve a full aws-terraform-framework commit."; exit 1; }
 
-          ansible_pin="$(< .github/ansible-framework-pin)"
-          terraform_pin="$(< .github/terraform-framework-pin)"
-          existing_pr="$(gh pr list --repo "${GITHUB_REPOSITORY}" --base main \
-            --head "${UPDATE_BRANCH}" --state open --limit 1 --json number --jq '.[0].number // empty')"
+          read_remote_pin() {
+            local path="$1" ref="$2"
+            gh api "repos/${GITHUB_REPOSITORY}/contents/${path}?ref=${ref}" --jq '.content' \
+              | base64 --decode | tr -d '\r\n'
+          }
+
+          ensure_quality_run() {
+            local head_sha="$1" quality_runs_json acceptable_runs
+            quality_runs_json="$(gh api \
+              "repos/${GITHUB_REPOSITORY}/actions/workflows/quality.yml/runs?head_sha=${head_sha}&per_page=100")"
+            acceptable_runs="$(jq -r '
+              [.workflow_runs[]
+               | select(.status != "completed" or .conclusion == "success")]
+              | length
+            ' <<< "${quality_runs_json}")"
+            if [ "${acceptable_runs}" -eq 0 ]; then
+              gh api --method POST \
+                "repos/${GITHUB_REPOSITORY}/actions/workflows/quality.yml/dispatches" \
+                -f ref="${UPDATE_BRANCH}"
+              echo "Dispatched credential-free required quality for ${head_sha}; no successful or active run existed."
+            else
+              echo "Required quality already has a successful or active run for ${head_sha}; no redispatch."
+            fi
+          }
+
+          # Anchor every automation branch rebuild to the current protected-main tree, not the
+          # potentially older scheduled-run checkout, and read the pins from that exact commit.
+          base_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')"
+          ansible_pin="$(read_remote_pin .github/ansible-framework-pin "${base_sha}")"
+          terraform_pin="$(read_remote_pin .github/terraform-framework-pin "${base_sha}")"
+          repository_owner="${GITHUB_REPOSITORY%%/*}"
+          managed_prs_json="$(gh pr list --repo "${GITHUB_REPOSITORY}" --base main \
+            --state open --limit 100 --json number,headRefName,headRepositoryOwner,isCrossRepository)"
+          mapfile -t managed_pr_numbers < <(jq -r \
+            --arg branch "${UPDATE_BRANCH}" --arg owner "${repository_owner}" '
+              [.[] | select(
+                .headRefName == $branch
+                and .headRepositoryOwner.login == $owner
+                and .isCrossRepository == false
+              )]
+              | sort_by(.number)
+              | .[].number
+            ' <<< "${managed_prs_json}")
+          if [ "${#managed_pr_numbers[@]}" -gt 1 ]; then
+            echo "::error::Multiple local managed PRs target ${UPDATE_BRANCH}; refusing ambiguity."
+            exit 1
+          fi
+          existing_pr="${managed_pr_numbers[0]:-}"
 
           if [ "${ansible_candidate}" = "${ansible_pin}" ] && \
             [ "${terraform_candidate}" = "${terraform_pin}" ]; then
@@ -64,21 +109,78 @@ jobs:
             exit 0
           fi
 
+          expected_files=()
+          [ "${ansible_candidate}" = "${ansible_pin}" ] \
+            || expected_files+=(.github/ansible-framework-pin)
+          [ "${terraform_candidate}" = "${terraform_pin}" ] \
+            || expected_files+=(.github/terraform-framework-pin)
+
           if [ -n "${existing_pr}" ]; then
-            branch_ansible_pin="$(gh api \
-              "repos/${GITHUB_REPOSITORY}/contents/.github/ansible-framework-pin?ref=${UPDATE_BRANCH}" \
-              --jq '.content' | base64 --decode | tr -d '\r\n')"
-            branch_terraform_pin="$(gh api \
-              "repos/${GITHUB_REPOSITORY}/contents/.github/terraform-framework-pin?ref=${UPDATE_BRANCH}" \
-              --jq '.content' | base64 --decode | tr -d '\r\n')"
-            if [ "${ansible_candidate}" = "${branch_ansible_pin}" ] && \
+            branch_matches=false
+            if branch_sha="$(gh api \
+              "repos/${GITHUB_REPOSITORY}/git/ref/heads/${UPDATE_BRANCH}" --jq '.object.sha')" && \
+              branch_ansible_pin="$(read_remote_pin .github/ansible-framework-pin "${branch_sha}")" && \
+              branch_terraform_pin="$(read_remote_pin .github/terraform-framework-pin "${branch_sha}")" && \
+              [ "${ansible_candidate}" = "${branch_ansible_pin}" ] && \
               [ "${terraform_candidate}" = "${branch_terraform_pin}" ]; then
-              echo "Open PR #${existing_pr} already contains the current candidates; no update."
-              exit 0
+              branch_matches=true
+            fi
+
+            if [ "${branch_matches}" = true ]; then
+              history_clean=false
+              if compare_json="$(gh api \
+                "repos/${GITHUB_REPOSITORY}/compare/${base_sha}...${branch_sha}")"; then
+                expected_file_text="$(printf '%s\n' "${expected_files[@]}" | sort)"
+                actual_file_text="$(jq -r '.files[].filename' <<< "${compare_json}" | sort)"
+                expected_count="${#expected_files[@]}"
+
+                if [ "${actual_file_text}" = "${expected_file_text}" ] && jq -e \
+                  --arg base_sha "${base_sha}" --argjson expected_count "${expected_count}" '
+                    .base_commit.sha == $base_sha
+                    and .merge_base_commit.sha == $base_sha
+                    and .behind_by == 0
+                    and .ahead_by == $expected_count
+                    and (.commits | length) == $expected_count
+                  ' <<< "${compare_json}" > /dev/null; then
+                  history_clean=true
+                  declare -A seen_history_files=()
+                  commit_shas="$(jq -r '.commits[].sha' <<< "${compare_json}")"
+                  while IFS= read -r commit_sha; do
+                    [ -n "${commit_sha}" ] || continue
+                    commit_json="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${commit_sha}")"
+                    parent_count="$(jq -r '.parents | length' <<< "${commit_json}")"
+                    commit_file_count="$(jq -r '.files | length' <<< "${commit_json}")"
+                    if [ "${parent_count}" -ne 1 ] || [ "${commit_file_count}" -ne 1 ]; then
+                      history_clean=false
+                      break
+                    fi
+
+                    commit_file="$(jq -er '.files[0].filename' <<< "${commit_json}")"
+                    file_expected=false
+                    for expected_file in "${expected_files[@]}"; do
+                      [ "${commit_file}" = "${expected_file}" ] && file_expected=true
+                    done
+                    if [ "${file_expected}" != true ] || \
+                      [[ -n "${seen_history_files[${commit_file}]+present}" ]]; then
+                      history_clean=false
+                      break
+                    fi
+                    seen_history_files["${commit_file}"]=1
+                  done <<< "${commit_shas}"
+                  [ "${#seen_history_files[@]}" -eq "${expected_count}" ] \
+                    || history_clean=false
+                fi
+              fi
+
+              if [ "${history_clean}" = true ]; then
+                ensure_quality_run "${branch_sha}"
+                echo "Open PR #${existing_pr} already contains only the current candidates; no update."
+                exit 0
+              fi
+              echo "Open PR #${existing_pr} has unexpected tree/history; rebuilding from protected main."
             fi
           fi
 
-          base_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')"
           if gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${UPDATE_BRANCH}" > /dev/null 2>&1; then
             gh api --method PATCH "repos/${GITHUB_REPOSITORY}/git/refs/heads/${UPDATE_BRANCH}" \
               -f sha="${base_sha}" -F force=true > /dev/null
@@ -126,6 +228,10 @@ jobs:
               --title "chore: review discovered framework pin updates" --body "${body}"
           fi
 
+          updated_branch_sha="$(gh api \
+            "repos/${GITHUB_REPOSITORY}/git/ref/heads/${UPDATE_BRANCH}" --jq '.object.sha')"
+          ensure_quality_run "${updated_branch_sha}"
+
   report:
     name: Framework discovery incident
     needs: discover
@@ -136,6 +242,8 @@ jobs:
       issues: write
     env:
       GH_TOKEN: ${{ github.token }}
+      INCIDENT_LABEL: automation-incident
+      INCIDENT_MARKER: '<!-- windows-wsus-automation:framework-discovery -->'
       INCIDENT_TITLE: '[automation] Framework pin discovery failed'
       DISCOVERY_RESULT: ${{ needs.discover.result }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -144,10 +252,26 @@ jobs:
         run: |
           set -euo pipefail
 
-          issue_number="$(gh issue list --repo "${GITHUB_REPOSITORY}" --state all --limit 100 \
-            --search '"[automation] Framework pin discovery failed" in:title' \
-            --json number,title \
-            --jq '[.[] | select(.title == "[automation] Framework pin discovery failed")] | sort_by(.number) | .[0].number // empty')"
+          gh label create "${INCIDENT_LABEL}" --repo "${GITHUB_REPOSITORY}" --force \
+            --color B60205 --description 'Owned exclusively by recurring automation incidents' > /dev/null
+          issue_json="$(gh issue list --repo "${GITHUB_REPOSITORY}" --state all --limit 100 \
+            --label "${INCIDENT_LABEL}" --json number,title,body,author,state)"
+          mapfile -t issue_numbers < <(jq -r --arg title "${INCIDENT_TITLE}" \
+            --arg marker "${INCIDENT_MARKER}" '
+              [.[] | select(
+                .title == $title
+                and .author.login == "app/github-actions"
+                and ((.body // "") | contains($marker))
+              )] | sort_by(.number) | .[].number
+            ' <<< "${issue_json}")
+          issue_number="${issue_numbers[0]:-}"
+          for duplicate in "${issue_numbers[@]:1}"; do
+            if [ "$(gh issue view "${duplicate}" --repo "${GITHUB_REPOSITORY}" \
+              --json state --jq .state)" = OPEN ]; then
+              gh issue close "${duplicate}" --repo "${GITHUB_REPOSITORY}" --reason duplicate \
+                --comment "Deduplicated into automation-owned incident #${issue_number}."
+            fi
+          done
 
           if [ "${DISCOVERY_RESULT}" = success ]; then
             if [ -n "${issue_number}" ] && \
@@ -163,7 +287,8 @@ jobs:
           message="Framework pin discovery result: ${DISCOVERY_RESULT}. Inspect ${RUN_URL}. No candidate was auto-merged."
           if [ -z "${issue_number}" ]; then
             gh issue create --repo "${GITHUB_REPOSITORY}" \
-              --title "${INCIDENT_TITLE}" --body "${message}"
+              --label "${INCIDENT_LABEL}" --title "${INCIDENT_TITLE}" \
+              --body "$(printf '%s\n\n%s' "${INCIDENT_MARKER}" "${message}")"
           else
             if [ "$(gh issue view "${issue_number}" --repo "${GITHUB_REPOSITORY}" --json state --jq .state)" = CLOSED ]; then
               gh issue reopen "${issue_number}" --repo "${GITHUB_REPOSITORY}"

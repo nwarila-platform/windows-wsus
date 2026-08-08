@@ -19,7 +19,6 @@
 set -uo pipefail
 
 PROFILE="${1:-admin}"
-REGION="${AWS_REGION:-us-east-1}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 IAM_DIR="${REPO_ROOT}/docs/reference/aws-iam"
 OWNER='nwarila-platform'
@@ -30,6 +29,25 @@ WORK="$(mktemp -d)"; trap 'rm -rf "${WORK}"' EXIT
 pass=0; fail=0
 ok()   { printf '  \033[32m✓\033[0m %-56s %s\n' "$1" "$2"; pass=$((pass+1)); }
 bad()  { printf '  \033[31m✗\033[0m %-56s got=%s want=%s\n' "$1" "$2" "$3"; fail=$((fail+1)); }
+
+region_text="$(sed -nE \
+  's/^[[:space:]]*region[[:space:]]*=[[:space:]]*"([^"]+)"[[:space:]]*$/\1/p' \
+  "${REPO_ROOT}/terraform/aws.tfvars")" || exit 1
+mapfile -t REGIONS <<< "${region_text}"
+[ "${#REGIONS[@]}" -eq 1 ] || {
+    printf 'test-iam-policies: terraform/aws.tfvars must declare exactly one region\n' >&2
+    exit 1
+}
+REGION="${REGIONS[0]//_/-}"
+[[ "${REGION}" =~ ^[a-z]{2}(-gov)?-[a-z]+-[0-9]+$ ]] || {
+    printf 'test-iam-policies: invalid normalized region %s\n' "${REGION}" >&2
+    exit 1
+}
+if [ -n "${AWS_REGION:-}" ] && [ "${AWS_REGION}" != "${REGION}" ]; then
+    printf 'test-iam-policies: AWS_REGION %s disagrees with tfvars %s\n' \
+      "${AWS_REGION}" "${REGION}" >&2
+    exit 1
+fi
 
 # These assertions need no AWS account and are also run by the unprivileged quality workflow.
 # Keep them first so a widened trust fails before any credential or network lookup is attempted.
@@ -79,7 +97,7 @@ echo "== trust documents =="
 for f in "${WORK}"/roles/*.json; do
     n="$(aws accessanalyzer validate-policy --policy-type RESOURCE_POLICY \
          --policy-document "file://${f}" --profile "${PROFILE}" --region "${REGION}" \
-         --query 'length(findings[?findingType==`ERROR` && issueCode!=`MISSING_RESOURCE`])' --output text 2>&1)"
+         --query 'length(findings[?(findingType==`ERROR` && issueCode!=`MISSING_RESOURCE`) || findingType==`SECURITY_WARNING`])' --output text 2>&1)"
     [ "${n}" = "0" ] && ok "$(basename "${f}")" "grammar clean" || bad "$(basename "${f}")" "${n}" "0"
 done
 
@@ -93,6 +111,7 @@ print(eval(sys.argv[2], {"d": d, "json": json}))' "${WORK}/roles/${file}" "${exp
 }
 CI_TRUST="github_nwarila-platform_${THIS_REPO}.trust.json"
 ADMIN_TRUST="github_nwarila-platform_${THIS_REPO}-admin.trust.json"
+AUDIT_TRUST="github_nwarila-platform_${THIS_REPO}-iam-audit.trust.json"
 POC_TRUST="${THIS_REPO}-poc-role.trust.json"
 C='d["Statement"][0]["Condition"]'
 
@@ -116,6 +135,13 @@ trust_assert "OIDC ref is exact protected main" \
   "${C}['StringEquals']['token.actions.githubusercontent.com:ref']" "refs/heads/main" "${CI_TRUST}"
 trust_assert "every OIDC sub names this repository" \
   "all('${THIS_REPO}' in x for x in ${C}['StringEquals']['token.actions.githubusercontent.com:sub'])" "True" "${CI_TRUST}"
+trust_assert "IAM audit OIDC workflow ref is exact" \
+  "${C}['StringEquals']['token.actions.githubusercontent.com:job_workflow_ref']" \
+  "nwarila-platform/windows-wsus/.github/workflows/iam-drift.yml@refs/heads/main" "${AUDIT_TRUST}"
+trust_assert "IAM audit OIDC binds this repository id" \
+  "${C}['StringEquals']['token.actions.githubusercontent.com:repository_id']" "${REPO_ID}" "${AUDIT_TRUST}"
+trust_assert "IAM audit OIDC ref is exact protected main" \
+  "${C}['StringEquals']['token.actions.githubusercontent.com:ref']" "refs/heads/main" "${AUDIT_TRUST}"
 # The SSO suffix must be hash-bounded, not a trailing wildcard that also matches a future
 # permission set named github_<owner>_<anything>.
 trust_assert "SSO trust is hash-bounded, not wildcard" \
@@ -132,13 +158,21 @@ trust_assert "instance trust principal is ec2" \
 simulate() { # action resource context...
     local action="$1" resource="$2"; shift 2
     python3 -S -c '
-import json, sys, glob, os
+import json, sys
 work, action, resource = sys.argv[1], sys.argv[2], sys.argv[3]
 ctx = []
 for kv in sys.argv[4:]:
     k, t, v = kv.split("=", 2)
     ctx.append({"ContextKeyName": k, "ContextKeyType": t, "ContextKeyValues": [v]})
-json.dump({"PolicyInputList": [open(f).read() for f in sorted(glob.glob(work + "/policies/*.json"))],
+ci_policy_names = [
+    "github_nwarila-platform_windows-wsus.json",
+    "windows-wsus_artifact-assume.json",
+    "windows-wsus_deploy-discovery-iam.json",
+    "windows-wsus_deploy-ec2-launch.json",
+    "windows-wsus_deploy-ec2-lifecycle.json",
+    "windows-wsus_deploy-sg-ssm-kms.json",
+]
+json.dump({"PolicyInputList": [open(work + "/policies/" + name).read() for name in ci_policy_names],
            "ActionNames": [action], "ResourceArns": [resource], "ContextEntries": ctx},
           open(work + "/req.json", "w"))
 ' "${WORK}" "${action}" "${resource}" "$@"
@@ -149,6 +183,29 @@ json.dump({"PolicyInputList": [open(f).read() for f in sorted(glob.glob(work + "
 assert() { # name expected action resource context...
     local name="$1" want="$2"; shift 2
     local got; got="$(simulate "$@" | tail -1)"
+    [ "${got}" = "${want}" ] && ok "${name}" "${got}" || bad "${name}" "${got}" "${want}"
+}
+
+simulate_audit() { # action resource context...
+    local action="$1" resource="$2"; shift 2
+    python3 -S -c '
+import json, sys
+work, action, resource = sys.argv[1], sys.argv[2], sys.argv[3]
+ctx = []
+for kv in sys.argv[4:]:
+    k, t, v = kv.split("=", 2)
+    ctx.append({"ContextKeyName": k, "ContextKeyType": t, "ContextKeyValues": [v]})
+policy = open(work + "/policies/github_nwarila-platform_windows-wsus_iam-audit.json").read()
+json.dump({"PolicyInputList": [policy], "ActionNames": [action], "ResourceArns": [resource],
+           "ContextEntries": ctx}, open(work + "/audit-req.json", "w"))
+' "${WORK}" "${action}" "${resource}" "$@"
+    aws iam simulate-custom-policy --profile "${PROFILE}" --region "${REGION}" \
+        --cli-input-json "file://${WORK}/audit-req.json" \
+        --query 'EvaluationResults[0].EvalDecision' --output text 2>&1
+}
+assert_audit() { # name expected action resource context...
+    local name="$1" want="$2"; shift 2
+    local got; got="$(simulate_audit "$@" | tail -1)"
     [ "${got}" = "${want}" ] && ok "${name}" "${got}" || bad "${name}" "${got}" "${want}"
 }
 
@@ -170,6 +227,47 @@ SUBNET="arn:aws:ec2:${REGION}:${ACCOUNT}:subnet/${SUBNET_ID}"
 SG="arn:aws:ec2:${REGION}:${ACCOUNT}:security-group/sg-0test"
 VPCC="ec2:Vpc=string=arn:aws:ec2:${REGION}:${ACCOUNT}:vpc/${VPC_ID}"
 SUBC="ec2:Subnet=string=arn:aws:ec2:${REGION}:${ACCOUNT}:subnet/${SUBNET_ID}"
+
+echo "== read-only IAM drift boundary =="
+AUDIT_POLICY_ARN="arn:aws:iam::${ACCOUNT}:policy/github_nwarila-platform_windows-wsus_iam-audit"
+STATE_POLICY_ARN="arn:aws:iam::${ACCOUNT}:policy/github_nwarila-platform_windows-wsus"
+AUDIT_ROLE_ARN="arn:aws:iam::${ACCOUNT}:role/github_nwarila-platform_windows-wsus-iam-audit"
+CI_ROLE_ARN="arn:aws:iam::${ACCOUNT}:role/github_nwarila-platform_windows-wsus"
+POC_ROLE_ARN="arn:aws:iam::${ACCOUNT}:role/windows-wsus-poc-role"
+PROFILE_ARN="arn:aws:iam::${ACCOUNT}:instance-profile/windows-wsus-poc-profile"
+KMS_ARN="arn:aws:kms:${REGION}:${ACCOUNT}:key/${KMS_KEY}"
+assert_audit "audit reads tracked policy metadata" allowed iam:GetPolicy "${STATE_POLICY_ARN}"
+assert_audit "audit reads tracked policy document" allowed iam:GetPolicyVersion "${AUDIT_POLICY_ARN}"
+assert_audit "audit enumerates tracked policy consumers" allowed iam:ListEntitiesForPolicy \
+  "${STATE_POLICY_ARN}"
+assert_audit "audit reads tracked role trust" allowed iam:GetRole "${AUDIT_ROLE_ARN}"
+assert_audit "audit lists tracked role attachments" allowed iam:ListAttachedRolePolicies "${CI_ROLE_ARN}"
+assert_audit "audit lists tracked role inline policies" allowed iam:ListRolePolicies "${CI_ROLE_ARN}"
+assert_audit "audit lists tracked role tags" allowed iam:ListRoleTags "${CI_ROLE_ARN}"
+assert_audit "audit reads tracked instance profile" allowed iam:GetInstanceProfile "${PROFILE_ARN}"
+assert_audit "audit lists POC role instance profiles" allowed iam:ListInstanceProfilesForRole \
+  "${POC_ROLE_ARN}"
+assert_audit "audit resolves deploy subnet" allowed ec2:DescribeSubnets "*" "${REG}"
+assert_audit "audit resolves exact EBS key" allowed kms:DescribeKey "${KMS_ARN}"
+assert_audit "audit validates tracked documents" allowed access-analyzer:ValidatePolicy "*" "${REG}"
+assert_audit "audit cannot read an untracked policy" implicitDeny iam:GetPolicy \
+  "arn:aws:iam::${ACCOUNT}:policy/untracked"
+assert_audit "audit cannot enumerate an untracked policy" implicitDeny iam:ListEntitiesForPolicy \
+  "arn:aws:iam::${ACCOUNT}:policy/untracked"
+assert_audit "audit cannot read an untracked role" implicitDeny iam:GetRole \
+  "arn:aws:iam::${ACCOUNT}:role/untracked"
+assert_audit "audit cannot list tags on an untracked role" implicitDeny iam:ListRoleTags \
+  "arn:aws:iam::${ACCOUNT}:role/untracked"
+assert_audit "audit cannot list profiles for an untracked role" implicitDeny \
+  iam:ListInstanceProfilesForRole "arn:aws:iam::${ACCOUNT}:role/untracked"
+assert_audit "audit cannot mutate a tracked role" implicitDeny iam:UpdateRole "${AUDIT_ROLE_ARN}"
+assert_audit "audit cannot create policies" implicitDeny iam:CreatePolicy \
+  "arn:aws:iam::${ACCOUNT}:policy/untracked"
+assert_audit "audit cannot resolve subnets out of region" implicitDeny ec2:DescribeSubnets "*" \
+  "aws:RequestedRegion=string=us-west-2"
+assert_audit "audit cannot describe another KMS key" implicitDeny kms:DescribeKey \
+  "arn:aws:kms:${REGION}:${ACCOUNT}:key/11111111-1111-1111-1111-111111111111"
+assert_audit "audit cannot mutate EC2" implicitDeny ec2:TerminateInstances "${INST}" "${REG}"
 
 echo "== cross-repository isolation (the identity tag is the only separator) =="
 assert "terminate own instance"        allowed      ec2:TerminateInstances "${INST}" "${REG}" "${TAG}=string=${REPO_ID}"
@@ -205,7 +303,11 @@ assert "leg: volume"            allowed      ec2:RunInstances "${VOL}" "${REG}" 
        "ec2:VolumeSize=numeric=50" "ec2:Encrypted=boolean=true" "${RTAG}=string=${REPO_ID}"
 assert "leg: network-interface" allowed      ec2:RunInstances "${ENI}" "${VPCC}" "${SUBC}"
 assert "leg: subnet"            allowed      ec2:RunInstances "${SUBNET}" "${VPCC}"
-assert "leg: security-group"    allowed      ec2:RunInstances "${SG}" "${VPCC}"
+assert "leg: owned security-group" allowed   ec2:RunInstances "${SG}" "${VPCC}" \
+       "${TAG}=string=${REPO_ID}"
+assert "leg: untagged security-group -> deny" implicitDeny ec2:RunInstances "${SG}" "${VPCC}"
+assert "leg: foreign security-group -> deny" implicitDeny ec2:RunInstances "${SG}" "${VPCC}" \
+       "${TAG}=string=${SIB_ID[${SIBLINGS[0]}]}"
 assert "leg: image (amazon)"    allowed      ec2:RunInstances "arn:aws:ec2:${REGION}::image/ami-0test" "ec2:Owner=string=amazon"
 assert "leg: key-pair (pinned)" allowed      ec2:RunInstances "${KEY_ARN}"
 # refuter correction: the positive key-pair assertion cannot fail (no Condition, and both sides are
@@ -214,6 +316,28 @@ assert "leg: key-pair OTHER -> deny" implicitDeny ec2:RunInstances "arn:aws:ec2:
 assert "leg: image marketplace -> deny" implicitDeny ec2:RunInstances "arn:aws:ec2:${REGION}::image/ami-0test" "ec2:Owner=string=aws-marketplace"
 assert "ENI in a FOREIGN subnet -> deny" implicitDeny ec2:RunInstances "${ENI}" "${VPCC}" \
        "ec2:Subnet=string=arn:aws:ec2:${REGION}:${ACCOUNT}:subnet/subnet-0foreign"
+
+echo "== CreateNetworkInterface: created resource and exact supporting legs =="
+assert "create repository-tagged ENI" allowed ec2:CreateNetworkInterface "${ENI}" \
+       "${REG}" "${RTAG}=string=${REPO_ID}"
+assert "create untagged ENI -> deny" implicitDeny ec2:CreateNetworkInterface "${ENI}" "${REG}"
+assert "create foreign-tagged ENI -> deny" implicitDeny ec2:CreateNetworkInterface "${ENI}" \
+       "${REG}" "${RTAG}=string=${SIB_ID[${SIBLINGS[0]}]}"
+assert "create ENI in exact subnet" allowed ec2:CreateNetworkInterface "${SUBNET}" \
+       "${REG}" "${VPCC}"
+assert "create ENI in foreign subnet -> deny" implicitDeny ec2:CreateNetworkInterface \
+       "arn:aws:ec2:${REGION}:${ACCOUNT}:subnet/subnet-0foreign" "${REG}" "${VPCC}"
+assert "create ENI with owned security group" allowed ec2:CreateNetworkInterface "${SG}" \
+       "${REG}" "${VPCC}" "${TAG}=string=${REPO_ID}"
+assert "create ENI with untagged security group -> deny" implicitDeny \
+       ec2:CreateNetworkInterface "${SG}" "${REG}" "${VPCC}"
+assert "create ENI with foreign security group -> deny" implicitDeny \
+       ec2:CreateNetworkInterface "${SG}" "${REG}" "${VPCC}" \
+       "${TAG}=string=${SIB_ID[${SIBLINGS[0]}]}"
+assert "create ENI with owned security group in foreign VPC -> deny" implicitDeny \
+       ec2:CreateNetworkInterface "${SG}" "${REG}" \
+       "ec2:Vpc=string=arn:aws:ec2:${REGION}:${ACCOUNT}:vpc/vpc-0foreign" \
+       "${TAG}=string=${REPO_ID}"
 
 echo "== ephemeral key-pair lifecycle =="
 assert "import exact key with repository tag" allowed ec2:ImportKeyPair "${KEY_ARN}" \

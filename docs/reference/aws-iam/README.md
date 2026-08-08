@@ -24,7 +24,7 @@ materialized copy **cannot** catch that, because the materialized copy is what i
 |---|---|---|---|
 | `<account-id>` | the 12-digit AWS account id | `aws sts get-caller-identity` | **fail-closed** — non-matching ARNs, or `MalformedPolicyDocument` at apply |
 | `<repository-id>` | this repo's **immutable** GitHub repository id | `gh api repos/nwarila-platform/windows-wsus --jq .id` | **fail-closed** if wholly absent — **FAIL-OPEN if a sibling's id is left in even one statement** (see below) |
-| `<region>` | the deploy region | the deploy plan (`us-east-1`) | fail-closed |
+| `<region>` | normalized deploy region | the sole `region` in `terraform/aws.tfvars` (`us_east_1` → `us-east-1`) | fail-closed if a shell/workflow override diverges |
 | `<vpc-id>` | VPC containing the declared deploy subnet | live `DescribeSubnets` result for the tfvars subnet | fail-closed if the subnet does not resolve |
 | `<subnet-id>` | exact deploy subnet | `terraform/aws.tfvars` | fail-closed at launch; parsed from the same file Terraform consumes |
 | `<ebs-kms-key-id>` | the key `alias/aws/ebs` resolves to **in this account** | `aws kms describe-key --key-id alias/aws/ebs` | fail-closed. Account-wide and AWS-managed, so **siblings legitimately share the same key id** |
@@ -74,6 +74,7 @@ out of git.
 |---|---|---|---|
 | `github_nwarila-platform_windows-wsus` | `roles/github_nwarila-platform_windows-wsus.trust.json` | `github_nwarila-platform_windows-wsus` · `windows-wsus_deploy-ec2-launch` · `windows-wsus_deploy-ec2-lifecycle` · `windows-wsus_deploy-sg-ssm-kms` · `windows-wsus_deploy-discovery-iam` · `windows-wsus_artifact-assume` | Protected-main lifecycle and conservative fallback cleanup; assumes the artifact-reader to deliver the TLS PFX at configure time |
 | `github_nwarila-platform_windows-wsus-admin` | `roles/github_nwarila-platform_windows-wsus-admin.trust.json` | `github_nwarila-platform_windows-wsus` · the same four deploy policies · `windows-wsus_artifact-folder` (write is admin-only) · `windows-wsus_artifact-assume` | Operator break-glass and local deploy |
+| `github_nwarila-platform_windows-wsus-iam-audit` | `roles/github_nwarila-platform_windows-wsus-iam-audit.trust.json` | `github_nwarila-platform_windows-wsus_iam-audit` **only** | Daily protected-main comparison of live IAM with reviewed source; read-only and cannot self-apply |
 | `windows-wsus-artifact-reader` | `roles/windows-wsus-artifact-reader.trust.json` | `windows-wsus_artifact-read` | Controller-assumed, read-only artifact delivery |
 | `windows-wsus-poc-role` | `roles/windows-wsus-poc-role.trust.json` | `AmazonSSMManagedInstanceCore` (AWS-managed) **only** | EC2 instance profile `windows-wsus-poc-profile` |
 
@@ -81,14 +82,50 @@ The `-admin` role carries the state policy as well as the four deploy policies: 
 `deploy -> test -> destroy` cannot read or write Terraform state without it, and the row above
 claims that capability. Detach the deploy policies when the local path is retired.
 The protected lifecycle role has `MaxSessionDuration=7200`, covering either 100-minute Ansible
-converge and its late controller-side artifact fetch. The admin, artifact-reader, and instance
-roles remain exactly 3600 seconds. `bootstrap-iam.sh --check-drift` also verifies each role's exact
-managed-policy set, absence of inline policies, trust document, duration, and instance-profile
-membership. `--apply` removes unexpected attachments/inline policies and reconciles those
-properties; review its plan and source diff before using that mode.
+converge and its late controller-side artifact fetch. The admin, IAM-audit, artifact-reader, and
+instance roles remain exactly 3600 seconds. `bootstrap-iam.sh --check-drift` verifies each role's
+exact managed-policy set, absence of inline policies, trust document, root (`/`) path, absence of a
+permissions boundary, exact empty role-tag set, duration, and instance-profile membership. It also
+proves both inverses: every tracked customer-managed policy is attached only to its declared roles
+and is not used as any user/role permissions boundary; the POC role is associated only with
+`windows-wsus-poc-profile`, while the other four modeled roles have no instance profile. `--apply`
+enforces source digests, quarantines every existing modeled role by detaching all managed and
+inline policies, removes unexpected inverse consumers, and only then restores exact trusts,
+publishes tracked policy versions, and reattaches exact sets.
+Bounded read-back proves each trust and live default document matches source before attachment.
+An interrupted apply therefore leaves automation disabled instead of exposing a stale policy. A
+tracked policy used as a boundary on an unmodeled user/role is restrictive, so
+apply refuses every write rather than risk activating that principal's unrelated Allows; only a
+fully modeled role boundary is removed after its other over-grants are gone. New roles are created
+at `/`; because IAM cannot update an existing role path, apply fails before its first write if a
+tracked role has another path. Recreating that identity requires an explicit operator migration.
+Role tags can participate in ABAC or restrictive policy conditions, so any tag on a modeled role
+also fails the apply preflight with a manual-migration instruction; apply never removes it. A
+modeled role attached to a foreign instance profile, or a foreign role attached to the named
+profile, likewise fails before the first write and is never detached automatically. Once those
+inverse associations are clean, apply creates a missing named profile at `/` and proves its path
+and bidirectional membership with bounded read-back. A wrong existing profile path is also a
+manual migration: the profile may be attached to an out-of-scope EC2 instance, so apply refuses
+before its first write and never detaches or recreates it. Tags on managed policies and the
+instance profile remain intentionally outside this metadata contract and are never mutated.
+Review the plan and source diff before using apply mode.
+
+Because apply temporarily quarantines all modeled roles, it is maintenance-window-only. Its
+mandatory preflight proves Deploy, Reaper, and IAM attestation have no nonterminal run and that the
+repository has no live EC2 resource or Terraform lock before the first detach; a busy boundary is
+never overridden.
 
 The instance role carries **exactly one** AWS-managed policy and no inline policy. It holds no S3
 access of any kind; TLS artifacts are fetched by the controller through the reader role.
+
+The IAM-audit role can read only the nine tracked customer-managed policies (documents and attached
+entities), five tracked roles (including their tags and instance-profile associations), and one
+tracked instance profile. Its remaining permissions are the
+read-only resolvers required to materialize the expected documents (`DescribeSubnets`,
+`DescribeKey`) and Access Analyzer's `ValidatePolicy`. Region conditions constrain the
+account-wide APIs. Its OIDC trust accepts only `iam-drift.yml` from this repository at
+`refs/heads/main`; it is separate from the deploy trust and has no IAM, EC2, KMS, S3, or SSM
+mutation action. The scheduled workflow reports drift but never runs `--apply`.
 
 ## Hardening applied during the clone
 
@@ -101,9 +138,11 @@ polish; each one is a finding both auditors raised.
   (R3-6). The source permits EBS encryption but never requires it, so omitting the KMS alias
   silently creates unencrypted volumes. WSUS carries the WID database and update content; encryption
   at rest is not optional here.
-- **The ENI leg is subnet-pinned** via `ArnLike ec2:Subnet` (R3-4). VPC-pinning alone left a
-  same-VPC foreign network interface attachable at launch, which would hand the instance another
-  workload's address and security groups.
+- **Network supporting legs are separated by resource type.** The pre-created ENI is pinned to the
+  exact deploy subnet and VPC. Existing security groups used by either `RunInstances` or
+  `CreateNetworkInterface` must carry this repository's exact resource tag; untagged and foreign
+  groups fail closed. The shared subnet leg remains an exact ARN/VPC check without a repository
+  tag, because the subnet is platform-owned rather than application-owned.
 - **The SSO trust is bounded to the permission-set hash**, `AWSReservedSSO_github_nwarila-platform_`
   + sixteen `?` (R3-8). The source uses a trailing `*`, which also matches any future permission set
   named `github_nwarila-platform_<something>` — including a low-privilege one.
@@ -121,9 +160,17 @@ polish; each one is a finding both auditors raised.
   2026-07-15 — proven from the CloudTrail `userName` on a real denied `AssumeRoleWithWebIdentity`,
   not inferred. An earlier audit finding called that subject dead and a single-valued `sub`
   de-credentialed CI in all three repositories until it was corrected. `repository_id` with
-  `StringEquals` is the immutable identity boundary, so carrying both forms costs nothing and
-  survives a repository transfer; the separate exact `ref` condition prevents a subject-template
-  change from weakening the protected-main boundary.
+  `StringEquals` is the immutable identity boundary, and the two forms preserve compatibility with
+  either currently observed subject template; the separate exact `ref` condition prevents a
+  subject-template change from weakening the protected-main boundary. Only `repository_id` itself
+  survives a repository transfer. Both exact subject forms, the owner identity, repository slug,
+  and `job_workflow_ref` deliberately fail closed after a transfer until this source is
+  rematerialized and applied for the new owner/path.
+- **The read-only IAM-audit trust is independent.** Its `job_workflow_ref` is exactly
+  `iam-drift.yml@refs/heads/main`, with the same immutable repository id, exact ref, audience, and
+  dual exact subject forms. Adding the attestation workflow to the deploy role would unnecessarily
+  give a read-only check lifecycle mutation authority; adding deploy workflows to the audit role
+  would broaden who can inspect IAM without improving the proof.
 - **The EC2 login key is ephemeral.** The lifecycle generates an RSA key on the hosted runner,
   passes only its public half through the framework's `managed_keypairs`, and destroys the tagged
   `windows-wsus-ci` key pair with the stack. `ImportKeyPair`, its create-time tag leg, launch use,
@@ -156,7 +203,8 @@ polish; each one is a finding both auditors raised.
 The full ephemeral lifecycle runs from a GitHub-hosted runner. The terraform framework attaches
 pre-created ENIs, a launch path AWS never auto-assigns a public IP to — and the account has no
 NAT and no VPC endpoints — so without an EIP the instance is both unreachable and route-less.
-Four actions were added for it, all inside the existing identity boundary:
+Four mutation actions and two read-only discovery actions were added for it, all inside the existing
+identity boundary:
 
 - `ec2:AllocateAddress` (`-launch`, Sid `AllocateTaggedElasticIp`) requires the repo identity tag
   **at create time** via `aws:RequestTag` — same shape as every other create in that policy. The
@@ -178,7 +226,7 @@ the instance; the EIP just gives its outbound packets a route home.
 | Value | This repo | Why not the source's |
 |---|---|---|
 | Instance types | `t3.medium`, `t3.large` | Locked in the deploy plan. The source's `m6i.xlarge` is a 4-vCPU SIEM node; WSUS does not need it |
-| Volume cap | 64 GiB | Largest single volume is the ~50 GiB Windows root, plus headroom. The three data disks are 20 GiB WSUSDB / 30 GiB WSUSDATA / 20 GiB WSUSIIS. The source's 100 GiB over-grants ~5× against these |
+| Volume cap | 64 GiB | Largest declared volume is the 30 GiB Windows root/WSUSDATA size; the cap leaves bounded growth headroom. The other data disks are 20 GiB WSUSDB / 20 GiB WSUSIIS. The source's 100 GiB cap is unnecessary for this workload |
 | IOPS / throughput | 3000 / 125 | gp3 defaults; `NumericLessThanEqualsIfExists` is intentional so an unspecified input inherits the default rather than failing |
 | Ingress | **none** (SSH rides the SSM agent's outbound session) | The source's 1514/1515/443 are Wazuh agent and dashboard ports; this repo ships a zero-ingress group |
 | State prefix | `nwarila-platform/windows-wsus/` | Per repository, in Allows **and** Denies together |
@@ -203,14 +251,25 @@ governs who may manage the groups. Treat the rule set as code-reviewed, not poli
   `security-group/*` leg, which is tag- and VPC-pinned, so a foreign rule cannot be reached without
   its foreign parent. EC2 exposes VPC context on the parent group, not the rule resource — this is
   why it looks loose and is not.
+- **The pre-created ENI launch leg cannot enforce its resource tag.** The
+  [EC2 authorization table](https://docs.aws.amazon.com/service-authorization/latest/reference/list_ec2.html)
+  exposes request-tag keys, subnet, and VPC for the `RunInstances` `network-interface` leg, but not
+  a resource-tag condition key. The pinned framework creates and tags the ENI before launch, so a
+  request-tag condition is unavailable at attachment time. Exact subnet and VPC pins prevent an
+  ENI from elsewhere in the VPC, but a foreign ENI in the same shared subnet remains attachable.
+  Close this by changing the framework to create the interface in a request where the repository
+  tag is bindable, or by feeding its exact ENI id into a per-run session policy. Prove that path
+  live before making an exact resource-tag or id condition mandatory.
 - **`ec2:DisassociateAddress` is region-scoped only** (proven live, run 31183916280): Terraform
   disassociates by association-id, and EC2 then resolves no taggable resource — the request
   authorizes against `*/*`, so a `ResourceTag` condition fails closed and blocks every destroy.
   The exposure is disruption-only (a sibling's EIP could be detached, not released or stolen);
   Release/Associate stay tag-gated.
-- **SSM session teardown is region-scoped.** An assumed role's `${aws:userid}` is
-  `<role-id>:<session-name>`, which is not an SSM session-id prefix, so using it to narrow the ARN
-  would silently deny legitimate teardown.
+- **SSM session teardown is region- and caller-session-scoped.** For an assumed role,
+  `${aws:userid}` resolves to `<role-id>:<caller-specified-role-session-name>`. The AWS Session
+  Manager [assumed-role pattern](https://docs.aws.amazon.com/systems-manager/latest/userguide/getting-started-restrict-access-examples.html)
+  `session/${aws:userid}-*` therefore permits `TerminateSession` and `ResumeSession` only for
+  sessions created by that same assumed-role session in the pinned region.
 - **IAM cannot cap instance count or total spend.** A service quota and a budget alarm are separate
   account-side backstops and must exist before they can be relied on. Derive the vCPU quota from
   this repo's actual instance set — do not copy a number from another repository's README.

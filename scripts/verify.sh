@@ -43,6 +43,7 @@ shellcheck --shell=sh --severity=warning "${ROOT}/quality-tools.env"
 
 section 'workflow syntax and immutable dependencies'
 actionlint -no-color
+python3 "${ROOT}/scripts/check-action-pins.py" --self-test
 python3 "${ROOT}/scripts/check-action-pins.py"
 
 section 'YAML, JSON, Python, and Terraform syntax'
@@ -112,6 +113,9 @@ if [ -n "${QUALITY_TERRAFORM_FRAMEWORK:-}" ]; then
         exit 1
     }
 
+    TERRAFORM_TEST_TMP="$(mktemp -d "${terraform_root}/.quality-tests.XXXXXXXX")"
+    : > "${TERRAFORM_TEST_TMP}/empty-aws-config"
+
     # Strip every standard AWS credential source. The framework and consumer plans below use
     # mock_provider exclusively; init needs only public Terraform Registry access.
     terraform_without_aws() {
@@ -125,7 +129,13 @@ if [ -n "${QUALITY_TERRAFORM_FRAMEWORK:-}" ]; then
             -u AWS_ROLE_ARN \
             -u AWS_CONTAINER_CREDENTIALS_RELATIVE_URI \
             -u AWS_CONTAINER_CREDENTIALS_FULL_URI \
+            -u AWS_CONFIG_FILE \
+            -u AWS_SHARED_CREDENTIALS_FILE \
+            -u AWS_SDK_LOAD_CONFIG \
+            AWS_CONFIG_FILE="${TERRAFORM_TEST_TMP}/empty-aws-config" \
             AWS_EC2_METADATA_DISABLED=true \
+            AWS_SDK_LOAD_CONFIG=0 \
+            AWS_SHARED_CREDENTIALS_FILE="${TERRAFORM_TEST_TMP}/empty-aws-config" \
             TF_IN_AUTOMATION=1 \
             terraform "$@"
     }
@@ -137,7 +147,6 @@ if [ -n "${QUALITY_TERRAFORM_FRAMEWORK:-}" ]; then
 
     # Terraform requires test directories to live beneath the configuration root. Copy only the
     # reviewed consumer test into an isolated, trap-cleaned directory in the pinned checkout.
-    TERRAFORM_TEST_TMP="$(mktemp -d "${terraform_root}/.quality-tests.XXXXXXXX")"
     cp "${ROOT}/scripts/terraform-consumer.tftest.hcl" \
         "${TERRAFORM_TEST_TMP}/repository.tftest.hcl"
     terraform_without_aws -chdir="${terraform_root}" test -no-color \
@@ -153,7 +162,11 @@ fi
 section 'offline repository contracts'
 "${ROOT}/scripts/check-iam-literals.sh"
 python3 "${ROOT}/scripts/test-iam-structure.py"
+python3 "${ROOT}/scripts/test-iam-drift-structure.py"
 "${ROOT}/scripts/check-workflow-trigger.sh"
+python3 "${ROOT}/scripts/check-renovate-config.py"
+"${ROOT}/scripts/test-aws-clean.sh"
+python3 -B "${ROOT}/scripts/test-aws-resource-graph.py"
 python3 "${ROOT}/scripts/check-winshell-splitargs.py"
 python3 -B "${ROOT}/ansible/applications/wsus/tests/test_susdb_state_table.py"
 
@@ -170,7 +183,7 @@ if [ "${QUALITY_ENFORCE_TOOL_VERSIONS:-0}" = '1' ]; then
         printf 'verify: ShellCheck version does not match %s\n' "${SHELLCHECK_APT_VERSION}" >&2
         exit 1
     }
-    terraform version | head -n 1 | grep -Fx "Terraform v${TERRAFORM_VERSION}" >/dev/null || {
+    [ "$(terraform version | sed -n '1p')" = "Terraform v${TERRAFORM_VERSION}" ] || {
         printf 'verify: Terraform version does not match %s\n' "${TERRAFORM_VERSION}" >&2
         exit 1
     }

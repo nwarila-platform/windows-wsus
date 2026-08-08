@@ -58,12 +58,13 @@ jobs:
     needs: main-ref
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
-    timeout-minutes: 180
+    # Reserve room for both independently bounded 100-minute converges and the always-destroy path.
+    timeout-minutes: 360
     permissions:
       id-token: write
       contents: read
     env:
-      AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+      AWS_REGION: us-east-1
       DEPLOY_ROLE: github_nwarila-platform_windows-wsus
       STATE_KEY: nwarila-platform/windows-wsus/aws-poc.tfstate
       CI_KEY_NAME: windows-wsus-ci
@@ -135,13 +136,29 @@ jobs:
           role-session-name: aws-deploy-${{ github.run_id }}
           role-duration-seconds: 3600
 
-      # actions/checkout cannot read a file into ref:, so the pinned SHAs pass through step
-      # outputs. A bad SHA fails the checkout itself.
+      # actions/checkout cannot read a file into ref:, so validated immutable SHAs pass through
+      # step outputs. Reject malformed/multiline pins before any external framework checkout.
       - name: Read framework pins
         id: pins
         run: |
-          echo "terraform=$(cat .github/terraform-framework-pin)" >> "$GITHUB_OUTPUT"
-          echo "ansible=$(cat .github/ansible-framework-pin)" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          emit_pin() {
+            local name="$1" path="$2" pin
+            local -a lines
+            mapfile -t lines < "${path}"
+            [ "${#lines[@]}" -eq 1 ] || {
+              echo "${path} must contain exactly one line" >&2
+              return 1
+            }
+            pin="${lines[0]}"
+            [[ "${pin}" =~ ^[0-9a-f]{40}$ ]] || {
+              echo "${path} must contain exactly one lowercase 40-character Git SHA" >&2
+              return 1
+            }
+            printf '%s=%s\n' "${name}" "${pin}" >> "${GITHUB_OUTPUT}"
+          }
+          emit_pin terraform .github/terraform-framework-pin
+          emit_pin ansible .github/ansible-framework-pin
 
       - name: Checkout aws-terraform-framework (pinned)
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
@@ -178,9 +195,46 @@ jobs:
             -backend-config="key=${STATE_KEY}" \
             -backend-config="region=${AWS_REGION}"
 
-      # Converges from clean OR from a killed predecessor's leftover state. The environment
-      # and the deployment identity are passed as individual -var flags — the highest-
-      # precedence source, so the tfvars cannot override who this deployment says it is.
+      # A killed predecessor can leave state and an instance whose one-time SSH private key no
+      # longer exists. Never adopt it: destroy under the same lock, prove the repository inventory
+      # is empty, then apply with a fresh key. A live/out-of-band lock makes this fail closed.
+      - name: Remove interrupted predecessor state before apply
+        timeout-minutes: 30
+        working-directory: .frameworks/aws-terraform-framework/terraform
+        env:
+          GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
+        run: |
+          set -euo pipefail
+          python3 "${GITHUB_WORKSPACE}/scripts/assert-aws-resource-graph.py" \
+            --repository-id "${GITHUB_REPOSITORY_ID}" \
+            --include-terraform-state
+          terraform destroy -input=false -auto-approve -lock-timeout=300s \
+            -var-file="${GITHUB_WORKSPACE}/terraform/aws.tfvars" \
+            -var "environment=test" \
+            -var "repository=${GITHUB_REPOSITORY}" \
+            -var "repository_id=${GITHUB_REPOSITORY_ID}" \
+            -var "stack=aws-poc" \
+            -var "owner=${GITHUB_REPOSITORY_OWNER}" \
+            -var "commit_sha=$(git -C "${GITHUB_WORKSPACE}" rev-parse HEAD)" \
+            -var "run_id=${GITHUB_RUN_ID}"
+
+      - name: Prove a clean AWS start
+        env:
+          AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+          GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
+        run: bash scripts/assert-aws-clean.sh
+
+      - name: Refresh AWS credentials before fresh apply (OIDC)
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ env.DEPLOY_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+          allowed-account-ids: ${{ secrets.AWS_ACCOUNT_ID }}
+          role-session-name: aws-deploy-apply-${{ github.run_id }}
+          role-duration-seconds: 3600
+
+      # The environment and deployment identity are individual -var flags — the highest-
+      # precedence source, so the tfvars cannot override who this fresh deployment says it is.
       - name: Terraform apply
         timeout-minutes: 30
         working-directory: .frameworks/aws-terraform-framework/terraform
@@ -206,6 +260,19 @@ jobs:
           allowed-account-ids: ${{ secrets.AWS_ACCOUNT_ID }}
           role-session-name: aws-deploy-configure-${{ github.run_id }}
           role-duration-seconds: 7200
+
+      # Guest disk discovery is destructive by design. Prove that every live attachment and EIP
+      # association belongs to this exact run, and that each expected WSUS data disk is singular,
+      # before the Windows role can format, move, or attach anything.
+      - name: Prove fresh AWS dependency graph before Ansible
+        working-directory: .frameworks/aws-terraform-framework/terraform
+        env:
+          GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
+        run: >-
+          python3 "${GITHUB_WORKSPACE}/scripts/assert-aws-resource-graph.py"
+          --expected-run-id "${GITHUB_RUN_ID}"
+          --include-terraform-state
+          --require-wsus-data-volumes
 
       # Terraform is the authority for target selection. Refuse zero/multiple results and verify
       # the immutable repository/run identity directly against EC2 before Ansible can mutate it.
@@ -372,10 +439,26 @@ jobs:
           role-session-name: aws-deploy-destroy-${{ github.run_id }}
           role-duration-seconds: 3600
 
+      # An administrator can alter attachments outside Terraform. Re-read the dependency graph
+      # immediately before destroy and leave an incident, rather than mutate a cross-owned edge.
+      - name: Prove final AWS dependency graph before destroy
+        id: destroy-graph
+        if: always() && steps.tf-init.outcome == 'success'
+        working-directory: .frameworks/aws-terraform-framework/terraform
+        env:
+          GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
+        run: >-
+          python3 "${GITHUB_WORKSPACE}/scripts/assert-aws-resource-graph.py"
+          --expected-run-id "${GITHUB_RUN_ID}"
+          --include-terraform-state
+
       # Gated on INIT, not apply: a failed apply still leaves state to tear down.
       - name: Terraform destroy (always)
         id: tf-destroy
-        if: always() && steps.tf-init.outcome == 'success'
+        if: >-
+          always() &&
+          steps.tf-init.outcome == 'success' &&
+          steps.destroy-graph.outcome == 'success'
         timeout-minutes: 30
         working-directory: .frameworks/aws-terraform-framework/terraform
         env:
@@ -397,65 +480,7 @@ jobs:
         env:
           AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
           GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
-        run: |
-          set -euo pipefail
-
-          split_text_array() {
-            local destination_name="$1" raw="$2" item
-            local -n destination="${destination_name}"
-            destination=()
-            raw="${raw//$'\t'/$'\n'}"
-            while IFS= read -r item; do
-              if [ -n "${item}" ]; then
-                destination+=("${item}")
-              fi
-            done <<< "${raw}"
-          }
-
-          filters=(
-            "Name=tag:nwarila:management:repository-id,Values=${GITHUB_REPOSITORY_ID}"
-          )
-          lock_key="${STATE_KEY}.tflock"
-
-          for attempt in {1..10}; do
-            instance_text="$(aws ec2 describe-instances \
-              --filters "${filters[@]}" "Name=instance-state-name,Values=pending,running,stopping,stopped" \
-              --query 'Reservations[].Instances[].InstanceId' --output text)"
-            interface_text="$(aws ec2 describe-network-interfaces --filters "${filters[@]}" \
-              --query 'NetworkInterfaces[].NetworkInterfaceId' --output text)"
-            allocation_text="$(aws ec2 describe-addresses --filters "${filters[@]}" \
-              --query 'Addresses[].AllocationId' --output text)"
-            volume_text="$(aws ec2 describe-volumes --filters "${filters[@]}" \
-              --query 'Volumes[].VolumeId' --output text)"
-            group_text="$(aws ec2 describe-security-groups --filters "${filters[@]}" \
-              --query 'SecurityGroups[].GroupId' --output text)"
-            key_text="$(aws ec2 describe-key-pairs --filters "${filters[@]}" \
-              --query 'KeyPairs[].KeyPairId' --output text)"
-            lock_json="$(aws s3api list-objects-v2 --bucket "${AWS_ACCOUNT_ID}-terraform" \
-              --prefix "${lock_key}" --output json)"
-
-            split_text_array instance_ids "${instance_text}"
-            split_text_array interface_ids "${interface_text}"
-            split_text_array allocation_ids "${allocation_text}"
-            split_text_array volume_ids "${volume_text}"
-            split_text_array group_ids "${group_text}"
-            split_text_array key_ids "${key_text}"
-            lock_exists="$(jq -r --arg key "${lock_key}" \
-              '[.Contents[]? | select(.Key == $key)] | length' <<< "${lock_json}")"
-
-            remaining=$((${#instance_ids[@]} + ${#interface_ids[@]} + ${#allocation_ids[@]} + \
-              ${#volume_ids[@]} + ${#group_ids[@]} + ${#key_ids[@]} + lock_exists))
-            if [ "${remaining}" -eq 0 ]; then
-              echo "Destroy verified: no live repository-owned EC2 resource or Terraform lock remains."
-              exit 0
-            fi
-
-            echo "Attempt ${attempt}: ${remaining} repository-owned resource(s)/lock still visible."
-            [ "${attempt}" -eq 10 ] || sleep 15
-          done
-
-          echo "::error::Destroy returned success but repository-owned resources or the lock remain."
-          exit 1
+        run: bash scripts/assert-aws-clean.sh
 
       - name: Remove the ephemeral private key
         if: always()
@@ -475,6 +500,8 @@ jobs:
       issues: write
     env:
       GH_TOKEN: ${{ github.token }}
+      INCIDENT_LABEL: automation-incident
+      INCIDENT_MARKER: '<!-- windows-wsus-automation:aws-lifecycle -->'
       INCIDENT_TITLE: '[automation] AWS lifecycle proof failed'
       LIFECYCLE_RESULT: ${{ needs.aws-deploy.result }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -483,10 +510,26 @@ jobs:
         run: |
           set -euo pipefail
 
-          issue_number="$(gh issue list --repo "${GITHUB_REPOSITORY}" --state all --limit 100 \
-            --search '"[automation] AWS lifecycle proof failed" in:title' \
-            --json number,title \
-            --jq '[.[] | select(.title == "[automation] AWS lifecycle proof failed")] | sort_by(.number) | .[0].number // empty')"
+          gh label create "${INCIDENT_LABEL}" --repo "${GITHUB_REPOSITORY}" --force \
+            --color B60205 --description 'Owned exclusively by recurring automation incidents' > /dev/null
+          issue_json="$(gh issue list --repo "${GITHUB_REPOSITORY}" --state all --limit 100 \
+            --label "${INCIDENT_LABEL}" --json number,title,body,author,state)"
+          mapfile -t issue_numbers < <(jq -r --arg title "${INCIDENT_TITLE}" \
+            --arg marker "${INCIDENT_MARKER}" '
+              [.[] | select(
+                .title == $title
+                and .author.login == "app/github-actions"
+                and ((.body // "") | contains($marker))
+              )] | sort_by(.number) | .[].number
+            ' <<< "${issue_json}")
+          issue_number="${issue_numbers[0]:-}"
+          for duplicate in "${issue_numbers[@]:1}"; do
+            if [ "$(gh issue view "${duplicate}" --repo "${GITHUB_REPOSITORY}" \
+              --json state --jq .state)" = OPEN ]; then
+              gh issue close "${duplicate}" --repo "${GITHUB_REPOSITORY}" --reason duplicate \
+                --comment "Deduplicated into automation-owned incident #${issue_number}."
+            fi
+          done
 
           if [ "${LIFECYCLE_RESULT}" = success ]; then
             if [ -n "${issue_number}" ] && \
@@ -499,10 +542,11 @@ jobs:
             exit 0
           fi
 
-          message="Lifecycle result: ${LIFECYCLE_RESULT}. Inspect ${RUN_URL}. Cleanup ran before this report."
+          message="Lifecycle result: ${LIFECYCLE_RESULT}. Inspect ${RUN_URL}. Cleanup was attempted when initialization succeeded; inspect the destroy and post-cleanup steps."
           if [ -z "${issue_number}" ]; then
             gh issue create --repo "${GITHUB_REPOSITORY}" \
-              --title "${INCIDENT_TITLE}" --body "${message}"
+              --label "${INCIDENT_LABEL}" --title "${INCIDENT_TITLE}" \
+              --body "$(printf '%s\n\n%s' "${INCIDENT_MARKER}" "${message}")"
           else
             if [ "$(gh issue view "${issue_number}" --repo "${GITHUB_REPOSITORY}" --json state --jq .state)" = CLOSED ]; then
               gh issue reopen "${issue_number}" --repo "${GITHUB_REPOSITORY}"

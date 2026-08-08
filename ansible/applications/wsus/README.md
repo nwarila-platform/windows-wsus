@@ -20,12 +20,19 @@ Required deployment inputs are:
 |---|---|
 | `wsus.upstream_server` | Non-empty downstream source hostname. The repository placeholder is rejected when bootstrap synchronization is enabled. |
 | `wsus.bucket` | Artifact bucket containing the TLS PFX and adjacent `.password` object when TLS is enabled. |
-| `wsus.tls.dns_name` | FQDN present in the delivered certificate and used by `wsusutil configuressl`. |
-| `wsus.tls.thumbprint` | Exact 40-hex SHA-1 pin for the delivered leaf certificate when TLS is enabled. |
+| `wsus.tls.dns_name` | Desired client-facing FQDN used by `wsusutil configuressl`; it must equal the leaf's primary/preferred DNS identity or match its single-label wildcard. |
+| `wsus.tls.thumbprint` | Exact 40-hex SHA-1 pin for the delivered leaf certificate when TLS is enabled; the leaf must explicitly include Server Authentication EKU OID `1.3.6.1.5.5.7.3.1`. |
 
 The application letters must be three distinct `D` through `Z` values. `content_subdir` and
 `db_subdir` must be relative, non-traversing names, and both IIS paths must be literal paths on the
 declared IIS drive. These relationships are enforced before convergence.
+
+After the initial post-install, the role treats the WSUS API content-cache path as authoritative.
+If a later content drive or subdirectory change moves that path, it uses the supported
+`wsusutil movecontent` operation without `-skipcopy`, then verifies the registry root, API cache
+path, and IIS `Content` virtual directory before continuing. A registry-only split brain fails
+closed instead of being hidden by a direct registry edit. The content cache also receives and
+verifies the inheritable `NETWORK SERVICE` FullControl grant required by WSUS.
 
 Example shared layout:
 
@@ -82,23 +89,39 @@ Each `function` must match the corresponding EBS `Function` tag in `terraform/aw
 
 The public AWS smoke play sets `sync.bootstrap_enabled: false` because its placeholder upstream is
 deliberately unreachable. With a real reachable upstream, the role writes its durable marker only
-after synchronization reaches terminal `Succeeded`; the marker includes a configuration
-fingerprint, so changing the server or synchronization policy requires a new successful bootstrap.
+after the category-only synchronization it started reaches terminal `Succeeded`. The marker includes
+a configuration fingerprint, so changing the server or synchronization policy stops any older
+in-flight work and requires a new successful invocation whose unique history ID, UTC start time, and
+manual-start flag were not present before the role's request. The marker retains that history ID;
+if WSUS expires the underlying record, the next run automatically performs fresh proof.
 
 ## Recovery and verification
 
 Every run observes the attached SUSDB location and both source/target file pairs. The role repairs
-only unambiguous partial targets, restores a complete healthy attachment after a relocation
-failure, and refuses ambiguous states. WID relocation is nevertheless outside Microsoft's support
-guidance; see [TD-005](../../../docs/TECH-DEBT.md).
+only unambiguous partial targets, treats a complete attached target as authoritative even when an
+interrupted cleanup left one source file behind, restores a complete healthy attachment after a
+relocation failure, and refuses ambiguous unattached states. WID relocation is nevertheless
+outside Microsoft's support guidance; see [TD-005](../../../docs/TECH-DEBT.md).
+
+When an OS-volume replacement loses the post-install registry flags but retains the data volume,
+the role performs that authority check before `wsusutil postinstall`: a sole complete target pair
+is attached and health-checked first, while partial or competing pairs fail without creating or
+deleting a database. Post-install then rebuilds the Windows/IIS metadata against the preserved
+SUSDB instead of silently replacing it with a fresh system-volume database.
 
 TLS artifacts use unique controller and target staging directories. Before import, the role checks
-the private key, exact thumbprint, DNS identity, and minimum validity. It binds the exact leaf,
-tests a live TLS handshake, and removes staging material in an `always` path. A converged target
-does not redeliver the PFX on the second pass.
+the private key, exact thumbprint, DNS identity, activation, minimum validity, and explicit Server
+Authentication EKU (`1.3.6.1.5.5.7.3.1`). A leaf with no EKU extension is rejected rather than
+treated as unrestricted. It binds the exact leaf to one wildcard, empty-host `*:port:` IIS listener
+with non-SNI `sslFlags=0`, completes an HTTPS request to the WSUS client endpoint with the intended
+SNI and Host header, and removes staging material in an `always` path. The machine-store probe and
+independent final verifier enforce the same EKU contract; a converged target does not redeliver the
+PFX on the second pass.
 
-The final verifier independently checks WSUS/WID services, application paths, upstream policy,
-IIS bindings and SSL requirements, the pinned live certificate, and (when enabled) the
+The final verifier independently checks WID's Automatic/Running service contract and the WSUS/IIS
+service state, the registry/API/IIS content-path triple and required content ACLs, application paths,
+upstream policy, all six declared WsusPool tuning values, IIS bindings and SSL requirements, the
+pinned live certificate and its explicit Server Authentication EKU, and (when enabled) the
 terminal-success bootstrap marker.
 
 ## Requirements

@@ -63,3 +63,30 @@ workarounds are not accidentally restored.
   dedicated least-privilege cleanup role, and external alarms for an eight-day-old proof, expired
   resources, stale locks, and certificates within 45 days of expiry. Keep the GitHub reaper only as
   a secondary signal or remove its mutation authority after the native guardrail is proven.
+
+## TD-007 — exact quality-tool version/checksum tuples lack atomic update discovery
+
+- **What:** Renovate maintains the GitHub Actions, exact Python requirements, and Ansible Galaxy
+  collection pins, while the dedicated framework updater owns both framework commit pins. Neither
+  automation updates the coupled Actionlint, ShellCheck package, Terraform CLI, and AWS Session
+  Manager plugin version/checksum values in `quality-tools.env`.
+- **Current containment:** every clean CI run installs or verifies the exact set, and the recurring
+  AWS proof exercises the runtime pins. Breakage is loud, but a compatible old release can age
+  silently.
+- **Exit criteria:** add a supported, primary-source-backed updater that changes each version and
+  checksum atomically, validates the downloaded artifacts, couples Terraform to the pinned
+  framework's exact requirement, and maintains one reviewable PR without credentials or
+  auto-merge. Do not replace this with arbitrary or unauthenticated version scraping.
+
+## TD-008 — CLOSED: dependency automation conforms to the Renovate-only org policy
+
+- **Recorded:** 2026-08-07 after `.github/dependabot.yml` opened PRs #5 and #6 contrary to the
+  accepted Renovate-only organization policy.
+- **Closed:** 2026-08-07. The Dependabot configuration was deleted and both PRs were closed
+  unmerged. The installed, unsuspended organization Renovate app covers this repository after the
+  local configuration lands on `main`.
+- **Resolution:** `.github/renovate.json5` extends exactly the canonical Terraform-runner preset,
+  adds bounded Python/Galaxy and Actions groups, disables auto-merge, excludes framework-pin files,
+  and is CODEOWNED. The offline required gate enforces Renovate presence and Dependabot absence.
+  Exact `quality-tools.env` tuple discovery deliberately remains TD-007; do not reintroduce a
+  second dependency bot to conceal it.
