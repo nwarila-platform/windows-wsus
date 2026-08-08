@@ -103,6 +103,140 @@
               [System.Net.ServicePointManager]::ServerCertificateValidationCallback = $previousCallback
           }
       }
+    # The persisted WSUS SSL mode determines whether API actors need the HTTPS listener now.
+    # Run this primitive before the first actor so a drifted post-SSL host can repair itself, and
+    # again immediately after configuressl so a fresh transition to SSL activates before proof.
+    # UsingSSL=0 is intentionally a no-op: the binding and certificate do not exist yet.
+    __wsus_https_listener_reconciler__: |
+      function Invoke-LocalWsusHttpsListenerReconcile {
+          $setupPath = 'HKLM:\SOFTWARE\Microsoft\Update Services\Server\Setup'
+          $setup = Get-ItemProperty -Path $setupPath -ErrorAction Stop
+          $usingSslText = [string]$setup.UsingSSL
+          if ($usingSslText -notmatch '^[01]$') {
+              throw ('WSUS Setup UsingSSL must be 0 or 1, got [' + $setup.UsingSSL + ']')
+          }
+          $usingSsl = [int]$usingSslText
+          if ($usingSsl -eq 0) {
+              Write-Output 'nochange'
+              return
+          }
+
+          $portText = [string]$setup.PortNumber
+          if ($portText -notmatch '^[0-9]{1,5}$') {
+              throw ('WSUS Setup PortNumber is invalid: [' + $setup.PortNumber + ']')
+          }
+          $port = [int]$portText
+          if ($port -lt 1 -or $port -gt 65535) {
+              throw ('WSUS Setup PortNumber is invalid: [' + $setup.PortNumber + ']')
+          }
+
+          Import-Module WebAdministration
+          $siteName = 'WSUS Administration'
+          $sitePath = Join-Path 'IIS:\Sites' $siteName
+          $changed = $false
+
+          if (-not (Test-Path -LiteralPath $sitePath)) {
+              throw ('required IIS site is absent: ' + $siteName)
+          }
+
+          function Get-WsusSiteState {
+              return [string](Get-WebItemState -PSPath $sitePath -ErrorAction Stop).Value
+          }
+
+          function Test-LoopbackListener([int]$listenerPort) {
+              $client = [System.Net.Sockets.TcpClient]::new()
+              try {
+                  $connect = $client.ConnectAsync('127.0.0.1', $listenerPort)
+                  $completed = $connect.Wait(1000)
+                  return $completed -and $client.Connected
+              } catch {
+                  return $false
+              } finally {
+                  $client.Dispose()
+              }
+          }
+
+          $site = Get-Item -LiteralPath $sitePath -ErrorAction Stop
+          if (-not [System.Convert]::ToBoolean($site.serverAutoStart)) {
+              Set-ItemProperty -LiteralPath $sitePath -Name serverAutoStart -Value $true | Out-Null
+              $changed = $true
+          }
+
+          $siteState = Get-WsusSiteState
+          if ($siteState -eq 'Stopped') {
+              Start-Website -Name $siteName | Out-Null
+              $changed = $true
+          } elseif ($siteState -eq 'Started') {
+              # Give a just-written IIS/HTTP.sys binding a short read-only activation window
+              # before deciding that runtime repair is required.
+              $listenerReady = $false
+              for ($attempt = 0; $attempt -lt 10; $attempt++) {
+                  if (Test-LoopbackListener $port) {
+                      $listenerReady = $true
+                      break
+                  }
+                  Start-Sleep -Milliseconds 500
+              }
+              if (-not $listenerReady) {
+                  # Binding updates normally activate live. If they did not, recycle only the
+                  # WSUS site; never bounce W3SVC or unrelated IIS sites.
+                  Stop-Website -Name $siteName | Out-Null
+                  $stopped = $false
+                  for ($attempt = 0; $attempt -lt 20; $attempt++) {
+                      if ((Get-WsusSiteState) -eq 'Stopped') {
+                          $stopped = $true
+                          break
+                      }
+                      Start-Sleep -Milliseconds 500
+                  }
+                  if (-not $stopped) {
+                      throw ('WSUS IIS site did not stop within 10 seconds; state=' + (Get-WsusSiteState))
+                  }
+                  Start-Website -Name $siteName | Out-Null
+                  $changed = $true
+              }
+          } else {
+              throw ('WSUS IIS site has an unsafe transitional state: ' + $siteState)
+          }
+
+          $startedAndListening = $false
+          $listenerReady = $false
+          for ($attempt = 0; $attempt -lt 30; $attempt++) {
+              $siteState = Get-WsusSiteState
+              $listenerReady = Test-LoopbackListener $port
+              if ($siteState -eq 'Started' -and $listenerReady) {
+                  $startedAndListening = $true
+                  break
+              }
+              Start-Sleep -Milliseconds 500
+          }
+          if (-not $startedAndListening) {
+              $w3svcState = [string](Get-Service -Name W3SVC -ErrorAction SilentlyContinue).Status
+              $portNeedle = ':' + $port + ':'
+              $httpsOwners = @()
+              foreach ($configuredSite in @(Get-Website)) {
+                  foreach ($configuredBinding in @(Get-WebBinding -Name $configuredSite.Name -Protocol https -ErrorAction SilentlyContinue)) {
+                      $bindingInformation = [string]$configuredBinding.bindingInformation
+                      if ($bindingInformation.Contains($portNeedle)) {
+                          $httpsOwners += ($configuredSite.Name + '=' + $bindingInformation)
+                      }
+                  }
+              }
+              $netsh = Join-Path $env:SystemRoot 'System32\netsh.exe'
+              $sslTarget = 'ipport=0.0.0.0:' + $port
+              $httpSysSsl = ((& $netsh http show sslcert $sslTarget 2>&1) -join ' ').Trim()
+              $httpSysIpListen = ((& $netsh http show iplisten 2>&1) -join ' ').Trim()
+              throw ('WSUS HTTPS listener did not activate within the bounded readiness window: siteState=' +
+                  $siteState + ' loopbackListening=' + $listenerReady + ' port=' + $port +
+                  ' W3SVC=' + $w3svcState + ' httpsBindings=[' + ($httpsOwners -join ';') +
+                  '] httpSysSsl=[' + $httpSysSsl + '] httpSysIpListen=[' + $httpSysIpListen + ']')
+          }
+          $site = Get-Item -LiteralPath $sitePath -ErrorAction Stop
+          if (-not [System.Convert]::ToBoolean($site.serverAutoStart)) {
+              throw 'WSUS IIS site did not persist serverAutoStart=true'
+          }
+          if ($changed) { Write-Output 'changed' } else { Write-Output 'nochange' }
+      }
   block:
 
     #region ------ [ Main: WSUS Installation ] ---------------------------------------------- #
@@ -650,6 +784,17 @@
       loop: ['W3SVC', 'WsusService']
       loop_control:
         label: '{{ item }}'
+
+    # A host that already persisted UsingSSL=1 must repair its local listener before any API
+    # actor attempts the pinned HTTPS session. Fresh pre-SSL installs return nochange here and
+    # activate through the same primitive immediately after configuressl below.
+    - name: 'MAIN | Reconcile Existing WSUS HTTPS Listener Before API Access'
+      ansible.windows.win_shell: |
+        $ErrorActionPreference = 'Stop'
+        {{ __wsus_https_listener_reconciler__ }}
+        Invoke-LocalWsusHttpsListenerReconcile
+      register: __pre_api_tls_listener_activation__
+      changed_when: "__pre_api_tls_listener_activation__.stdout | trim == 'changed'"
 
     - name: 'MAIN | Verify SUSDB Relocation Health'
       ansible.windows.win_shell: |
@@ -1645,6 +1790,19 @@
           register: __tls_configuressl__
           changed_when: "__tls_configuressl__.stdout | trim == 'changed'"
 
+        # IIS binding and certificate-provider objects are configuration truth, but neither proves
+        # that HTTP.sys has activated the listener. Reconcile the site's persistent/runtime state,
+        # and recycle only this site when a nominally Started site still has no loopback listener.
+        # Listener absence is runtime drift even when persisted TLS configuration is unchanged;
+        # a healthy converged pass performs no restart and reports no change.
+        - name: 'MAIN | Activate And Verify The WSUS HTTPS Listener'
+          ansible.windows.win_shell: |
+            $ErrorActionPreference = 'Stop'
+            {{ __wsus_https_listener_reconciler__ }}
+            Invoke-LocalWsusHttpsListenerReconcile
+          register: __tls_listener_activation__
+          changed_when: "__tls_listener_activation__.stdout | trim == 'changed'"
+
         # Validate what IIS actually serves, independently of the certificate-store and binding
         # APIs. Trust distribution is out of scope, so the callback permits the private CA while
         # the task explicitly verifies the pinned peer identity and validity window. The HTTP GET
@@ -1729,6 +1887,20 @@
       ansible.windows.win_shell: |
         $ErrorActionPreference = 'Stop'
         Import-Module WebAdministration
+        if ([System.Convert]::ToBoolean($env:TLS_ENABLED)) {
+            $wsusSitePath = 'IIS:\Sites\WSUS Administration'
+            if (-not (Test-Path -LiteralPath $wsusSitePath)) {
+                throw 'required IIS site is absent: WSUS Administration'
+            }
+            $wsusSite = Get-Item -LiteralPath $wsusSitePath -ErrorAction Stop
+            $wsusSiteState = [string](Get-WebItemState -PSPath $wsusSitePath -ErrorAction Stop).Value
+            if ($wsusSiteState -ne 'Started') {
+                throw ('WSUS Administration IIS site is ' + $wsusSiteState + ', not Started')
+            }
+            if (-not [System.Convert]::ToBoolean($wsusSite.serverAutoStart)) {
+                throw 'WSUS Administration IIS site serverAutoStart is not true'
+            }
+        }
         {{ __wsus_api_invoker__ }}
         Invoke-LocalWsusApi {
         param($wsus)
