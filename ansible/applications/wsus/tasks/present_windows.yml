@@ -548,7 +548,7 @@
                   if ($text -ne 'None' -and $text -ne '0') {
                       Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
                           -Location $location -Filter 'system.webServer/security/access' `
-                          -Name 'sslFlags' -Value 'None' -ErrorAction Stop | Out-Null
+                          -Name 'sslFlags' -Value 0 -ErrorAction Stop | Out-Null
                       $repaired = $true
                   }
               }
@@ -559,8 +559,14 @@
                       -Name 'sslFlags' -ErrorAction Stop).Value
                   $text = [string]$value
                   if ($text -ne 'None' -and $text -ne '0') {
+                      $valueType = if ($null -eq $value) {
+                          '<null>'
+                      } else {
+                          $value.GetType().FullName
+                      }
                       throw ('pre-SSL WSUS API access rollback did not persist at ' +
-                          $location + ': sslFlags=[' + $text + ']')
+                          $location + ': sslFlags=[' + $text + '] type=[' + $valueType +
+                          '] expected=[None|0]')
                   }
               }
               return $repaired
@@ -2397,16 +2403,83 @@
             $wsusSslDrift = ([int]$before.UsingSSL -ne 1) -or
                 ([int]$before.PortNumber -ne $port) -or
                 (-not [string]::Equals([string]$before.ServerCertificateName, $dns, [System.StringComparison]::OrdinalIgnoreCase))
-            $vdirs = @('ApiRemoting30', 'ClientWebService', 'DSSAuthWebService', 'ServerSyncWebService', 'SimpleAuthWebService')
+            $vdirs = @(
+                'ApiRemoting30',
+                'ClientWebService',
+                'DSSAuthWebService',
+                'ServerSyncWebService',
+                'SimpleAuthWebService'
+            )
             $changed = $false
-            foreach ($name in $vdirs) {
-                $location = 'WSUS Administration/' + $name
-                $value = (Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Location $location -Filter 'system.webServer/security/access' -Name 'sslFlags').Value
-                $text = [string]$value
-                if ($text -ne 'Ssl' -and $text -ne '8') {
-                    Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Location $location -Filter 'system.webServer/security/access' -Name 'sslFlags' -Value 'Ssl'
-                    $changed = $true
+
+            function Get-WsusAccessSslState([string]$location) {
+                $attribute = Get-WebConfigurationProperty `
+                    -PSPath 'MACHINE/WEBROOT/APPHOST' `
+                    -Location $location `
+                    -Filter 'system.webServer/security/access' `
+                    -Name 'sslFlags' `
+                    -ErrorAction Stop
+                if ($null -eq $attribute -or $null -eq $attribute.Value) {
+                    throw ('IIS returned no access.sslFlags value for ' + $location)
                 }
+                $value = $attribute.Value
+                return [pscustomobject]@{
+                    Location = $location
+                    Text = ([string]$value).Trim()
+                    Type = $value.GetType().FullName
+                }
+            }
+
+            function Test-ExactRequiredSsl($state) {
+                return $state.Text -eq 'Ssl' -or $state.Text -eq '8'
+            }
+
+            function Format-WsusAccessSslState($state) {
+                return ('location=' + $state.Location + ' sslFlags=[' + $state.Text +
+                    '] type=[' + $state.Type + ']')
+            }
+
+            function Assert-WsusVdirsRequireSsl {
+                foreach ($name in $vdirs) {
+                    $state = Get-WsusAccessSslState ('WSUS Administration/' + $name)
+                    if (-not (Test-ExactRequiredSsl $state)) {
+                        throw ('WSUS client web service does not require exact SSL: ' +
+                            (Format-WsusAccessSslState $state) + ' expected=[Ssl|8]')
+                    }
+                }
+            }
+
+            function Repair-WsusVdirsRequireSsl {
+                $repaired = $false
+                foreach ($name in $vdirs) {
+                    $location = 'WSUS Administration/' + $name
+                    $beforeWrite = Get-WsusAccessSslState $location
+                    if (Test-ExactRequiredSsl $beforeWrite) { continue }
+                    # system.webServer/security/access uses the Access SSL flag, where exact
+                    # Require SSL is numeric 8. This is distinct from an IIS binding's sslFlags.
+                    Set-WebConfigurationProperty `
+                        -PSPath 'MACHINE/WEBROOT/APPHOST' `
+                        -Location $location `
+                        -Filter 'system.webServer/security/access' `
+                        -Name 'sslFlags' `
+                        -Value 8 `
+                        -ErrorAction Stop | Out-Null
+                    $afterWrite = Get-WsusAccessSslState $location
+                    if (-not (Test-ExactRequiredSsl $afterWrite)) {
+                        throw ('IIS access.sslFlags write did not persist: ' +
+                            (Format-WsusAccessSslState $afterWrite) + ' expected=[Ssl|8]')
+                    }
+                    $repaired = $true
+                }
+                Assert-WsusVdirsRequireSsl
+                return $repaired
+            }
+
+            # Preserve Microsoft's IIS-before-configuressl ordering, and prove the exact access
+            # flags immediately. A later pass repeats this after configuressl to close both the
+            # provider-coercion gap and the interrupted-transition recovery boundary.
+            if (Repair-WsusVdirsRequireSsl) {
+                $changed = $true
             }
             if ($wsusSslDrift) {
                 $wsusutil = Join-Path $env:ProgramFiles 'Update Services\Tools\wsusutil.exe'
@@ -2418,6 +2491,9 @@
                 if ($text.IndexOf($expectedUrl, [System.StringComparison]::OrdinalIgnoreCase) -lt 0) {
                     throw ('configuressl did not report the expected URL [' + $expectedUrl + ']: ' + $text)
                 }
+                $changed = $true
+            }
+            if (Repair-WsusVdirsRequireSsl) {
                 $changed = $true
             }
             $after = Get-ItemProperty -Path $setupPath -ErrorAction Stop
@@ -2719,8 +2795,21 @@
               }
               foreach ($name in @('ApiRemoting30', 'ClientWebService', 'DSSAuthWebService', 'ServerSyncWebService', 'SimpleAuthWebService')) {
                   $location = 'WSUS Administration/' + $name
-                  $flags = [string](Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Location $location -Filter 'system.webServer/security/access' -Name 'sslFlags').Value
-                  if ($flags -ne 'Ssl' -and $flags -ne '8') { throw ($location + ' does not require SSL') }
+                  $attribute = Get-WebConfigurationProperty `
+                      -PSPath 'MACHINE/WEBROOT/APPHOST' `
+                      -Location $location `
+                      -Filter 'system.webServer/security/access' `
+                      -Name 'sslFlags' `
+                      -ErrorAction Stop
+                  if ($null -eq $attribute -or $null -eq $attribute.Value) {
+                      throw ('IIS returned no access.sslFlags value for ' + $location)
+                  }
+                  $value = $attribute.Value
+                  $flags = ([string]$value).Trim()
+                  if ($flags -ne 'Ssl' -and $flags -ne '8') {
+                      throw ($location + ' does not require exact SSL: sslFlags=[' + $flags +
+                          '] type=[' + $value.GetType().FullName + '] expected=[Ssl|8]')
+                  }
               }
           }
           if ([System.Convert]::ToBoolean($env:BOOTSTRAP_ENABLED)) {
