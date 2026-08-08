@@ -81,8 +81,24 @@ jobs:
       - name: Read framework pins
         id: framework
         run: |
-          echo "ansible=$(tr -d '\r\n' < .github/ansible-framework-pin)" >> "${GITHUB_OUTPUT}"
-          echo "terraform=$(tr -d '\r\n' < .github/terraform-framework-pin)" >> "${GITHUB_OUTPUT}"
+          set -euo pipefail
+          emit_pin() {
+            local name="$1" path="$2" pin
+            local -a lines
+            mapfile -t lines < "${path}"
+            [ "${#lines[@]}" -eq 1 ] || {
+              echo "${path} must contain exactly one line" >&2
+              return 1
+            }
+            pin="${lines[0]}"
+            [[ "${pin}" =~ ^[0-9a-f]{40}$ ]] || {
+              echo "${path} must contain exactly one lowercase 40-character Git SHA" >&2
+              return 1
+            }
+            printf '%s=%s\n' "${name}" "${pin}" >> "${GITHUB_OUTPUT}"
+          }
+          emit_pin ansible .github/ansible-framework-pin
+          emit_pin terraform .github/terraform-framework-pin
 
       - name: Checkout pinned Ansible framework
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0

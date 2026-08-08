@@ -11,7 +11,6 @@
 # IAM's tag-gated session grants exist for). That is why ansible_host is the INSTANCE ID, not
 # an IP address: it is the target of `aws ssm start-session` in the ProxyCommand below.
 #
-# Credentials come from the caller's AWS environment (in CI, the OIDC session). The private
 # The protected lifecycle does not consume this file: it builds an exact inventory from
 # Terraform output and passes its runner-local ephemeral key explicitly. A human using this
 # broad discovery aid must supply the correct ephemeral/private key with `--private-key` or an

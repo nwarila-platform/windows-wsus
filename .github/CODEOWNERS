@@ -3,7 +3,7 @@
 # Security- and execution-sensitive surfaces are listed explicitly so GitHub
 # highlights the intended reviewer even if the general ownership rule changes.
 /.github/workflows/ @NWarila
-/.github/dependabot.yml @NWarila
+/.github/renovate.json5 @NWarila
 /.github/ansible-framework-pin @NWarila
 /.github/terraform-framework-pin @NWarila
 /docs/reference/aws-iam/ @NWarila

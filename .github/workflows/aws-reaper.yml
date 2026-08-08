@@ -47,15 +47,22 @@ jobs:
     timeout-minutes: 30
     permissions:
       actions: read
+      contents: read
       id-token: write
     outputs:
       performed: ${{ steps.sweep.outputs.performed || 'false' }}
     env:
-      AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+      AWS_REGION: us-east-1
       DEPLOY_ROLE: github_nwarila-platform_windows-wsus
       MINIMUM_AGE_SECONDS: '14400'
+      STATE_KEY: nwarila-platform/windows-wsus/aws-poc.tfstate
 
     steps:
+      - name: Checkout protected source
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+
       # Fetch without a status filter so new GitHub states such as pending cannot accidentally be
       # treated as idle. Any nonterminal lifecycle defers the entire fallback sweep.
       - name: Check for any nonterminal lifecycle
@@ -99,6 +106,36 @@ jobs:
           stack_filter="Name=tag:nwarila:management:stack,Values=aws-poc"
           environment_filter="Name=tag:nwarila:management:environment,Values=test"
           run_tag='nwarila:provenance:run-id'
+          lock_key="${STATE_KEY}.tflock"
+
+          assert_no_state_lock() {
+            local lock_json lock_exists
+            lock_json="$(aws s3api list-objects-v2 --bucket "${AWS_ACCOUNT_ID}-terraform" \
+              --prefix "${lock_key}" --output json)"
+            lock_exists="$(jq -r --arg key "${lock_key}" \
+              '[.Contents[]? | select(.Key == $key)] | length' <<< "${lock_json}")"
+            if [ "${lock_exists}" -ne 0 ]; then
+              echo "::error::Terraform lock exists; fallback refuses all raw mutation."
+              return 1
+            fi
+          }
+
+          assert_lifecycle_idle() {
+            local active_ids
+            active_ids="$(gh api --paginate \
+              "repos/${GITHUB_REPOSITORY}/actions/workflows/aws-deploy.yml/runs?per_page=100" \
+              --jq '.workflow_runs[] | select(.status != "completed") | .id')"
+            if [ -n "${active_ids}" ]; then
+              echo "::error::Lifecycle became nonterminal before fallback mutation: ${active_ids//$'\n'/, }."
+              return 1
+            fi
+            assert_no_state_lock
+          }
+
+          assert_resource_graph() {
+            python3 "${GITHUB_WORKSPACE}/scripts/assert-aws-resource-graph.py" \
+              --repository-id "${GITHUB_REPOSITORY_ID}"
+          }
 
           declare -A observed_runs=()
           malformed_identity=0
@@ -127,7 +164,7 @@ jobs:
             local instance_json interface_json address_json volume_json group_json key_json
             instance_json="$(aws ec2 describe-instances \
               --filters "${repository_filter}" \
-                "Name=instance-state-name,Values=pending,running,stopping,stopped" --output json)"
+              "Name=instance-state-name,Values=pending,running,stopping,stopped,shutting-down" --output json)"
             interface_json="$(aws ec2 describe-network-interfaces \
               --filters "${repository_filter}" --output json)"
             address_json="$(aws ec2 describe-addresses --filters "${repository_filter}" --output json)"
@@ -157,6 +194,7 @@ jobs:
 
           # Repository id is the IAM-enforced create-time identity. Enumerate by that tag alone so
           # a regression in mutable stack/environment/run tags becomes a loud failure, not a leak.
+          assert_lifecycle_idle
           capture_repository_rows
 
           record_inventory "${instance_rows}"
@@ -188,18 +226,123 @@ jobs:
             done <<< "${raw}"
           }
 
-          deploy_workflow_id="$(gh api \
-            "repos/${GITHUB_REPOSITORY}/actions/workflows/aws-deploy.yml" --jq '.id')"
-          assert_lifecycle_idle() {
-            local active_ids
-            active_ids="$(gh api --paginate \
-              "repos/${GITHUB_REPOSITORY}/actions/workflows/aws-deploy.yml/runs?per_page=100" \
-              --jq '.workflow_runs[] | select(.status != "completed") | .id')"
-            if [ -n "${active_ids}" ]; then
-              echo "::error::Lifecycle became nonterminal before fallback mutation: ${active_ids//$'\n'/, }."
+          assert_identity_rows() {
+            local rows="$1" expected_run="$2" label="$3" row resource_id
+            while IFS= read -r row; do
+              [ -n "${row}" ] || continue
+              resource_id="$(jq -er \
+                '.InstanceId // .NetworkInterfaceId // .VolumeId // .AllocationId
+                 | select(type == "string" and length > 0)' <<< "${row}")"
+              jq -e \
+                --arg repository_id "${GITHUB_REPOSITORY_ID}" \
+                --arg stack aws-poc \
+                --arg environment test \
+                --arg run_tag "${run_tag}" \
+                --arg run_id "${expected_run}" '
+                  ((.Tags // .TagSet // []) | map({key: .Key, value: .Value}) | from_entries) as $tags
+                  | $tags["nwarila:management:repository-id"] == $repository_id
+                  and $tags["nwarila:management:stack"] == $stack
+                  and $tags["nwarila:management:environment"] == $environment
+                  and $tags[$run_tag] == $run_id
+                ' <<< "${row}" > /dev/null || {
+                  echo "::error::${label} ${resource_id} is cross-run, foreign, or malformed; refusing mutation."
+                  return 1
+                }
+            done <<< "${rows}"
+          }
+
+          assert_instance_dependency_graph() {
+            local expected_run="$1" instance_json actual_instance_text expected_instance_text
+            local interface_text volume_text interface_json volume_json instance_rows
+            local interface_rows volume_rows interface_count volume_count
+            local -a expected_instance_ids dependency_interface_ids dependency_volume_ids
+            shift
+            expected_instance_ids=("$@")
+            ((${#expected_instance_ids[@]} > 0)) || return 0
+
+            instance_json="$(aws ec2 describe-instances \
+              --instance-ids "${expected_instance_ids[@]}" --output json)"
+            actual_instance_text="$(jq -r '.Reservations[].Instances[].InstanceId' \
+              <<< "${instance_json}" | LC_ALL=C sort -u)"
+            expected_instance_text="$(printf '%s\n' "${expected_instance_ids[@]}" | LC_ALL=C sort -u)"
+            [ "${actual_instance_text}" = "${expected_instance_text}" ] || {
+              echo "::error::Could not re-read the exact candidate instance set for run ${expected_run}."
               return 1
+            }
+            instance_rows="$(jq -c '.Reservations[].Instances[]' <<< "${instance_json}")"
+            assert_identity_rows "${instance_rows}" "${expected_run}" instance
+
+            interface_text="$(jq -r \
+              '.Reservations[].Instances[].NetworkInterfaces[].NetworkInterfaceId' \
+              <<< "${instance_json}" | LC_ALL=C sort -u)"
+            volume_text="$(jq -r \
+              '.Reservations[].Instances[].BlockDeviceMappings[].Ebs.VolumeId' \
+              <<< "${instance_json}" | LC_ALL=C sort -u)"
+            split_text_array dependency_interface_ids "${interface_text}"
+            split_text_array dependency_volume_ids "${volume_text}"
+
+            if ((${#dependency_interface_ids[@]})); then
+              interface_json="$(aws ec2 describe-network-interfaces \
+                --network-interface-ids "${dependency_interface_ids[@]}" --output json)"
+              interface_count="$(jq '.NetworkInterfaces | length' <<< "${interface_json}")"
+              [ "${interface_count}" -eq "${#dependency_interface_ids[@]}" ] || {
+                  echo "::error::Could not re-read every ENI attached to run ${expected_run}."
+                  return 1
+                }
+              interface_rows="$(jq -c '.NetworkInterfaces[]' <<< "${interface_json}")"
+              assert_identity_rows "${interface_rows}" "${expected_run}" network-interface
+            fi
+            if ((${#dependency_volume_ids[@]})); then
+              volume_json="$(aws ec2 describe-volumes \
+                --volume-ids "${dependency_volume_ids[@]}" --output json)"
+              volume_count="$(jq '.Volumes | length' <<< "${volume_json}")"
+              [ "${volume_count}" -eq "${#dependency_volume_ids[@]}" ] || {
+                  echo "::error::Could not re-read every EBS volume attached to run ${expected_run}."
+                  return 1
+                }
+              volume_rows="$(jq -c '.Volumes[]' <<< "${volume_json}")"
+              assert_identity_rows "${volume_rows}" "${expected_run}" volume
             fi
           }
+
+          assert_address_association_identity() {
+            local allocation_id="$1" expected_run="$2" address_json address_row
+            local interface_json instance_json address_count interface_count instance_count
+            local interface_row instance_row
+            address_json="$(aws ec2 describe-addresses --allocation-ids "${allocation_id}" --output json)"
+            address_count="$(jq '.Addresses | length' <<< "${address_json}")"
+            [ "${address_count}" -eq 1 ] || {
+              echo "::error::Could not re-read EIP ${allocation_id}."
+              return 1
+            }
+            address_row="$(jq -c '.Addresses[0]' <<< "${address_json}")"
+            assert_identity_rows "${address_row}" "${expected_run}" elastic-ip
+            validated_association_id="$(jq -r '.AssociationId // ""' <<< "${address_row}")"
+            validated_interface_id="$(jq -r '.NetworkInterfaceId // ""' <<< "${address_row}")"
+            validated_instance_id="$(jq -r '.InstanceId // ""' <<< "${address_row}")"
+            [ -n "${validated_association_id}" ] || return 0
+            [ -n "${validated_interface_id}" ] || {
+              echo "::error::Associated EIP ${allocation_id} has no verifiable network interface."
+              return 1
+            }
+            interface_json="$(aws ec2 describe-network-interfaces \
+              --network-interface-ids "${validated_interface_id}" --output json)"
+            interface_count="$(jq '.NetworkInterfaces | length' <<< "${interface_json}")"
+            [ "${interface_count}" -eq 1 ] || return 1
+            interface_row="$(jq -c '.NetworkInterfaces[0]' <<< "${interface_json}")"
+            assert_identity_rows "${interface_row}" "${expected_run}" network-interface
+            if [ -n "${validated_instance_id}" ]; then
+              instance_json="$(aws ec2 describe-instances \
+                --instance-ids "${validated_instance_id}" --output json)"
+              instance_count="$(jq '[.Reservations[].Instances[]] | length' <<< "${instance_json}")"
+              [ "${instance_count}" -eq 1 ] || return 1
+              instance_row="$(jq -c '.Reservations[].Instances[0]' <<< "${instance_json}")"
+              assert_identity_rows "${instance_row}" "${expected_run}" instance
+            fi
+          }
+
+          deploy_workflow_id="$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/aws-deploy.yml" --jq '.id')"
 
           for source_run_id in "${candidate_runs[@]}"; do
             run_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${source_run_id}")"
@@ -242,10 +385,13 @@ jobs:
             filters=("${repository_filter}" "${stack_filter}" "${environment_filter}" "${run_filter}")
 
             instance_text="$(aws ec2 describe-instances \
-              --filters "${filters[@]}" "Name=instance-state-name,Values=pending,running,stopping,stopped" \
+              --filters "${filters[@]}" "Name=instance-state-name,Values=pending,running,stopping,stopped,shutting-down" \
               --query 'Reservations[].Instances[].InstanceId' --output text)"
             split_text_array instance_ids "${instance_text}"
             if ((${#instance_ids[@]})); then
+              assert_lifecycle_idle
+              assert_instance_dependency_graph "${source_run_id}" "${instance_ids[@]}"
+              assert_resource_graph
               assert_lifecycle_idle
               echo "Terminating run ${source_run_id} instance(s): ${instance_ids[*]}"
               aws ec2 terminate-instances --instance-ids "${instance_ids[@]}" > /dev/null
@@ -255,13 +401,18 @@ jobs:
             # EIPs can keep pre-created ENIs associated after instance termination. Disassociate
             # and release them first, then wait for every ENI to become independently deletable.
             address_json="$(aws ec2 describe-addresses --filters "${filters[@]}" --output json)"
-            address_rows="$(jq -r '.Addresses[]
-              | [.AllocationId, (.AssociationId // "-")] | @tsv' <<< "${address_json}")"
+            address_rows="$(jq -r '.Addresses[].AllocationId' <<< "${address_json}")"
             [ -z "${address_rows}" ] || assert_lifecycle_idle
-            while IFS=$'\t' read -r allocation_id association_id; do
+            while IFS= read -r allocation_id; do
               [ -n "${allocation_id}" ] || continue
-              if [ "${association_id}" != - ]; then
-                aws ec2 disassociate-address --association-id "${association_id}"
+              # Re-read and validate the current dependency graph on both sides of the lifecycle
+              # check. Never disassociate a run-tagged allocation from a fresh/foreign attachment.
+              assert_address_association_identity "${allocation_id}" "${source_run_id}"
+              assert_resource_graph
+              assert_lifecycle_idle
+              assert_address_association_identity "${allocation_id}" "${source_run_id}"
+              if [ -n "${validated_association_id}" ]; then
+                aws ec2 disassociate-address --association-id "${validated_association_id}"
               fi
 
               released=0
@@ -291,7 +442,10 @@ jobs:
             done
             interface_text="$(jq -r '.NetworkInterfaces[].NetworkInterfaceId' <<< "${interface_json}")"
             split_text_array interface_ids "${interface_text}"
-            ((${#interface_ids[@]} == 0)) || assert_lifecycle_idle
+            if ((${#interface_ids[@]})); then
+              assert_resource_graph
+              assert_lifecycle_idle
+            fi
             for interface_id in "${interface_ids[@]}"; do
               aws ec2 delete-network-interface --network-interface-id "${interface_id}"
             done
@@ -310,7 +464,10 @@ jobs:
             done
             volume_text="$(jq -r '.Volumes[].VolumeId' <<< "${volume_json}")"
             split_text_array volume_ids "${volume_text}"
-            ((${#volume_ids[@]} == 0)) || assert_lifecycle_idle
+            if ((${#volume_ids[@]})); then
+              assert_resource_graph
+              assert_lifecycle_idle
+            fi
             for volume_id in "${volume_ids[@]}"; do
               aws ec2 delete-volume --volume-id "${volume_id}"
             done
@@ -318,7 +475,10 @@ jobs:
             group_text="$(aws ec2 describe-security-groups --filters "${filters[@]}" \
               --query 'SecurityGroups[].GroupId' --output text)"
             split_text_array group_ids "${group_text}"
-            ((${#group_ids[@]} == 0)) || assert_lifecycle_idle
+            if ((${#group_ids[@]})); then
+              assert_resource_graph
+              assert_lifecycle_idle
+            fi
             for group_id in "${group_ids[@]}"; do
               deleted=0
               for delete_attempt in {1..6}; do
@@ -335,7 +495,10 @@ jobs:
             key_text="$(aws ec2 describe-key-pairs --filters "${filters[@]}" \
               --query 'KeyPairs[].KeyName' --output text)"
             split_text_array key_names "${key_text}"
-            ((${#key_names[@]} == 0)) || assert_lifecycle_idle
+            if ((${#key_names[@]})); then
+              assert_resource_graph
+              assert_lifecycle_idle
+            fi
             for key_name in "${key_names[@]}"; do
               aws ec2 delete-key-pair --key-name "${key_name}"
             done
@@ -345,7 +508,7 @@ jobs:
             deletion_verified=0
             for verify_attempt in {1..6}; do
               remaining_instance_text="$(aws ec2 describe-instances \
-                --filters "${filters[@]}" "Name=instance-state-name,Values=pending,running,stopping,stopped" \
+                --filters "${filters[@]}" "Name=instance-state-name,Values=pending,running,stopping,stopped,shutting-down" \
                 --query 'Reservations[].Instances[].InstanceId' --output text)"
               remaining_interface_text="$(aws ec2 describe-network-interfaces --filters "${filters[@]}" \
                 --query 'NetworkInterfaces[].NetworkInterfaceId' --output text)"
@@ -401,19 +564,9 @@ jobs:
             echo "Fallback completed safely, but ${owned_resource_count} repository-owned resource(s) remain inside the age window."
           fi
 
-          # Raw fallback deletion cannot safely force-unlock Terraform. Surface a stale lock for
-          # deliberate reconciliation instead of declaring the account healthy and failing later.
-          lock_key='nwarila-platform/windows-wsus/aws-poc.tfstate.tflock'
-          lock_json="$(aws s3api list-objects-v2 --bucket "${AWS_ACCOUNT_ID}-terraform" \
-            --prefix "${lock_key}" --output json)"
-          lock_exists="$(jq -r --arg key "${lock_key}" \
-            '[.Contents[]? | select(.Key == $key)] | length' <<< "${lock_json}")"
-          # Do not claim a clean sweep if a lifecycle started during the final AWS snapshot.
+          # Do not claim a clean sweep if a lifecycle or out-of-band Terraform holder appeared
+          # during the final AWS snapshot. Raw fallback deletion never force-unlocks Terraform.
           assert_lifecycle_idle
-          if [ "${lock_exists}" -ne 0 ]; then
-            echo "::error::Terraform lock remains after fallback cleanup; reconcile it before deploy."
-            exit 1
-          fi
 
           echo "performed=${sweep_performed}" >> "${GITHUB_OUTPUT}"
 
@@ -427,6 +580,8 @@ jobs:
       issues: write
     env:
       GH_TOKEN: ${{ github.token }}
+      INCIDENT_LABEL: automation-incident
+      INCIDENT_MARKER: '<!-- windows-wsus-automation:aws-reaper -->'
       INCIDENT_TITLE: '[automation] AWS reaper fallback failed'
       REAPER_RESULT: ${{ needs.aws-reaper.result }}
       SWEEP_PERFORMED: ${{ needs.aws-reaper.outputs.performed }}
@@ -436,10 +591,26 @@ jobs:
         run: |
           set -euo pipefail
 
-          issue_number="$(gh issue list --repo "${GITHUB_REPOSITORY}" --state all --limit 100 \
-            --search '"[automation] AWS reaper fallback failed" in:title' \
-            --json number,title \
-            --jq '[.[] | select(.title == "[automation] AWS reaper fallback failed")] | sort_by(.number) | .[0].number // empty')"
+          gh label create "${INCIDENT_LABEL}" --repo "${GITHUB_REPOSITORY}" --force \
+            --color B60205 --description 'Owned exclusively by recurring automation incidents' > /dev/null
+          issue_json="$(gh issue list --repo "${GITHUB_REPOSITORY}" --state all --limit 100 \
+            --label "${INCIDENT_LABEL}" --json number,title,body,author,state)"
+          mapfile -t issue_numbers < <(jq -r --arg title "${INCIDENT_TITLE}" \
+            --arg marker "${INCIDENT_MARKER}" '
+              [.[] | select(
+                .title == $title
+                and .author.login == "app/github-actions"
+                and ((.body // "") | contains($marker))
+              )] | sort_by(.number) | .[].number
+            ' <<< "${issue_json}")
+          issue_number="${issue_numbers[0]:-}"
+          for duplicate in "${issue_numbers[@]:1}"; do
+            if [ "$(gh issue view "${duplicate}" --repo "${GITHUB_REPOSITORY}" \
+              --json state --jq .state)" = OPEN ]; then
+              gh issue close "${duplicate}" --repo "${GITHUB_REPOSITORY}" --reason duplicate \
+                --comment "Deduplicated into automation-owned incident #${issue_number}."
+            fi
+          done
 
           if [ "${REAPER_RESULT}" = success ] && [ "${SWEEP_PERFORMED}" = true ]; then
             if [ -n "${issue_number}" ] && \
@@ -460,7 +631,8 @@ jobs:
           message="Fallback result: ${REAPER_RESULT}. Inspect ${RUN_URL}. Deletion fails closed."
           if [ -z "${issue_number}" ]; then
             gh issue create --repo "${GITHUB_REPOSITORY}" \
-              --title "${INCIDENT_TITLE}" --body "${message}"
+              --label "${INCIDENT_LABEL}" --title "${INCIDENT_TITLE}" \
+              --body "$(printf '%s\n\n%s' "${INCIDENT_MARKER}" "${message}")"
           else
             if [ "$(gh issue view "${issue_number}" --repo "${GITHUB_REPOSITORY}" --json state --jq .state)" = CLOSED ]; then
               gh issue reopen "${issue_number}" --repo "${GITHUB_REPOSITORY}"

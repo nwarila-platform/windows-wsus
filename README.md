@@ -1,5 +1,9 @@
 # windows-wsus
 
+[![CI](https://github.com/nwarila-platform/windows-wsus/actions/workflows/quality.yml/badge.svg?branch=main)](https://github.com/nwarila-platform/windows-wsus/actions/workflows/quality.yml)
+[![AWS lifecycle proof](https://github.com/nwarila-platform/windows-wsus/actions/workflows/aws-deploy.yml/badge.svg?branch=main)](https://github.com/nwarila-platform/windows-wsus/actions/workflows/aws-deploy.yml)
+[![IAM drift](https://github.com/nwarila-platform/windows-wsus/actions/workflows/iam-drift.yml/badge.svg?branch=main)](https://github.com/nwarila-platform/windows-wsus/actions/workflows/iam-drift.yml)
+
 Disposable AWS proof for a Windows Server 2025 WSUS server backed by Windows Internal Database
 (WID). The repository owns the application inputs and WSUS role; version-pinned platform
 frameworks own the Terraform and Ansible chassis.
@@ -10,8 +14,10 @@ The normal operating state is unattended:
 - every protected-`main` change and a weekly schedule provision one host, configure and verify it,
   run a second idempotence converge, destroy it, and prove cleanup;
 - an hourly, age-gated reaper is a fallback for interrupted lifecycles;
-- dependency and framework-pin automation opens grouped, reviewable pull requests; and
-- each automation class maintains one durable incident issue and closes it on recovery.
+- a daily read-only attestation proves live IAM still exactly equals the reviewed source;
+- Renovate and framework-pin automation open grouped, reviewable pull requests without
+  auto-merge; and
+- each recurring in-repository workflow maintains one durable incident issue and closes it on recovery.
 
 No AWS credential is available to pull-request code. The privileged lifecycle accepts only the
 protected `main` ref through its workflow guard and OIDC trust policy.
@@ -37,9 +43,11 @@ assurance boundary.
 | `ansible/playbooks/wsus-aws.yml` | Exact inventory preflight, Windows readiness, disk provisioning, and role invocation |
 | `terraform/aws.tfvars` | Data-only input for the pinned Terraform framework |
 | `.github/*-framework-pin` | Reviewed, immutable framework commit pins |
+| `.github/renovate.json5` | Thin review-only dependency policy extending the canonical org preset |
 | `.github/workflows/quality.yml` | Required credential-free source and composed-Ansible gate |
 | `.github/workflows/aws-deploy.yml` | Protected-main deploy, configure, verify, destroy lifecycle |
 | `.github/workflows/aws-reaper.yml` | Conservative fallback cleanup for old terminal runs |
+| `.github/workflows/iam-drift.yml` | Protected-main, read-only live IAM drift attestation |
 | `.github/workflows/pin-bump.yml` | Framework update discovery; opens one PR and never auto-merges |
 | `docs/reference/aws-iam/` | Reviewed IAM source documents and trust boundary |
 | `scripts/verify.sh` | Single local/CI verification entry point |
@@ -55,13 +63,20 @@ Run the same gate as CI with the exact versions in `quality-tools.env`,
 
 ```bash
 QUALITY_ANSIBLE_FRAMEWORK=/path/to/pinned/ansible-framework \
+  QUALITY_TERRAFORM_FRAMEWORK=/path/to/pinned/terraform-framework \
   QUALITY_REQUIRE_COMPOSED=1 \
+  QUALITY_REQUIRE_TERRAFORM=1 \
   ./scripts/verify.sh
 ```
 
-`QUALITY_ANSIBLE_FRAMEWORK` must be a checkout at the SHA in
-`.github/ansible-framework-pin`. CI installs the complete pinned toolchain and is the canonical
-clean-runner result.
+Both framework paths must be checkouts at the SHAs in `.github/ansible-framework-pin` and
+`.github/terraform-framework-pin`, respectively. CI installs the complete pinned toolchain and is
+the canonical clean-runner result.
+
+The installed organization Renovate app reads `.github/renovate.json5` after it lands on `main`.
+It groups the bounded GitHub Actions, Python, and Ansible Galaxy manifests for review while the
+framework updater exclusively owns `.github/*framework-pin`. Exact version/checksum tuples in
+`quality-tools.env` remain deliberate manual debt under TD-007.
 
 Do not run the Terraform deployment locally while a GitHub lifecycle is nonterminal. To run an
 on-demand proof, use **Actions → AWS Deploy → Run workflow** on `main`.
@@ -80,7 +95,11 @@ The bootstrap and playbook both derive the artifact bucket as `<account-id>-ansi
 legacy `BOOTSTRAP_ARTIFACT_BUCKET` value is accepted only when it equals that derived name.
 
 Apply IAM changes before merging a commit that depends on them. The first protected-main
-lifecycle is the acceptance test for that rollout.
+lifecycle is the acceptance test for that rollout. The daily attestation never self-applies; it
+updates one durable incident when any policy document, trust, attachment, inline-policy absence,
+role path, permissions-boundary or role-tag absence, session duration, named-profile path, or
+bidirectional instance-profile membership differs. Policy and instance-profile tags are not part
+of the attested metadata contract.
 
 ## Operating and support references
 
