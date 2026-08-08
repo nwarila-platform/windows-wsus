@@ -526,6 +526,55 @@
               }
           }
 
+          function Get-WsusAccessSslState([string]$location) {
+              $serverManager = [Microsoft.Web.Administration.ServerManager]::new()
+              try {
+                  $configuration = $serverManager.GetApplicationHostConfiguration()
+                  $section = $configuration.GetSection(
+                      'system.webServer/security/access', $location)
+                  if ($null -eq $section) {
+                      throw ('IIS returned no access section for ' + $location)
+                  }
+                  $attribute = $section.GetAttribute('sslFlags')
+                  if ($null -eq $attribute) {
+                      throw ('IIS returned no access.sslFlags attribute for ' + $location)
+                  }
+                  $value = $attribute.Value
+                  $valueText = '<null>'
+                  $valueType = '<null>'
+                  if ($null -ne $value) {
+                      $valueText = ([string]$value).Trim()
+                      $valueType = $value.GetType().FullName
+                  }
+                  return [pscustomobject]@{
+                      Location = $location
+                      Text = $valueText
+                      Type = $valueType
+                  }
+              } finally {
+                  [void]$serverManager.Dispose()
+              }
+          }
+
+          function Set-WsusAccessSslValue([string]$location, [string]$desiredValue) {
+              $serverManager = [Microsoft.Web.Administration.ServerManager]::new()
+              try {
+                  $configuration = $serverManager.GetApplicationHostConfiguration()
+                  $section = $configuration.GetSection(
+                      'system.webServer/security/access', $location)
+                  if ($null -eq $section) {
+                      throw ('IIS returned no access section for ' + $location)
+                  }
+                  if ($null -eq $section.GetAttribute('sslFlags')) {
+                      throw ('IIS returned no access.sslFlags attribute for ' + $location)
+                  }
+                  [void]$section.SetAttributeValue('sslFlags', $desiredValue)
+                  [void]$serverManager.CommitChanges()
+              } finally {
+                  [void]$serverManager.Dispose()
+              }
+          }
+
           function Repair-PreSslWsusApiAccess {
               # Microsoft requires these five WSUS web services to require SSL before
               # configuressl persists UsingSSL=1.  If a run is interrupted between those
@@ -541,32 +590,25 @@
               $repaired = $false
               foreach ($name in $sslRequiredVdirs) {
                   $location = $siteName + '/' + $name
-                  $value = (Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
-                      -Location $location -Filter 'system.webServer/security/access' `
-                      -Name 'sslFlags' -ErrorAction Stop).Value
-                  $text = [string]$value
-                  if ($text -ne 'None' -and $text -ne '0') {
-                      Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
-                          -Location $location -Filter 'system.webServer/security/access' `
-                          -Name 'sslFlags' -Value 0 -ErrorAction Stop | Out-Null
+                  $beforeWrite = Get-WsusAccessSslState $location
+                  if ($beforeWrite.Text -ne 'None' -and $beforeWrite.Text -ne '0') {
+                      Set-WsusAccessSslValue $location 'None'
+                      $afterWrite = Get-WsusAccessSslState $location
+                      if ($afterWrite.Text -ne 'None' -and $afterWrite.Text -ne '0') {
+                          throw ('pre-SSL WSUS API access rollback write did not persist at ' +
+                              $location + ': sslFlags=[' + $afterWrite.Text + '] type=[' +
+                              $afterWrite.Type + '] expected=[None|0]')
+                      }
                       $repaired = $true
                   }
               }
               foreach ($name in $sslRequiredVdirs) {
                   $location = $siteName + '/' + $name
-                  $value = (Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
-                      -Location $location -Filter 'system.webServer/security/access' `
-                      -Name 'sslFlags' -ErrorAction Stop).Value
-                  $text = [string]$value
-                  if ($text -ne 'None' -and $text -ne '0') {
-                      $valueType = if ($null -eq $value) {
-                          '<null>'
-                      } else {
-                          $value.GetType().FullName
-                      }
+                  $state = Get-WsusAccessSslState $location
+                  if ($state.Text -ne 'None' -and $state.Text -ne '0') {
                       throw ('pre-SSL WSUS API access rollback did not persist at ' +
-                          $location + ': sslFlags=[' + $text + '] type=[' + $valueType +
-                          '] expected=[None|0]')
+                          $location + ': sslFlags=[' + $state.Text + '] type=[' +
+                          $state.Type + '] expected=[None|0]')
                   }
               }
               return $repaired
@@ -2413,27 +2455,51 @@
             $changed = $false
 
             function Get-WsusAccessSslState([string]$location) {
-                $attribute = Get-WebConfigurationProperty `
-                    -PSPath 'MACHINE/WEBROOT/APPHOST' `
-                    -Location $location `
-                    -Filter 'system.webServer/security/access' `
-                    -Name 'sslFlags' `
-                    -ErrorAction Stop
-                if ($null -eq $attribute) {
-                    throw ('IIS returned no access.sslFlags attribute for ' + $location)
-                }
-                $value = $attribute.Value
-                if ($null -eq $value) {
+                $serverManager = [Microsoft.Web.Administration.ServerManager]::new()
+                try {
+                    $configuration = $serverManager.GetApplicationHostConfiguration()
+                    $section = $configuration.GetSection(
+                        'system.webServer/security/access', $location)
+                    if ($null -eq $section) {
+                        throw ('IIS returned no access section for ' + $location)
+                    }
+                    $attribute = $section.GetAttribute('sslFlags')
+                    if ($null -eq $attribute) {
+                        throw ('IIS returned no access.sslFlags attribute for ' + $location)
+                    }
+                    $value = $attribute.Value
+                    $valueText = '<null>'
+                    $valueType = '<null>'
+                    if ($null -ne $value) {
+                        $valueText = ([string]$value).Trim()
+                        $valueType = $value.GetType().FullName
+                    }
                     return [pscustomobject]@{
                         Location = $location
-                        Text = '<null>'
-                        Type = '<null>'
+                        Text = $valueText
+                        Type = $valueType
                     }
+                } finally {
+                    [void]$serverManager.Dispose()
                 }
-                return [pscustomobject]@{
-                    Location = $location
-                    Text = ([string]$value).Trim()
-                    Type = $value.GetType().FullName
+            }
+
+            function Set-WsusAccessSslValue([string]$location, [string]$desiredValue) {
+                $serverManager = [Microsoft.Web.Administration.ServerManager]::new()
+                try {
+                    $configuration = $serverManager.GetApplicationHostConfiguration()
+                    $section = $configuration.GetSection(
+                        'system.webServer/security/access', $location)
+                    if ($null -eq $section) {
+                        throw ('IIS returned no access section for ' + $location)
+                    }
+                    if ($null -eq $section.GetAttribute('sslFlags')) {
+                        throw ('IIS returned no access.sslFlags attribute for ' + $location)
+                    }
+                    [void]$section.SetAttributeValue('sslFlags', $desiredValue)
+                    [void]$serverManager.CommitChanges()
+                } finally {
+                    [void]$serverManager.Dispose()
                 }
             }
 
@@ -2462,15 +2528,9 @@
                     $location = 'WSUS Administration/' + $name
                     $beforeWrite = Get-WsusAccessSslState $location
                     if (Test-ExactRequiredSsl $beforeWrite) { continue }
-                    # system.webServer/security/access uses the Access SSL flag, where exact
-                    # Require SSL is numeric 8. This is distinct from an IIS binding's sslFlags.
-                    Set-WebConfigurationProperty `
-                        -PSPath 'MACHINE/WEBROOT/APPHOST' `
-                        -Location $location `
-                        -Filter 'system.webServer/security/access' `
-                        -Name 'sslFlags' `
-                        -Value 8 `
-                        -ErrorAction Stop | Out-Null
+                    # This is the access-section schema token, distinct from a binding's sslFlags.
+                    # Set, commit, dispose, then use a fresh ServerManager for authoritative proof.
+                    Set-WsusAccessSslValue $location 'Ssl'
                     $afterWrite = Get-WsusAccessSslState $location
                     if (-not (Test-ExactRequiredSsl $afterWrite)) {
                         throw ('IIS access.sslFlags write did not persist: ' +
@@ -2484,7 +2544,7 @@
 
             # Preserve Microsoft's IIS-before-configuressl ordering, and prove the exact access
             # flags immediately. A later pass repeats this after configuressl to close both the
-            # provider-coercion gap and the interrupted-transition recovery boundary.
+            # commit/readback gap and the interrupted-transition recovery boundary.
             if (Repair-WsusVdirsRequireSsl) {
                 $changed = $true
             }
@@ -2800,23 +2860,34 @@
                   (-not [string]::Equals([string]$setup.ServerCertificateName, $env:TLS_DNS_NAME, [System.StringComparison]::OrdinalIgnoreCase))) {
                   throw 'persisted WSUS SSL hostname or port differs from the desired TLS contract'
               }
-              foreach ($name in @('ApiRemoting30', 'ClientWebService', 'DSSAuthWebService', 'ServerSyncWebService', 'SimpleAuthWebService')) {
-                  $location = 'WSUS Administration/' + $name
-                  $attribute = Get-WebConfigurationProperty `
-                      -PSPath 'MACHINE/WEBROOT/APPHOST' `
-                      -Location $location `
-                      -Filter 'system.webServer/security/access' `
-                      -Name 'sslFlags' `
-                      -ErrorAction Stop
-                  if ($null -eq $attribute -or $null -eq $attribute.Value) {
-                      throw ('IIS returned no access.sslFlags value for ' + $location)
+              $serverManager = [Microsoft.Web.Administration.ServerManager]::new()
+              try {
+                  $configuration = $serverManager.GetApplicationHostConfiguration()
+                  foreach ($name in @('ApiRemoting30', 'ClientWebService', 'DSSAuthWebService', 'ServerSyncWebService', 'SimpleAuthWebService')) {
+                      $location = 'WSUS Administration/' + $name
+                      $section = $configuration.GetSection(
+                          'system.webServer/security/access', $location)
+                      if ($null -eq $section) {
+                          throw ('IIS returned no access section for ' + $location)
+                      }
+                      $attribute = $section.GetAttribute('sslFlags')
+                      if ($null -eq $attribute) {
+                          throw ('IIS returned no access.sslFlags attribute for ' + $location)
+                      }
+                      $value = $attribute.Value
+                      $flags = '<null>'
+                      $valueType = '<null>'
+                      if ($null -ne $value) {
+                          $flags = ([string]$value).Trim()
+                          $valueType = $value.GetType().FullName
+                      }
+                      if ($flags -ne 'Ssl' -and $flags -ne '8') {
+                          throw ($location + ' does not require exact SSL: sslFlags=[' + $flags +
+                              '] type=[' + $valueType + '] expected=[Ssl|8]')
+                      }
                   }
-                  $value = $attribute.Value
-                  $flags = ([string]$value).Trim()
-                  if ($flags -ne 'Ssl' -and $flags -ne '8') {
-                      throw ($location + ' does not require exact SSL: sslFlags=[' + $flags +
-                          '] type=[' + $value.GetType().FullName + '] expected=[Ssl|8]')
-                  }
+              } finally {
+                  [void]$serverManager.Dispose()
               }
           }
           if ([System.Convert]::ToBoolean($env:BOOTSTRAP_ENABLED)) {
