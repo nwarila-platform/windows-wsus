@@ -64,6 +64,22 @@ def named_task(name):
     return matches[0]
 
 
+def powershell_script(task):
+    """Return the sole inline PowerShell source regardless of safe transport."""
+    scripts = []
+    win_shell = task.get("ansible.windows.win_shell")
+    if isinstance(win_shell, str):
+        scripts.append(win_shell)
+    win_powershell = task.get("ansible.windows.win_powershell")
+    if isinstance(win_powershell, dict) and isinstance(win_powershell.get("script"), str):
+        scripts.append(win_powershell["script"])
+    if len(scripts) != 1:
+        raise AssertionError(
+            f"expected one inline PowerShell script in {task.get('name')!r}, found {len(scripts)}"
+        )
+    return scripts[0]
+
+
 def normalize(location, source_count, target_count):
     """Mirror the two safe pre-classification cleanup rules."""
     if location == "source" and source_count == 2 and target_count > 0:
@@ -71,6 +87,79 @@ def normalize(location, source_count, target_count):
     elif location == "absent" and source_count == 2 and target_count == 1:
         target_count = 0
     return source_count, target_count
+
+
+class PowerShellTransportContractTest(unittest.TestCase):
+    def test_remaining_win_shell_commands_stay_below_the_safe_createprocess_budget(self):
+        tasks = list(walk_tasks(yaml.safe_load(TASK_FILE.read_text(encoding="utf-8"))))
+        role_vars = named_task(ROLE_BLOCK_TASK)["vars"]
+        helpers = {
+            name: role_vars[name]
+            for name in (
+                "__wsus_api_invoker__",
+                "__wsus_https_listener_reconciler__",
+            )
+        }
+        input_encoding_prelude = (
+            "[Console]::InputEncoding = New-Object Text.UTF8Encoding `$false; "
+        )
+        fixed_command_headroom = 512
+        measurements = []
+
+        for task in tasks:
+            for module_name in (
+                "ansible.windows.win_shell",
+                "community.windows.win_shell",
+                "win_shell",
+            ):
+                module_value = task.get(module_name)
+                if module_value is None:
+                    continue
+                script = (
+                    module_value.get("cmd")
+                    if isinstance(module_value, dict)
+                    else module_value
+                )
+                self.assertIsInstance(
+                    script,
+                    str,
+                    f"unsupported {module_name} form in {task.get('name')}",
+                )
+                expanded = script
+                for helper_name, helper_source in helpers.items():
+                    expanded = expanded.replace(
+                        "{{ " + helper_name + " }}", helper_source
+                    )
+                    self.assertNotIn(
+                        helper_name,
+                        expanded,
+                        f"unexpanded shared helper in {task.get('name')}",
+                    )
+                self.assertNotIn("{{", expanded, task.get("name"))
+                self.assertNotIn("{%", expanded, task.get("name"))
+                payload_bytes = len(
+                    (input_encoding_prelude + expanded).encode("utf-16le")
+                )
+                encoded_characters = 4 * ((payload_bytes + 2) // 3)
+                conservative_command_characters = (
+                    encoded_characters + fixed_command_headroom
+                )
+                measurements.append(
+                    (conservative_command_characters, task.get("name"))
+                )
+                self.assertLess(
+                    conservative_command_characters,
+                    30_000,
+                    (
+                        f"{task.get('name')} expands to at least "
+                        f"{conservative_command_characters} command characters; "
+                        "use win_powershell instead of risking CreateProcessW rc206"
+                    ),
+                )
+
+        self.assertTrue(measurements)
+        largest = max(measurements)
+        self.assertEqual(largest[1], BOOTSTRAP_TASK)
 
 
 class SusdbStateTableTest(unittest.TestCase):
@@ -239,7 +328,7 @@ class WidServiceContractTest(unittest.TestCase):
             with self.subTest(sql_task=tasks[sql_connection_index].get("name")):
                 self.assertLess(service_index, sql_connection_index)
 
-        verifier = named_task(RUNTIME_VERIFY_TASK)["ansible.windows.win_shell"]
+        verifier = powershell_script(named_task(RUNTIME_VERIFY_TASK))
         self.assertIn("Get-CimInstance -ClassName Win32_Service", verifier)
         self.assertIn('Name = "MSSQL$MICROSOFT##WID"', verifier)
         self.assertIn("$widService.StartMode -ne 'Auto'", verifier)
@@ -294,7 +383,7 @@ class ContentStateContractTest(unittest.TestCase):
         self.assertEqual(acl_task["rights"], "FullControl")
         self.assertEqual(acl_task["inherit"], "ContainerInherit, ObjectInherit")
 
-        verify_script = named_task(RUNTIME_VERIFY_TASK)["ansible.windows.win_shell"]
+        verify_script = powershell_script(named_task(RUNTIME_VERIFY_TASK))
         for required in (
             "LocalContentCachePath",
             "ContentDir",
@@ -337,7 +426,7 @@ class BootstrapInvocationContractTest(unittest.TestCase):
     def test_runtime_verifier_recomputes_the_exact_bootstrap_fingerprint(self):
         bootstrap = named_task(BOOTSTRAP_TASK)
         task = named_task(RUNTIME_VERIFY_TASK)
-        script = task["ansible.windows.win_shell"]
+        script = powershell_script(task)
 
         self.assertIn("$expectedFingerprint", script)
         self.assertIn("$marker.category_bootstrap_fingerprint -ne $expectedFingerprint", script)
@@ -391,9 +480,15 @@ class WsusApiConnectionContractTest(unittest.TestCase):
         tasks = yaml.safe_load(TASK_FILE.read_text(encoding="utf-8"))
         actual_tasks = set()
         for task in walk_tasks(tasks):
-            script = task.get("ansible.windows.win_shell")
-            if not isinstance(script, str):
+            if not any(
+                module in task
+                for module in (
+                    "ansible.windows.win_shell",
+                    "ansible.windows.win_powershell",
+                )
+            ):
                 continue
+            script = powershell_script(task)
             self.assertNotIn("Get-WsusServer", script, task.get("name", "<unnamed>"))
             if "Invoke-LocalWsusApi" in script:
                 actual_tasks.add(task["name"])
@@ -418,7 +513,7 @@ class WsusPoolContractTest(unittest.TestCase):
         )
 
         verifier = named_task(RUNTIME_VERIFY_TASK)
-        script = verifier["ansible.windows.win_shell"]
+        script = powershell_script(verifier)
         for property_path in actor["attributes"]:
             with self.subTest(property_path=property_path):
                 self.assertIn(f"$pool.{property_path}", script)
@@ -451,7 +546,7 @@ class HttpsListenerContractTest(unittest.TestCase):
         }
         for task_name, expected_call in expected_calls.items():
             with self.subTest(task=task_name):
-                script = named_task(task_name)["ansible.windows.win_shell"]
+                script = powershell_script(named_task(task_name))
                 self.assertIn("Test-ServerAuthenticationEku", script)
                 self.assertIn("$extension.Oid.Value -ne '2.5.29.37'", script)
                 self.assertIn("$usage.Value -eq '1.3.6.1.5.5.7.3.1'", script)
@@ -464,8 +559,22 @@ class HttpsListenerContractTest(unittest.TestCase):
 
     def test_binding_converges_and_verifies_exact_wildcard_empty_host_listener(self):
         task = named_task(TLS_BINDING_TASK)
-        script = task["ansible.windows.win_shell"]
+        module = task["ansible.windows.win_powershell"]
+        script = module["script"]
 
+        self.assertEqual(module["error_action"], "stop")
+        self.assertNotIn("ansible.windows.win_shell", task)
+        self.assertNotIn("changed_when", task)
+        self.assertIn("$Ansible.Changed = $false", script)
+        self.assertIn("$Ansible.Changed = $changed", script)
+        self.assertLess(
+            script.index("$Ansible.Changed = $false"),
+            script.index("$changed = $false"),
+        )
+        self.assertLess(
+            script.index("$Ansible.Changed = $changed"),
+            script.index("if ($changed) { Write-Output 'changed'"),
+        )
         self.assertIn("$desiredBinding = '*:' + $port + ':'", script)
         self.assertIn("Get-WebBinding -Name $configuredSite.Name -ErrorAction Stop", script)
         self.assertNotIn(
@@ -527,11 +636,9 @@ class HttpsListenerContractTest(unittest.TestCase):
         self.assertNotIn("Start-Website", script)
         self.assertEqual(script.count("Write-Output 'changed'"), 1)
         self.assertEqual(script.count("Write-Output 'nochange'"), 1)
-        self.assertEqual(
-            task["changed_when"], "__tls_binding__.stdout | trim == 'changed'"
-        )
+        self.assertEqual(task["register"], "__tls_binding__")
 
-        verify_script = named_task(RUNTIME_VERIFY_TASK)["ansible.windows.win_shell"]
+        verify_script = powershell_script(named_task(RUNTIME_VERIFY_TASK))
         self.assertIn("$desiredBinding = '*:' + [int]$env:TLS_PORT + ':'", verify_script)
         self.assertIn("$siteBindings = @(Get-WebBinding", verify_script)
         self.assertIn("$desiredSiteBindings = @($siteBindings", verify_script)
@@ -732,8 +839,16 @@ class HttpsListenerContractTest(unittest.TestCase):
         self.assertLess(names.index(TLS_LISTENER_TASK), names.index(TLS_LIVE_TASK))
 
     def test_runtime_verifier_rechecks_site_start_and_auto_start_before_the_api(self):
-        script = named_task(RUNTIME_VERIFY_TASK)["ansible.windows.win_shell"]
+        task = named_task(RUNTIME_VERIFY_TASK)
+        module = task["ansible.windows.win_powershell"]
+        script = module["script"]
 
+        self.assertEqual(module["error_action"], "stop")
+        self.assertNotIn("ansible.windows.win_shell", task)
+        self.assertNotIn("changed_when", task)
+        self.assertEqual(script.splitlines()[0], "$ErrorActionPreference = 'Stop'")
+        self.assertEqual(script.splitlines()[1], "$Ansible.Changed = $false")
+        self.assertEqual(script.count("Write-Output 'healthy'"), 1)
         state_check = script.index("$wsusSiteState -ne 'Started'")
         api_helper = script.index("{{ __wsus_api_invoker__ }}")
         self.assertLess(state_check, api_helper)
