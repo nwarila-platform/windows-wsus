@@ -51,6 +51,58 @@
         | map('default', 0)
         | list
       }}
+    # wsusutil configuressl makes a bare Get-WsusServer follow the client-facing DNS name.
+    # Every API actor therefore goes through one process-scoped loopback connection primitive:
+    # pre-SSL it preserves the cmdlet's local default; post-SSL it uses Microsoft's explicit
+    # 127.0.0.1:port form and accepts only the certificate currently bound to that exact local
+    # listener. The caller's callback is restored even when the API operation fails. This keeps
+    # the role independent of external DNS and machine trust-store mutation on every converge.
+    __wsus_api_invoker__: |
+      function Invoke-LocalWsusApi {
+          param(
+              [Parameter(Mandatory = $true)]
+              [scriptblock]$Operation
+          )
+          $setupPath = 'HKLM:\SOFTWARE\Microsoft\Update Services\Server\Setup'
+          $setup = Get-ItemProperty -Path $setupPath -ErrorAction Stop
+          $usingSsl = [int]$setup.UsingSSL
+          if ($usingSsl -eq 0) {
+              $server = Get-WsusServer -ErrorAction Stop
+              return (& $Operation $server)
+          }
+          if ($usingSsl -ne 1) {
+              throw ('WSUS Setup UsingSSL must be 0 or 1, got [' + $setup.UsingSSL + ']')
+          }
+          $port = [int]$setup.PortNumber
+          if ($port -lt 1 -or $port -gt 65535) {
+              throw ('WSUS Setup PortNumber is invalid: [' + $setup.PortNumber + ']')
+          }
+          Import-Module WebAdministration
+          $bindingPath = 'IIS:\SslBindings\0.0.0.0!' + $port
+          $binding = Get-Item -LiteralPath $bindingPath -ErrorAction Stop
+          $boundThumbprint = ([string]$binding.Thumbprint).Replace(' ', '').ToUpperInvariant()
+          if ($boundThumbprint -notmatch '^[0-9A-F]{40}$') {
+              throw ('WSUS local HTTPS binding has an invalid certificate thumbprint: [' +
+                  $binding.Thumbprint + ']')
+          }
+          $previousCallback = [System.Net.ServicePointManager]::ServerCertificateValidationCallback
+          try {
+              $pinnedCallback = {
+                  param($sender, $certificate, $chain, $errors)
+                  if ($null -eq $certificate) { return $false }
+                  return [string]::Equals(
+                      $certificate.GetCertHashString().Replace(' ', ''),
+                      $boundThumbprint,
+                      [System.StringComparison]::OrdinalIgnoreCase)
+              }.GetNewClosure()
+              [System.Net.ServicePointManager]::ServerCertificateValidationCallback =
+                  [System.Net.Security.RemoteCertificateValidationCallback]$pinnedCallback
+              $server = Get-WsusServer -Name '127.0.0.1' -PortNumber $port -UseSsl -ErrorAction Stop
+              return (& $Operation $server)
+          } finally {
+              [System.Net.ServicePointManager]::ServerCertificateValidationCallback = $previousCallback
+          }
+      }
   block:
 
     #region ------ [ Main: WSUS Installation ] ---------------------------------------------- #
@@ -602,6 +654,9 @@
     - name: 'MAIN | Verify SUSDB Relocation Health'
       ansible.windows.win_shell: |
         $ErrorActionPreference = 'Stop'
+        {{ __wsus_api_invoker__ }}
+        Invoke-LocalWsusApi {
+        param($wsus)
         $conn = New-Object System.Data.SqlClient.SqlConnection($env:WID_CONN)
         try {
             $conn.Open()
@@ -625,8 +680,9 @@
         if ($state -ne 'ONLINE' -or $ro -ne 0 -or $files.Count -lt 2 -or $offTarget.Count -gt 0) {
             throw ("SUSDB is unsafe: state=$state readOnly=$ro files=$($files -join ';')")
         }
-        $null = Get-WsusServer
+        $null = $wsus
         Write-Output 'healthy'
+        }
       environment:
         WID_CONN: '{{ __wid_conn_master__ }}'
         WID_DATA_DIR: '{{ __wid_data_dir__ }}'
@@ -657,6 +713,9 @@
       ansible.windows.win_shell: |
         $ErrorActionPreference = 'Stop'
         Import-Module WebAdministration
+        {{ __wsus_api_invoker__ }}
+        Invoke-LocalWsusApi {
+        param($wsus)
 
         function Normalize-ContentPath([string]$path) {
             if ([string]::IsNullOrWhiteSpace($path)) {
@@ -676,7 +735,7 @@
         $setupPath = 'HKLM:\SOFTWARE\Microsoft\Update Services\Server\Setup'
         $contentVdirPath = 'IIS:\Sites\WSUS Administration\Content'
         $setupBefore = Get-ItemProperty -Path $setupPath -ErrorAction Stop
-        $cfgBefore = (Get-WsusServer).GetConfiguration()
+        $cfgBefore = $wsus.GetConfiguration()
         $registryBefore = Normalize-ContentPath ([string]$setupBefore.ContentDir)
         $apiBefore = Normalize-ContentPath ([string]$cfgBefore.LocalContentCachePath)
         $changed = $false
@@ -709,7 +768,7 @@
         }
 
         $setupAfter = Get-ItemProperty -Path $setupPath -ErrorAction Stop
-        $cfgAfter = (Get-WsusServer).GetConfiguration()
+        $cfgAfter = $wsus.GetConfiguration()
         $registryAfter = Normalize-ContentPath ([string]$setupAfter.ContentDir)
         $apiAfter = Normalize-ContentPath ([string]$cfgAfter.LocalContentCachePath)
         if (-not (Test-ContentPath $registryAfter $wantRoot) -or
@@ -732,6 +791,7 @@
         }
 
         if ($changed) { Write-Output 'changed' } else { Write-Output 'nochange' }
+        }
       environment:
         CONTENT_DIR: '{{ __content_dir__ }}'
       register: __wsus_content_location__
@@ -807,12 +867,15 @@
     - name: 'MAIN | Restrict WSUS Update Languages'
       ansible.windows.win_shell: |
         $ErrorActionPreference = 'Stop'
+        {{ __wsus_api_invoker__ }}
+        Invoke-LocalWsusApi {
+        param($wsus)
         $want = @($env:WSUS_LANGS.Split(',') | ForEach-Object { $_.Trim().ToLowerInvariant() } | Where-Object { $_ } | Select-Object -Unique)
         if ($want.Count -eq 0) {
             throw 'no update languages specified'
         }
         $wantSorted = @($want | Sort-Object)
-        $c = (Get-WsusServer).GetConfiguration()
+        $c = $wsus.GetConfiguration()
         $current = @(@($c.GetEnabledUpdateLanguages()) | ForEach-Object { ([string]$_).ToLowerInvariant() } | Sort-Object)
         $needChange = $c.AllUpdateLanguagesEnabled -or @(Compare-Object $current $wantSorted).Count -gt 0
         if ($needChange) {
@@ -821,7 +884,7 @@
             $c.AllUpdateLanguagesEnabled = $false
             $c.SetEnabledUpdateLanguages($sc)
             $c.Save()
-            $c2 = (Get-WsusServer).GetConfiguration()
+            $c2 = $wsus.GetConfiguration()
             $after = @(@($c2.GetEnabledUpdateLanguages()) | ForEach-Object { ([string]$_).ToLowerInvariant() } | Sort-Object)
             if ($c2.AllUpdateLanguagesEnabled -or @(Compare-Object $after $wantSorted).Count -gt 0) {
                 throw ('language restriction did not persist: got [' + ($after -join ',') + '] AllEnabled=' + $c2.AllUpdateLanguagesEnabled)
@@ -829,6 +892,7 @@
             Write-Output 'changed'
         } else {
             Write-Output 'nochange'
+        }
         }
       environment:
         WSUS_LANGS: '{{ config.sync.update_languages | join(",") }}'
@@ -841,16 +905,19 @@
     - name: 'MAIN | Configure Upstream WSUS Source'
       ansible.windows.win_shell: |
         $ErrorActionPreference = 'Stop'
+        {{ __wsus_api_invoker__ }}
+        Invoke-LocalWsusApi {
+        param($wsus)
         if ([string]::IsNullOrWhiteSpace($env:UPSTREAM_SERVER)) {
             throw 'upstream_server is required for a downstream topology: declare it in the wsus: override dict (config.upstream_server)'
         }
         $wantPort = [int]$env:UPSTREAM_PORT
         $wantSsl = [System.Convert]::ToBoolean($env:UPSTREAM_SSL)
         $wantReplica = [System.Convert]::ToBoolean($env:REPLICA)
-        $c = (Get-WsusServer).GetConfiguration()
+        $c = $wsus.GetConfiguration()
         $needChange = $c.SyncFromMicrosoftUpdate -or ($c.UpstreamWsusServerName -ne $env:UPSTREAM_SERVER) -or ($c.UpstreamWsusServerPortNumber -ne $wantPort) -or ($c.UpstreamWsusServerUseSsl -ne $wantSsl) -or ($c.IsReplicaServer -ne $wantReplica)
         if ($needChange) {
-            $sub = (Get-WsusServer).GetSubscription()
+            $sub = $wsus.GetSubscription()
             if ([string]$sub.GetSynchronizationStatus() -ne 'NotProcessing') {
                 $sub.StopSynchronization()
                 $stopDeadline = (Get-Date).AddSeconds(60)
@@ -867,13 +934,14 @@
             $c.UpstreamWsusServerUseSsl = $wantSsl
             $c.IsReplicaServer = $wantReplica
             $c.Save()
-            $c2 = (Get-WsusServer).GetConfiguration()
+            $c2 = $wsus.GetConfiguration()
             if ($c2.SyncFromMicrosoftUpdate -or ($c2.UpstreamWsusServerName -ne $env:UPSTREAM_SERVER) -or ($c2.UpstreamWsusServerPortNumber -ne $wantPort) -or ($c2.UpstreamWsusServerUseSsl -ne $wantSsl) -or ($c2.IsReplicaServer -ne $wantReplica)) {
                 throw ('upstream source did not persist: SyncFromMU=' + $c2.SyncFromMicrosoftUpdate + ' upstream=[' + $c2.UpstreamWsusServerName + '] port=' + $c2.UpstreamWsusServerPortNumber + ' ssl=' + $c2.UpstreamWsusServerUseSsl + ' replica=' + $c2.IsReplicaServer)
             }
             Write-Output 'changed'
         } else {
             Write-Output 'nochange'
+        }
         }
       environment:
         UPSTREAM_SERVER: '{{ config.upstream_server | default("") | string | trim }}'
@@ -910,7 +978,9 @@
       when: config.sync.bootstrap_enabled | bool
       ansible.windows.win_shell: |
         $ErrorActionPreference = 'Stop'
-        $w = Get-WsusServer
+        {{ __wsus_api_invoker__ }}
+        Invoke-LocalWsusApi {
+        param($w)
         $s = $w.GetSubscription()
         $cfg = $w.GetConfiguration()
         $serverId = [string]$cfg.ServerId
@@ -1017,6 +1087,7 @@
         # under an older source/language contract look current.
         New-ItemProperty -Path $key -Name 'category_bootstrap_fingerprint' -Value $fingerprint -PropertyType String -Force | Out-Null
         Write-Output 'changed'
+        }
       environment:
         ACCEPT_TIMEOUT: '{{ config.sync.bootstrap_accept_timeout_sec }}'
         COMPLETION_TIMEOUT: '{{ config.sync.bootstrap_completion_timeout_sec }}'
@@ -1470,37 +1541,6 @@
             TLS_THUMBPRINT: '{{ __tls_thumbprint__ }}'
           changed_when: false
 
-        # The ephemeral proof host is its own only client: after configuressl the WSUS console
-        # and the health verify connect to https://<dns_name>:<tls_port>, so the box must
-        # resolve the service name locally and trust its own self-signed leaf. Distributing
-        # trust to real clients stays out of scope.
-        - name: 'MAIN | Resolve The WSUS Service Name To The Local Host'
-          community.windows.win_hosts:
-            canonical_name: '{{ config.tls.dns_name }}'
-            ip_address: '127.0.0.1'
-            state: present
-
-        - name: 'MAIN | Trust The Self-Signed Service Certificate Locally'
-          ansible.windows.win_shell: |
-            $ErrorActionPreference = 'Stop'
-            $cert = Get-Item (Join-Path 'Cert:\LocalMachine\My' $env:TLS_THUMBPRINT) -ErrorAction Stop
-            if ($cert.Subject -ne $cert.Issuer) {
-                Write-Output 'ca-issued'
-                return
-            }
-            if (Test-Path (Join-Path 'Cert:\LocalMachine\Root' $env:TLS_THUMBPRINT)) {
-                Write-Output 'trusted'
-                return
-            }
-            $store = New-Object System.Security.Cryptography.X509Certificates.X509Store('Root', 'LocalMachine')
-            $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
-            try { $store.Add($cert) } finally { $store.Close() }
-            Write-Output 'changed'
-          environment:
-            TLS_THUMBPRINT: '{{ __tls_thumbprint__ }}'
-          register: __tls_local_trust__
-          changed_when: "__tls_local_trust__.stdout | trim == 'changed'"
-
         - name: 'MAIN | Bind The Pinned Certificate To The WSUS HTTPS Endpoint'
           ansible.windows.win_shell: |
             $ErrorActionPreference = 'Stop'
@@ -1689,6 +1729,9 @@
       ansible.windows.win_shell: |
         $ErrorActionPreference = 'Stop'
         Import-Module WebAdministration
+        {{ __wsus_api_invoker__ }}
+        Invoke-LocalWsusApi {
+        param($wsus)
         $widService = Get-CimInstance -ClassName Win32_Service -Filter 'Name = "MSSQL$MICROSOFT##WID"' -ErrorAction Stop
         if ($widService.StartMode -ne 'Auto' -or $widService.State -ne 'Running') {
             throw ('MSSQL$MICROSOFT##WID must be Automatic and Running; startup=' +
@@ -1701,7 +1744,6 @@
         foreach ($path in @($env:CONTENT_DIR, $env:WID_DATA_DIR, $env:IIS_LOG_DIR, $env:IIS_WWWROOT)) {
             if (-not (Test-Path -LiteralPath $path -PathType Container)) { throw "required directory is absent: $path" }
         }
-        $wsus = Get-WsusServer
         $cfg = $wsus.GetConfiguration()
         function Normalize-ContractPath([string]$path) {
             if ([string]::IsNullOrWhiteSpace($path)) { return '' }
@@ -1882,6 +1924,7 @@
             }
         }
         Write-Output 'healthy'
+        }
       environment:
         CONTENT_DIR: '{{ __content_dir__ }}'
         WID_DATA_DIR: '{{ __wid_data_dir__ }}'

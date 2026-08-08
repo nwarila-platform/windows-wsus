@@ -116,7 +116,10 @@ treated as unrestricted. It binds the exact leaf to one wildcard, empty-host `*:
 with non-SNI `sslFlags=0`, completes an HTTPS request to the WSUS client endpoint with the intended
 SNI and Host header, and removes staging material in an `always` path. The machine-store probe and
 independent final verifier enforce the same EKU contract; a converged target does not redeliver the
-PFX on the second pass.
+PFX on the second pass. Once `configuressl` is active, management API calls use the supported
+loopback HTTPS endpoint under a process-local callback pinned to the certificate currently bound
+to that listener. The role never writes a hosts-file override or a machine trust anchor; client
+DNS and trust distribution remain external responsibilities.
 
 The final verifier independently checks WID's Automatic/Running service contract and the WSUS/IIS
 service state, the registry/API/IIS content-path triple and required content ACLs, application paths,

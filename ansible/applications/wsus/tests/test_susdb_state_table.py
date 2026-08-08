@@ -8,6 +8,7 @@ import yaml
 
 
 TASK_FILE = Path(__file__).parents[1] / "tasks" / "present_windows.yml"
+ROLE_BLOCK_TASK = "INFO | Entering OS Tasks (present_windows - wsus)"
 WID_SERVICE_TASK = "MAIN | Ensure WID Service Is Automatic And Running Before SUSDB Probes"
 PREPOST_CLASSIFIER_TASK = "MAIN | Classify The Pre-Postinstall SUSDB Action"
 PREPOST_GUARD_TASK = "MAIN | Refuse Ambiguous SUSDB Authority Before Post-Installation Repair"
@@ -19,6 +20,8 @@ SUSDB_CLEANUP_TASK = "MAIN | Remove SUSDB Originals From System Volume"
 CONTENT_RECONCILE_TASK = "MAIN | Reconcile The WSUS Content Location"
 CONTENT_USERS_ACL_TASK = "MAIN | Grant Users Browse Access On The Content Root"
 CONTENT_ACL_TASK = "MAIN | Grant WSUS Service Rights On The Content Cache"
+LANGUAGE_TASK = "MAIN | Restrict WSUS Update Languages"
+UPSTREAM_TASK = "MAIN | Configure Upstream WSUS Source"
 BOOTSTRAP_TASK = "MAIN | Bootstrap WSUS Category Sync To Terminal Success"
 WSUSPOOL_TASK = "MAIN | Tune WsusPool Application Pool"
 TLS_STORE_PROBE_TASK = "MAIN | Probe The Pinned Certificate In The Machine Store"
@@ -345,6 +348,54 @@ class BootstrapInvocationContractTest(unittest.TestCase):
             "[string]::IsNullOrWhiteSpace($marker.category_bootstrap_fingerprint)",
             script,
         )
+
+
+class WsusApiConnectionContractTest(unittest.TestCase):
+    def test_persisted_ssl_uses_a_process_scoped_pinned_loopback_session(self):
+        helper = named_task(ROLE_BLOCK_TASK)["vars"]["__wsus_api_invoker__"]
+        source = TASK_FILE.read_text(encoding="utf-8")
+
+        self.assertIn("$usingSsl = [int]$setup.UsingSSL", helper)
+        self.assertIn("if ($usingSsl -eq 0)", helper)
+        self.assertIn("IIS:\\SslBindings\\0.0.0.0!", helper)
+        self.assertIn("$boundThumbprint -notmatch '^[0-9A-F]{40}$'", helper)
+        self.assertIn("$certificate.GetCertHashString().Replace(' ', '')", helper)
+        self.assertIn("}.GetNewClosure()", helper)
+        self.assertIn("[System.Net.Security.RemoteCertificateValidationCallback]$pinnedCallback", helper)
+        self.assertIn(
+            "Get-WsusServer -Name '127.0.0.1' -PortNumber $port -UseSsl -ErrorAction Stop",
+            helper,
+        )
+        self.assertIn("} finally {", helper)
+        self.assertIn(
+            "[System.Net.ServicePointManager]::ServerCertificateValidationCallback = $previousCallback",
+            helper,
+        )
+        self.assertNotIn("win_hosts", source)
+        self.assertNotIn("LocalMachine\\Root", source)
+        self.assertNotIn("X509Store('Root', 'LocalMachine')", source)
+
+    def test_every_wsus_api_actor_uses_the_shared_session_and_no_direct_cmdlet(self):
+        expected_tasks = {
+            SUSDB_HEALTH_TASK,
+            CONTENT_RECONCILE_TASK,
+            LANGUAGE_TASK,
+            UPSTREAM_TASK,
+            BOOTSTRAP_TASK,
+            RUNTIME_VERIFY_TASK,
+        }
+        tasks = yaml.safe_load(TASK_FILE.read_text(encoding="utf-8"))
+        actual_tasks = set()
+        for task in walk_tasks(tasks):
+            script = task.get("ansible.windows.win_shell")
+            if not isinstance(script, str):
+                continue
+            self.assertNotIn("Get-WsusServer", script, task.get("name", "<unnamed>"))
+            if "Invoke-LocalWsusApi" in script:
+                actual_tasks.add(task["name"])
+                self.assertIn("{{ __wsus_api_invoker__ }}", script)
+
+        self.assertEqual(actual_tasks, expected_tasks)
 
 
 class WsusPoolContractTest(unittest.TestCase):
