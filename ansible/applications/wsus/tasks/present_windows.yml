@@ -106,7 +106,8 @@
     # The persisted WSUS SSL mode determines whether API actors need the HTTPS listener now.
     # Run this primitive before the first actor so a drifted post-SSL host can repair itself, and
     # again immediately after configuressl so a fresh transition to SSL activates before proof.
-    # UsingSSL=0 is intentionally a no-op: the binding and certificate do not exist yet.
+    # UsingSSL=0 repairs only the existing HTTP runtime so an interrupted TLS transition cannot
+    # strand the next converge before its API actors; HTTPS binding/certificate work stays gated.
     __wsus_https_listener_reconciler__: |
       function Invoke-LocalWsusHttpsListenerReconcile {
           $setupPath = 'HKLM:\SOFTWARE\Microsoft\Update Services\Server\Setup'
@@ -116,10 +117,6 @@
               throw ('WSUS Setup UsingSSL must be 0 or 1, got [' + $setup.UsingSSL + ']')
           }
           $usingSsl = [int]$usingSslText
-          if ($usingSsl -eq 0) {
-              Write-Output 'nochange'
-              return
-          }
 
           $portText = [string]$setup.PortNumber
           if ($portText -notmatch '^[0-9]{1,5}$') {
@@ -129,7 +126,6 @@
           if ($port -lt 1 -or $port -gt 65535) {
               throw ('WSUS Setup PortNumber is invalid: [' + $setup.PortNumber + ']')
           }
-
           Import-Module WebAdministration
           $siteName = 'WSUS Administration'
           $sitePath = Join-Path 'IIS:\Sites' $siteName
@@ -141,6 +137,380 @@
 
           function Get-WsusSiteState {
               return [string](Get-WebItemState -PSPath $sitePath -ErrorAction Stop).Value
+          }
+
+          function Get-IisBindingsAtPort([int]$listenerPort) {
+              $records = @()
+              foreach ($configuredSite in @(Get-Website -ErrorAction Stop)) {
+                  foreach ($configuredBinding in @(Get-WebBinding -Name $configuredSite.Name -ErrorAction Stop)) {
+                      $bindingInformation = [string]$configuredBinding.bindingInformation
+                      # HTTP(S) uses ip:port:host.  Match from the right so bracketed or bare IPv6
+                      # addresses cannot move the port field; retain a fallback for other IIS
+                      # protocols whose bindingInformation begins with the numeric port.
+                      $portMatch = [regex]::Match(
+                          $bindingInformation,
+                          '^(?<address>.*):(?<port>[0-9]{1,5}):(?<host>.*)$'
+                      )
+                      if (-not $portMatch.Success) {
+                          $portMatch = [regex]::Match($bindingInformation, '^(?<port>[0-9]{1,5})(?::|$)')
+                      }
+                      if ($portMatch.Success -and [int]$portMatch.Groups['port'].Value -eq $listenerPort) {
+                          $records += [pscustomobject]@{
+                              Site = [string]$configuredSite.Name
+                              Protocol = [string]$configuredBinding.protocol
+                              BindingInformation = $bindingInformation
+                              Port = [int]$portMatch.Groups['port'].Value
+                              SslFlags = [string]$configuredBinding.sslFlags
+                          }
+                      }
+                  }
+              }
+              return @($records)
+          }
+
+          function Assert-WsusPortExclusive([int]$listenerPort) {
+              $portBindings = @(Get-IisBindingsAtPort $listenerPort)
+              $foreign = @($portBindings | Where-Object {
+                  -not [string]::Equals($_.Site, $siteName, [System.StringComparison]::OrdinalIgnoreCase)
+              })
+              if ($foreign.Count -gt 0) {
+                  $owners = @($foreign | ForEach-Object {
+                      $_.Site + '|' + $_.Protocol + '|' + $_.BindingInformation + '|sslFlags=' + $_.SslFlags
+                  })
+                  throw ('target WSUS port is owned by another IIS site; refusing mutation/start: port=' +
+                      $listenerPort + ' foreignBindings=[' + ($owners -join ';') + ']')
+              }
+          }
+
+          function Test-WsusOwnedPortBindingsNormalized([int]$listenerPort) {
+              $portBindings = @(Get-IisBindingsAtPort $listenerPort)
+              $owned = @($portBindings | Where-Object {
+                  [string]::Equals($_.Site, $siteName, [System.StringComparison]::OrdinalIgnoreCase)
+              })
+              $desiredBinding = '*:' + $listenerPort + ':'
+              $desired = @($owned | Where-Object {
+                  [string]::Equals($_.Protocol, 'https', [System.StringComparison]::OrdinalIgnoreCase) -and
+                  [string]::Equals($_.BindingInformation, $desiredBinding, [System.StringComparison]::Ordinal)
+              })
+              return $owned.Count -eq 1 -and $desired.Count -eq 1 -and
+                  [int]($desired[0].SslFlags) -eq 0
+          }
+
+          function Stop-WsusWebsiteBounded([string]$reason) {
+              $stopIssued = $false
+              for ($attempt = 0; $attempt -lt 20; $attempt++) {
+                  $currentState = Get-WsusSiteState
+                  if ($currentState -eq 'Stopped') {
+                      return
+                  }
+                  if ($currentState -eq 'Started' -and -not $stopIssued) {
+                      Stop-Website -Name $siteName -ErrorAction Stop | Out-Null
+                      $stopIssued = $true
+                  } elseif ($currentState -ne 'Started' -and
+                      $currentState -ne 'Starting' -and $currentState -ne 'Stopping') {
+                      throw ('WSUS IIS site has an unsafe state while stopping for ' +
+                          $reason + ': ' + $currentState)
+                  }
+                  Start-Sleep -Milliseconds 500
+              }
+              throw ('WSUS IIS site did not stop within 10 seconds for ' + $reason +
+                  '; state=' + (Get-WsusSiteState))
+          }
+
+          function Get-OrRepairCurrentSslMapping([int]$listenerPort) {
+              $sslPath = 'IIS:\SslBindings\0.0.0.0!' + $listenerPort
+              $bound = Get-Item $sslPath -ErrorAction SilentlyContinue
+              if ($bound) {
+                  $currentThumbprint = ([string]$bound.Thumbprint).Replace(' ', '').ToUpperInvariant()
+                  if ($currentThumbprint -match '^[0-9A-F]{40}$') {
+                      $certificatePath = Join-Path 'Cert:\LocalMachine\My' $currentThumbprint
+                      $certificate = Get-Item $certificatePath -ErrorAction SilentlyContinue
+                      if ($certificate -and $certificate.HasPrivateKey) {
+                          # Preserve the currently serving certificate here.  It may intentionally
+                          # be the old leaf during a reviewed rotation; the later artifact-backed
+                          # transaction moves the endpoint to the new configured pin.
+                          return [pscustomobject]@{
+                              Path = $sslPath
+                              Thumbprint = $currentThumbprint
+                              Certificate = $certificate
+                              Changed = $false
+                          }
+                      }
+                  }
+              }
+
+              # A missing/broken map can be recovered without weakening trust when the exact
+              # reviewed leaf is already present with its private key. This covers interruption
+              # after an earlier provider-map removal. If the trusted leaf is also absent, fail
+              # closed; artifact delivery remains the only authority that may restore it.
+              $recoveryThumbprint = '{{ config.tls.thumbprint | trim | upper }}'
+              if ($recoveryThumbprint -notmatch '^[0-9A-F]{40}$') {
+                  throw ('configured TLS recovery thumbprint is invalid: [' + $recoveryThumbprint + ']')
+              }
+              $recoveryPath = Join-Path 'Cert:\LocalMachine\My' $recoveryThumbprint
+              $recoveryCertificate = Get-Item $recoveryPath -ErrorAction SilentlyContinue
+              if (-not $recoveryCertificate -or -not $recoveryCertificate.HasPrivateKey) {
+                  throw ('current SSL mapping is unusable and the exact pinned recovery leaf with ' +
+                      'a private key is absent: mapping=' + $sslPath + ' certificate=' + $recoveryPath)
+              }
+
+              Assert-WsusPortExclusive $listenerPort
+              Stop-WsusWebsiteBounded 'pre-API SSL mapping recovery'
+              Assert-WsusPortExclusive $listenerPort
+              $bound = Get-Item $sslPath -ErrorAction SilentlyContinue
+              if ($bound) {
+                  Remove-Item $sslPath -ErrorAction Stop
+              }
+              Assert-WsusPortExclusive $listenerPort
+              New-Item $sslPath -Value $recoveryCertificate | Out-Null
+              Assert-WsusPortExclusive $listenerPort
+              $verify = Get-Item $sslPath -ErrorAction Stop
+              if (-not [string]::Equals(
+                  [string]$verify.Thumbprint,
+                  $recoveryThumbprint,
+                  [System.StringComparison]::OrdinalIgnoreCase
+              )) {
+                  throw ('pre-API SSL mapping recovery did not persist thumbprint ' +
+                      $recoveryThumbprint)
+              }
+              return [pscustomobject]@{
+                  Path = $sslPath
+                  Thumbprint = $recoveryThumbprint
+                  Certificate = $recoveryCertificate
+                  Changed = $true
+              }
+          }
+
+          function Repair-WsusOwnedPortBindings([int]$listenerPort) {
+              Assert-WsusPortExclusive $listenerPort
+              if (Test-WsusOwnedPortBindingsNormalized $listenerPort) {
+                  return $false
+              }
+
+              $mapping = Get-OrRepairCurrentSslMapping $listenerPort
+
+              # This role owns only the target-port bindings on its own site.  Normalize that
+              # drift while the site is stopped; a foreign site's ownership remains fail-closed.
+              Stop-WsusWebsiteBounded 'owned target-port binding repair'
+              Assert-WsusPortExclusive $listenerPort
+
+              $owned = @(Get-IisBindingsAtPort $listenerPort | Where-Object {
+                  [string]::Equals($_.Site, $siteName, [System.StringComparison]::OrdinalIgnoreCase)
+              })
+              foreach ($ownedBinding in $owned) {
+                  Remove-WebBinding -Name $siteName -Protocol $ownedBinding.Protocol `
+                      -BindingInformation $ownedBinding.BindingInformation -ErrorAction Stop `
+                      -Confirm:$false | Out-Null
+              }
+              New-WebBinding -Name $siteName -Protocol https -Port $listenerPort `
+                  -IPAddress '*' -SslFlags 0 | Out-Null
+
+              # Binding recreation may discard the provider mapping.  Restore the exact mapping
+              # from the validated pre-mutation certificate and prove it before any site start.
+              $boundAfter = Get-Item $mapping.Path -ErrorAction SilentlyContinue
+              if (-not $boundAfter -or -not [string]::Equals(
+                  [string]$boundAfter.Thumbprint,
+                  $mapping.Thumbprint,
+                  [System.StringComparison]::OrdinalIgnoreCase
+              )) {
+                  if ($boundAfter) {
+                      Assert-WsusPortExclusive $listenerPort
+                      Remove-Item $mapping.Path -ErrorAction Stop
+                  }
+                  Assert-WsusPortExclusive $listenerPort
+                  New-Item $mapping.Path -Value $mapping.Certificate | Out-Null
+              }
+              Assert-WsusPortExclusive $listenerPort
+              $verifyMapping = Get-Item $mapping.Path -ErrorAction Stop
+              if (-not [string]::Equals(
+                  [string]$verifyMapping.Thumbprint,
+                  $mapping.Thumbprint,
+                  [System.StringComparison]::OrdinalIgnoreCase
+              )) {
+                  throw ('WSUS-owned binding repair did not preserve SSL thumbprint ' + $mapping.Thumbprint)
+              }
+
+              Assert-WsusPortExclusive $listenerPort
+              if (-not (Test-WsusOwnedPortBindingsNormalized $listenerPort)) {
+                  $actual = @(Get-IisBindingsAtPort $listenerPort | Where-Object {
+                      [string]::Equals($_.Site, $siteName, [System.StringComparison]::OrdinalIgnoreCase)
+                  } | ForEach-Object {
+                      $_.Site + '|' + $_.Protocol + '|' + $_.BindingInformation + '|sslFlags=' + $_.SslFlags
+                  })
+                  throw ('WSUS-owned target-port binding repair did not persist: [' + ($actual -join ';') + ']')
+              }
+              return $true
+          }
+
+          function Limit-DiagnosticText($value, [int]$maxLength) {
+              $text = ([string]$value -replace '[\r\n\t]+', ' ').Trim()
+              if ($text.Length -le $maxLength) {
+                  return $text
+              }
+              $omitted = $text.Length - $maxLength
+              return ($text.Substring(0, $maxLength) + '...[truncated ' + $omitted + ' chars]')
+          }
+
+          function Format-ExceptionChain([System.Exception]$exception) {
+              $parts = @()
+              $current = $exception
+              while ($null -ne $current) {
+                  $signedHResult = [int64]$current.HResult
+                  $unsignedHResult = $signedHResult -band 4294967295
+                  $parts += ($current.GetType().FullName + '|hresult=' + $signedHResult +
+                      '|hex=' + ('0x{0:X8}' -f $unsignedHResult) + '|message=' +
+                      (Limit-DiagnosticText $current.Message 512))
+                  $current = $current.InnerException
+              }
+              return ($parts -join ' -> ')
+          }
+
+          function Invoke-NetshCapture([string[]]$netshArguments) {
+              $netsh = Join-Path $env:SystemRoot 'System32\netsh.exe'
+              $savedPreference = $ErrorActionPreference
+              try {
+                  $ErrorActionPreference = 'Continue'
+                  $output = @(& $netsh $netshArguments 2>&1)
+                  $exitCode = $LASTEXITCODE
+              } finally {
+                  $ErrorActionPreference = $savedPreference
+              }
+              return [pscustomobject]@{
+                  ExitCode = $exitCode
+                  Text = (($output | ForEach-Object { [string]$_ }) -join ' ').Trim()
+              }
+          }
+
+          function Test-HttpSysPortRegistration([string]$serviceState, [int]$listenerPort) {
+              $pattern = '(?i)https?://[^\s]*:' + [regex]::Escape([string]$listenerPort) + '(?:/|\s|$)'
+              return [regex]::IsMatch($serviceState, $pattern)
+          }
+
+          function Test-AlreadyExistsHResult([System.Exception]$exception) {
+              $current = $exception
+              while ($null -ne $current) {
+                  if ([int64]$current.HResult -eq -2147024713) {
+                      return $true
+                  }
+                  $current = $current.InnerException
+              }
+              return $false
+          }
+
+          function Get-WsusListenerFailureDetails([int]$listenerPort) {
+              $allBindings = @()
+              foreach ($configuredSite in @(Get-Website -ErrorAction SilentlyContinue)) {
+                  foreach ($configuredBinding in @(Get-WebBinding -Name $configuredSite.Name -ErrorAction SilentlyContinue)) {
+                      $allBindings += ($configuredSite.Name + '|' + [string]$configuredBinding.protocol + '|' +
+                          [string]$configuredBinding.bindingInformation + '|sslFlags=' +
+                          [string]$configuredBinding.sslFlags)
+                  }
+              }
+              $ssl = Invoke-NetshCapture @('http', 'show', 'sslcert', ('ipport=0.0.0.0:' + $listenerPort))
+              $ipListen = Invoke-NetshCapture @('http', 'show', 'iplisten')
+              $serviceState = Invoke-NetshCapture @('http', 'show', 'servicestate', 'view=requestq', 'verbose=yes')
+              $events = @(
+                  Get-WinEvent -FilterHashtable @{
+                      LogName = 'System'
+                      StartTime = (Get-Date).AddMinutes(-15)
+                  } -ErrorAction SilentlyContinue |
+                      Where-Object { [string]$_.ProviderName -match '(?i)(WAS|W3SVC|HttpEvent)' } |
+                      Select-Object -First 12 |
+                      ForEach-Object {
+                          ([string]$_.TimeCreated + '|' + [string]$_.ProviderName + '|' +
+                              [string]$_.Id + '|' + (Limit-DiagnosticText $_.Message 512))
+                      }
+              )
+              $w3svcState = [string](Get-Service -Name W3SVC -ErrorAction SilentlyContinue).Status
+              return ('siteState=' + (Get-WsusSiteState) + ' port=' + $listenerPort +
+                  ' W3SVC=' + $w3svcState + ' allBindings=[' +
+                  (Limit-DiagnosticText ($allBindings -join ';') 2048) +
+                  '] httpSysSsl=[exitCode=' + $ssl.ExitCode + ' ' + (Limit-DiagnosticText $ssl.Text 2048) +
+                  '] httpSysIpListen=[exitCode=' + $ipListen.ExitCode + ' ' +
+                  (Limit-DiagnosticText $ipListen.Text 2048) +
+                  '] httpSysServiceState=[exitCode=' + $serviceState.ExitCode + ' ' +
+                  (Limit-DiagnosticText $serviceState.Text 4096) +
+                  '] recentWasW3svcHttpEvents=[' + (Limit-DiagnosticText ($events -join ';') 4096) + ']')
+          }
+
+          function Get-WsusListenerFailureDetailsSafe([int]$listenerPort, [int]$maxLength) {
+              try {
+                  return Limit-DiagnosticText (Get-WsusListenerFailureDetails $listenerPort) $maxLength
+              } catch {
+                  return ('diagnosticFailure=[' +
+                      (Limit-DiagnosticText (Format-ExceptionChain $_.Exception) 2048) + ']')
+              }
+          }
+
+          function Start-WsusWebsiteBounded([int]$listenerPort, [bool]$requireHttpsContract) {
+              $sawAlreadyExists = $false
+              $lastAlreadyExists = ''
+              $firstAlreadyExistsEvidence = ''
+              for ($attempt = 0; $attempt -lt 20; $attempt++) {
+                  Assert-WsusPortExclusive $listenerPort
+                  if ($requireHttpsContract -and
+                      -not (Test-WsusOwnedPortBindingsNormalized $listenerPort)) {
+                      $actual = @(Get-IisBindingsAtPort $listenerPort | Where-Object {
+                          [string]::Equals($_.Site, $siteName, [System.StringComparison]::OrdinalIgnoreCase)
+                      } | ForEach-Object {
+                          $_.Site + '|' + $_.Protocol + '|' + $_.BindingInformation +
+                              '|sslFlags=' + $_.SslFlags
+                      })
+                      throw ('WSUS site target-port bindings became unnormalized before start: [' +
+                          ($actual -join ';') + ']')
+                  }
+                  $currentState = Get-WsusSiteState
+                  if ($currentState -eq 'Started') {
+                      return
+                  }
+                  if ($currentState -eq 'Starting' -or $currentState -eq 'Stopping') {
+                      Start-Sleep -Milliseconds 500
+                      continue
+                  }
+                  if ($currentState -ne 'Stopped') {
+                      throw ('WSUS IIS site has an unsafe state before start: ' + $currentState)
+                  }
+
+                  # ERROR_ALREADY_EXISTS may mean an earlier asynchronous start still owns the
+                  # HTTP.sys URL group.  Do not issue another start until that registration either
+                  # becomes a concurrently successful Started site or drains completely.
+                  if ($sawAlreadyExists) {
+                      $requestQueues = Invoke-NetshCapture @(
+                          'http', 'show', 'servicestate', 'view=requestq', 'verbose=yes'
+                      )
+                      if ($requestQueues.ExitCode -ne 0) {
+                          throw ('cannot prove HTTP.sys request-queue ownership before retry: ' +
+                              (Get-WsusListenerFailureDetailsSafe $listenerPort 8192))
+                      }
+                      if (Test-HttpSysPortRegistration $requestQueues.Text $listenerPort) {
+                          Start-Sleep -Milliseconds 500
+                          continue
+                      }
+                  }
+
+                  try {
+                      Start-Website -Name $siteName -ErrorAction Stop | Out-Null
+                  } catch {
+                      if (-not (Test-AlreadyExistsHResult $_.Exception)) {
+                          throw ('Start-Website failed with a non-retryable exception: exceptions=[' +
+                              (Format-ExceptionChain $_.Exception) + '] ' +
+                              (Get-WsusListenerFailureDetailsSafe $listenerPort 8192))
+                      }
+                      if (-not $sawAlreadyExists) {
+                          $firstAlreadyExistsEvidence = Get-WsusListenerFailureDetailsSafe $listenerPort 6144
+                      }
+                      $sawAlreadyExists = $true
+                      $lastAlreadyExists = Format-ExceptionChain $_.Exception
+                  }
+                  Start-Sleep -Milliseconds 500
+              }
+
+              if ((Get-WsusSiteState) -eq 'Started') {
+                  return
+              }
+              throw ('WSUS IIS site start did not settle within 10 seconds; lastAlreadyExists=[' +
+                  $lastAlreadyExists + '] firstAlreadyExistsEvidence=[' + $firstAlreadyExistsEvidence +
+                  '] finalEvidence=[' + (Get-WsusListenerFailureDetailsSafe $listenerPort 6144) + ']')
           }
 
           function Test-LoopbackListener([int]$listenerPort) {
@@ -156,17 +526,122 @@
               }
           }
 
+          function Repair-PreSslWsusApiAccess {
+              # Microsoft requires these five WSUS web services to require SSL before
+              # configuressl persists UsingSSL=1.  If a run is interrupted between those
+              # operations, the next pre-API pass still selects HTTP.  Roll back only that
+              # incomplete transition so the HTTP API remains reachable and can converge again.
+              $sslRequiredVdirs = @(
+                  'ApiRemoting30',
+                  'ClientWebService',
+                  'DSSAuthWebService',
+                  'ServerSyncWebService',
+                  'SimpleAuthWebService'
+              )
+              $repaired = $false
+              foreach ($name in $sslRequiredVdirs) {
+                  $location = $siteName + '/' + $name
+                  $value = (Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+                      -Location $location -Filter 'system.webServer/security/access' `
+                      -Name 'sslFlags' -ErrorAction Stop).Value
+                  $text = [string]$value
+                  if ($text -ne 'None' -and $text -ne '0') {
+                      Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+                          -Location $location -Filter 'system.webServer/security/access' `
+                          -Name 'sslFlags' -Value 'None' -ErrorAction Stop | Out-Null
+                      $repaired = $true
+                  }
+              }
+              foreach ($name in $sslRequiredVdirs) {
+                  $location = $siteName + '/' + $name
+                  $value = (Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+                      -Location $location -Filter 'system.webServer/security/access' `
+                      -Name 'sslFlags' -ErrorAction Stop).Value
+                  $text = [string]$value
+                  if ($text -ne 'None' -and $text -ne '0') {
+                      throw ('pre-SSL WSUS API access rollback did not persist at ' +
+                          $location + ': sslFlags=[' + $text + ']')
+                  }
+              }
+              return $repaired
+          }
+
+          if ($usingSsl -eq 1) {
+              Assert-WsusPortExclusive $port
+              $currentSslMapping = Get-OrRepairCurrentSslMapping $port
+              if ([System.Convert]::ToBoolean($currentSslMapping.Changed)) {
+                  $changed = $true
+              }
+              if (Repair-WsusOwnedPortBindings $port) {
+                  $changed = $true
+              }
+          }
+
           $site = Get-Item -LiteralPath $sitePath -ErrorAction Stop
           if (-not [System.Convert]::ToBoolean($site.serverAutoStart)) {
               Set-ItemProperty -LiteralPath $sitePath -Name serverAutoStart -Value $true | Out-Null
               $changed = $true
+              # A live IIS configuration commit can be consumed asynchronously by WAS.  Give that
+              # reconciliation a bounded chance to start the site before issuing an explicit start.
+              for ($attempt = 0; $attempt -lt 10; $attempt++) {
+                  $siteState = Get-WsusSiteState
+                  if ($siteState -eq 'Started') {
+                      break
+                  }
+                  if (@('Stopped', 'Starting', 'Stopping') -notcontains $siteState) {
+                      throw ('WSUS IIS site has an unsafe state after serverAutoStart repair: ' + $siteState)
+                  }
+                  Start-Sleep -Milliseconds 500
+              }
+          }
+
+          Assert-WsusPortExclusive $port
+          if ($usingSsl -eq 0) {
+              if (Repair-PreSslWsusApiAccess) {
+                  $changed = $true
+              }
+              $httpBindings = @(Get-IisBindingsAtPort $port | Where-Object {
+                  [string]::Equals($_.Site, $siteName, [System.StringComparison]::OrdinalIgnoreCase) -and
+                  [string]::Equals($_.Protocol, 'http', [System.StringComparison]::OrdinalIgnoreCase)
+              })
+              if ($httpBindings.Count -ne 1) {
+                  $httpBindingDescriptions = @($httpBindings | ForEach-Object {
+                      $_.Site + '|' + $_.Protocol + '|' + $_.BindingInformation
+                  })
+                  throw ('pre-SSL WSUS runtime does not have exactly one owned HTTP binding at port ' +
+                      $port + '; actual=[' + ($httpBindingDescriptions -join ';') + ']')
+              }
+              $siteState = Get-WsusSiteState
+              if ($siteState -ne 'Started') {
+                  Start-WsusWebsiteBounded $port $false
+                  $changed = $true
+              }
+              $httpReady = $false
+              for ($attempt = 0; $attempt -lt 30; $attempt++) {
+                  $siteState = Get-WsusSiteState
+                  if ($siteState -eq 'Started' -and (Test-LoopbackListener $port)) {
+                      $httpReady = $true
+                      break
+                  }
+                  Start-Sleep -Milliseconds 500
+              }
+              if (-not $httpReady) {
+                  throw ('pre-SSL WSUS HTTP runtime did not recover within the bounded window: ' +
+                      (Get-WsusListenerFailureDetailsSafe $port 8192))
+              }
+              $site = Get-Item -LiteralPath $sitePath -ErrorAction Stop
+              if (-not [System.Convert]::ToBoolean($site.serverAutoStart)) {
+                  throw 'pre-SSL WSUS IIS site did not persist serverAutoStart=true'
+              }
+              if ($changed) { Write-Output 'changed' } else { Write-Output 'nochange' }
+              return
           }
 
           $siteState = Get-WsusSiteState
-          if ($siteState -eq 'Stopped') {
-              Start-Website -Name $siteName | Out-Null
+          if ($siteState -ne 'Started') {
+              Start-WsusWebsiteBounded $port $true
               $changed = $true
-          } elseif ($siteState -eq 'Started') {
+          } else {
               # Give a just-written IIS/HTTP.sys binding a short read-only activation window
               # before deciding that runtime repair is required.
               $listenerReady = $false
@@ -180,23 +655,10 @@
               if (-not $listenerReady) {
                   # Binding updates normally activate live. If they did not, recycle only the
                   # WSUS site; never bounce W3SVC or unrelated IIS sites.
-                  Stop-Website -Name $siteName | Out-Null
-                  $stopped = $false
-                  for ($attempt = 0; $attempt -lt 20; $attempt++) {
-                      if ((Get-WsusSiteState) -eq 'Stopped') {
-                          $stopped = $true
-                          break
-                      }
-                      Start-Sleep -Milliseconds 500
-                  }
-                  if (-not $stopped) {
-                      throw ('WSUS IIS site did not stop within 10 seconds; state=' + (Get-WsusSiteState))
-                  }
-                  Start-Website -Name $siteName | Out-Null
+                  Stop-WsusWebsiteBounded 'runtime listener recycle'
+                  Start-WsusWebsiteBounded $port $true
                   $changed = $true
               }
-          } else {
-              throw ('WSUS IIS site has an unsafe transitional state: ' + $siteState)
           }
 
           $startedAndListening = $false
@@ -211,25 +673,9 @@
               Start-Sleep -Milliseconds 500
           }
           if (-not $startedAndListening) {
-              $w3svcState = [string](Get-Service -Name W3SVC -ErrorAction SilentlyContinue).Status
-              $portNeedle = ':' + $port + ':'
-              $httpsOwners = @()
-              foreach ($configuredSite in @(Get-Website)) {
-                  foreach ($configuredBinding in @(Get-WebBinding -Name $configuredSite.Name -Protocol https -ErrorAction SilentlyContinue)) {
-                      $bindingInformation = [string]$configuredBinding.bindingInformation
-                      if ($bindingInformation.Contains($portNeedle)) {
-                          $httpsOwners += ($configuredSite.Name + '=' + $bindingInformation)
-                      }
-                  }
-              }
-              $netsh = Join-Path $env:SystemRoot 'System32\netsh.exe'
-              $sslTarget = 'ipport=0.0.0.0:' + $port
-              $httpSysSsl = ((& $netsh http show sslcert $sslTarget 2>&1) -join ' ').Trim()
-              $httpSysIpListen = ((& $netsh http show iplisten 2>&1) -join ' ').Trim()
               throw ('WSUS HTTPS listener did not activate within the bounded readiness window: siteState=' +
-                  $siteState + ' loopbackListening=' + $listenerReady + ' port=' + $port +
-                  ' W3SVC=' + $w3svcState + ' httpsBindings=[' + ($httpsOwners -join ';') +
-                  '] httpSysSsl=[' + $httpSysSsl + '] httpSysIpListen=[' + $httpSysIpListen + ']')
+                  $siteState + ' loopbackListening=' + $listenerReady + ' ' +
+                  (Get-WsusListenerFailureDetailsSafe $port 8192))
           }
           $site = Get-Item -LiteralPath $sitePath -ErrorAction Stop
           if (-not [System.Convert]::ToBoolean($site.serverAutoStart)) {
@@ -1692,46 +2138,230 @@
             Import-Module WebAdministration
             $thumb = $env:TLS_THUMBPRINT
             $port = [int]$env:TLS_PORT
-            $site = 'WSUS Administration'
+            $siteName = 'WSUS Administration'
+            $sitePath = Join-Path 'IIS:\Sites' $siteName
             $desiredBinding = '*:' + $port + ':'
             $changed = $false
-            $matches = @(Get-WebBinding -Name $site -Protocol https -ErrorAction Stop | Where-Object {
-                [string]::Equals([string]$_.bindingInformation, $desiredBinding, [System.StringComparison]::Ordinal)
+
+            if (-not (Test-Path -LiteralPath $sitePath)) {
+                throw ('required IIS site is absent: ' + $siteName)
+            }
+
+            function Get-IisBindingsAtPort([int]$listenerPort) {
+                $records = @()
+                foreach ($configuredSite in @(Get-Website -ErrorAction Stop)) {
+                    foreach ($configuredBinding in @(Get-WebBinding -Name $configuredSite.Name -ErrorAction Stop)) {
+                        $bindingInformation = [string]$configuredBinding.bindingInformation
+                        # Parse the HTTP(S) ip:port:host form from the right so IPv6 addresses are
+                        # safe, then recognize the leading-port form used by other IIS protocols.
+                        $portMatch = [regex]::Match(
+                            $bindingInformation,
+                            '^(?<address>.*):(?<port>[0-9]{1,5}):(?<host>.*)$'
+                        )
+                        if (-not $portMatch.Success) {
+                            $portMatch = [regex]::Match($bindingInformation, '^(?<port>[0-9]{1,5})(?::|$)')
+                        }
+                        if ($portMatch.Success -and [int]$portMatch.Groups['port'].Value -eq $listenerPort) {
+                            $records += [pscustomobject]@{
+                                Site = [string]$configuredSite.Name
+                                Protocol = [string]$configuredBinding.protocol
+                                BindingInformation = $bindingInformation
+                                Port = [int]$portMatch.Groups['port'].Value
+                                SslFlags = [string]$configuredBinding.sslFlags
+                            }
+                        }
+                    }
+                }
+                return @($records)
+            }
+
+            function Get-WsusHttpsBindingRecords {
+                $records = @()
+                foreach ($configuredBinding in @(Get-WebBinding -Name $siteName -Protocol https -ErrorAction Stop)) {
+                    $bindingInformation = [string]$configuredBinding.bindingInformation
+                    $portMatch = [regex]::Match(
+                        $bindingInformation,
+                        '^(?<address>.*):(?<port>[0-9]{1,5}):(?<host>.*)$'
+                    )
+                    if (-not $portMatch.Success) {
+                        throw ('cannot safely parse WSUS HTTPS binding port: [' + $bindingInformation + ']')
+                    }
+                    $records += [pscustomobject]@{
+                        Site = $siteName
+                        Protocol = [string]$configuredBinding.protocol
+                        BindingInformation = $bindingInformation
+                        Port = [int]$portMatch.Groups['port'].Value
+                        SslFlags = [string]$configuredBinding.sslFlags
+                    }
+                }
+                return @($records)
+            }
+
+            function Format-IisBindingOwners($records) {
+                return @( $records | ForEach-Object {
+                    $_.Site + '|' + $_.Protocol + '|' + $_.BindingInformation + '|sslFlags=' + $_.SslFlags
+                })
+            }
+
+            function Assert-WsusPortExclusive([int]$listenerPort, [string]$operation) {
+                $foreign = @(Get-IisBindingsAtPort $listenerPort | Where-Object {
+                    -not [string]::Equals($_.Site, $siteName, [System.StringComparison]::OrdinalIgnoreCase)
+                })
+                if ($foreign.Count -gt 0) {
+                    throw ($operation + ' would affect a port owned by another IIS site: port=' +
+                        $listenerPort + ' foreignBindings=[' +
+                        ((Format-IisBindingOwners $foreign) -join ';') + ']')
+                }
+            }
+
+            function Assert-WsusBindingRemovalPortsExclusive($candidates) {
+                $checkedPorts = @{}
+                foreach ($candidate in @($candidates)) {
+                    $candidatePort = [int]$candidate.Port
+                    if ($candidatePort -lt 1 -or $candidatePort -gt 65535) {
+                        throw ('refusing stale WSUS binding removal with an invalid parsed port: binding=[' +
+                            $candidate.Protocol + '|' + $candidate.BindingInformation +
+                            '] parsedPort=' + $candidatePort)
+                    }
+                    if ($checkedPorts.ContainsKey($candidatePort)) { continue }
+                    $checkedPorts[$candidatePort] = $true
+                    Assert-WsusPortExclusive $candidatePort 'stale WSUS binding removal'
+                }
+            }
+
+            $portBindings = @(Get-IisBindingsAtPort $port)
+            $foreignBindings = @($portBindings | Where-Object {
+                -not [string]::Equals($_.Site, $siteName, [System.StringComparison]::OrdinalIgnoreCase)
             })
-            if ($matches.Count -eq 0) {
-                # Omitting HostHeader creates the empty-host form; the exact bindingInformation
-                # check below is authoritative and rejects either an IP- or host-restricted result.
-                New-WebBinding -Name $site -Protocol https -Port $port -IPAddress '*' -SslFlags 0 | Out-Null
-                $changed = $true
-            } elseif ($matches.Count -gt 1) {
-                throw ('WSUS site has duplicate exact HTTPS bindings for ' + $desiredBinding)
+            if ($foreignBindings.Count -gt 0) {
+                throw ('target WSUS port is owned by another IIS site; refusing mutation: port=' +
+                    $port + ' foreignBindings=[' + ((Format-IisBindingOwners $foreignBindings) -join ';') + ']')
             }
-            $binding = @(Get-WebBinding -Name $site -Protocol https -ErrorAction Stop | Where-Object {
-                [string]::Equals([string]$_.bindingInformation, $desiredBinding, [System.StringComparison]::Ordinal)
+
+            $ownedTargetPortBindings = @($portBindings | Where-Object {
+                [string]::Equals($_.Site, $siteName, [System.StringComparison]::OrdinalIgnoreCase)
             })
-            if ($binding.Count -ne 1) {
-                throw ('WSUS site does not expose exactly one wildcard, empty-host HTTPS binding ' + $desiredBinding)
+            $ownedHttpsBindings = @(Get-WsusHttpsBindingRecords)
+            $desiredBindings = @($ownedHttpsBindings | Where-Object {
+                [string]::Equals($_.Protocol, 'https', [System.StringComparison]::OrdinalIgnoreCase) -and
+                [string]::Equals($_.BindingInformation, $desiredBinding, [System.StringComparison]::Ordinal)
+            })
+            $nonDesiredTargetPortBindings = @($ownedTargetPortBindings | Where-Object {
+                (-not [string]::Equals($_.Protocol, 'https', [System.StringComparison]::OrdinalIgnoreCase)) -or
+                (-not [string]::Equals($_.BindingInformation, $desiredBinding, [System.StringComparison]::Ordinal))
+            })
+            $bindingDrift = $ownedHttpsBindings.Count -ne 1 -or $desiredBindings.Count -ne 1 -or
+                $nonDesiredTargetPortBindings.Count -gt 0 -or
+                [int]($desiredBindings[0].SslFlags) -ne 0
+
+            $bindingsToRemove = @()
+            if ($bindingDrift) {
+                $seenBindings = @{}
+                foreach ($candidate in @($ownedHttpsBindings) + @($ownedTargetPortBindings)) {
+                    $key = $candidate.Protocol.ToLowerInvariant() + '|' + $candidate.BindingInformation
+                    if (-not $seenBindings.ContainsKey($key)) {
+                        $seenBindings[$key] = $true
+                        $bindingsToRemove += $candidate
+                    }
+                }
+
+                # An HTTPS certificate mapping is global to its endpoint.  Before stopping the
+                # site, prove that no foreign IIS site shares any binding-removal candidate port.
+                Assert-WsusBindingRemovalPortsExclusive $bindingsToRemove
             }
-            if ([int]($binding[0].sslFlags) -ne 0) {
-                Set-WebBinding -Name $site -BindingInformation $desiredBinding -PropertyName sslFlags -Value '0' | Out-Null
-                $changed = $true
-            }
+
             $sslPath = 'IIS:\SslBindings\0.0.0.0!' + $port
-            $bound = Get-Item $sslPath -ErrorAction SilentlyContinue
-            if (-not $bound -or $bound.Thumbprint -ne $thumb) {
-                if ($bound) { Remove-Item $sslPath }
-                $cert = Get-Item (Join-Path 'Cert:\LocalMachine\My' $thumb)
-                if (-not $cert.HasPrivateKey) { throw 'pinned certificate in LocalMachine/My has no private key' }
-                New-Item $sslPath -Value $cert | Out-Null
+            $boundBefore = Get-Item $sslPath -ErrorAction SilentlyContinue
+            $certificateDriftBefore = -not $boundBefore -or
+                (-not [string]::Equals([string]$boundBefore.Thumbprint, $thumb, [System.StringComparison]::OrdinalIgnoreCase))
+
+            if ($bindingDrift -or $certificateDriftBefore) {
+                # Binding/provider changes are committed only while this site is fully stopped.
+                # This prevents WAS from observing a half-updated live listener.  No service or
+                # unrelated site is touched; the shared listener helper starts this site later.
+                $stopIssued = $false
+                $stopped = $false
+                for ($attempt = 0; $attempt -lt 20; $attempt++) {
+                    $siteState = [string](Get-WebItemState -PSPath $sitePath -ErrorAction Stop).Value
+                    if ($siteState -eq 'Stopped') {
+                        $stopped = $true
+                        break
+                    }
+                    if ($siteState -eq 'Started' -and -not $stopIssued) {
+                        Stop-Website -Name $siteName -ErrorAction Stop | Out-Null
+                        $stopIssued = $true
+                    } elseif ($siteState -ne 'Started' -and $siteState -ne 'Starting' -and $siteState -ne 'Stopping') {
+                        throw ('WSUS IIS site has an unsafe state before TLS binding mutation: ' + $siteState)
+                    }
+                    Start-Sleep -Milliseconds 500
+                }
+                if (-not $stopped) {
+                    throw ('WSUS IIS site did not stop within 10 seconds before TLS binding mutation; state=' +
+                        [string](Get-WebItemState -PSPath $sitePath -ErrorAction Stop).Value)
+                }
+
+                # Re-read every ownership boundary after the bounded stop.  The initial snapshot
+                # may be ten seconds old, so it cannot authorize the global endpoint mutations.
+                Assert-WsusPortExclusive $port 'WSUS TLS reconciliation'
+                if ($bindingDrift) {
+                    Assert-WsusBindingRemovalPortsExclusive $bindingsToRemove
+                    # Remove every WSUS-owned HTTPS endpoint (including a stale old TLS port) and
+                    # every non-HTTPS binding incorrectly placed on the desired TLS port.  The
+                    # WSUS HTTP payload binding on 8530 and every foreign site remain untouched.
+                    foreach ($ownedBinding in $bindingsToRemove) {
+                        Remove-WebBinding -Name $siteName -Protocol $ownedBinding.Protocol `
+                            -BindingInformation $ownedBinding.BindingInformation -ErrorAction Stop `
+                            -Confirm:$false | Out-Null
+                    }
+                    # Omitting HostHeader creates the exact wildcard, empty-host listener.
+                    New-WebBinding -Name $siteName -Protocol https -Port $port -IPAddress '*' -SslFlags 0 | Out-Null
+                    Assert-WsusBindingRemovalPortsExclusive $bindingsToRemove
+                }
+
+                # Re-read after binding normalization: removing/recreating an IIS binding can
+                # change its provider mapping, so the pre-mutation snapshot is not authoritative.
+                $bound = Get-Item $sslPath -ErrorAction SilentlyContinue
+                $certificateDrift = -not $bound -or
+                    (-not [string]::Equals([string]$bound.Thumbprint, $thumb, [System.StringComparison]::OrdinalIgnoreCase))
+                if ($certificateDrift) {
+                    if ($bound) {
+                        Assert-WsusPortExclusive $port 'global SSL mapping removal'
+                        Remove-Item $sslPath -ErrorAction Stop
+                    }
+                    $cert = Get-Item (Join-Path 'Cert:\LocalMachine\My' $thumb) -ErrorAction Stop
+                    if (-not $cert.HasPrivateKey) { throw 'pinned certificate in LocalMachine/My has no private key' }
+                    Assert-WsusPortExclusive $port 'global SSL mapping creation'
+                    New-Item $sslPath -Value $cert | Out-Null
+                }
+                Assert-WsusPortExclusive $port 'post-mutation TLS verification'
                 $changed = $true
             }
-            $verify = Get-Item $sslPath
-            if ($verify.Thumbprint -ne $thumb) { throw 'SSL binding did not persist the pinned thumbprint' }
-            $verifySiteBinding = @(Get-WebBinding -Name $site -Protocol https -ErrorAction Stop | Where-Object {
-                [string]::Equals([string]$_.bindingInformation, $desiredBinding, [System.StringComparison]::Ordinal)
+
+            $verifyPortBindings = @(Get-IisBindingsAtPort $port)
+            $verifyForeignBindings = @($verifyPortBindings | Where-Object {
+                -not [string]::Equals($_.Site, $siteName, [System.StringComparison]::OrdinalIgnoreCase)
             })
-            if ($verifySiteBinding.Count -ne 1 -or [int]($verifySiteBinding[0].sslFlags) -ne 0) {
-                throw ('WSUS HTTPS listener did not persist exact binding=' + $desiredBinding + ' sslFlags=0')
+            if ($verifyForeignBindings.Count -gt 0) {
+                throw ('foreign IIS ownership appeared during WSUS TLS reconciliation: [' +
+                    ((Format-IisBindingOwners $verifyForeignBindings) -join ';') + ']')
+            }
+            $verifyOwnedBindings = @($verifyPortBindings | Where-Object {
+                [string]::Equals($_.Site, $siteName, [System.StringComparison]::OrdinalIgnoreCase)
+            })
+            $verifyOwnedHttpsBindings = @(Get-WsusHttpsBindingRecords)
+            if ($verifyOwnedBindings.Count -ne 1 -or $verifyOwnedHttpsBindings.Count -ne 1 -or
+                (-not [string]::Equals($verifyOwnedBindings[0].Protocol, 'https', [System.StringComparison]::OrdinalIgnoreCase)) -or
+                (-not [string]::Equals($verifyOwnedBindings[0].BindingInformation, $desiredBinding, [System.StringComparison]::Ordinal)) -or
+                [int]($verifyOwnedBindings[0].SslFlags) -ne 0) {
+                throw ('WSUS site does not expose exactly one HTTPS binding total at target=' +
+                    $desiredBinding + ' sslFlags=0; targetPortActual=[' +
+                    ((Format-IisBindingOwners $verifyOwnedBindings) -join ';') +
+                    '] allHttpsActual=[' + ((Format-IisBindingOwners $verifyOwnedHttpsBindings) -join ';') + ']')
+            }
+
+            $verify = Get-Item $sslPath -ErrorAction Stop
+            if (-not [string]::Equals([string]$verify.Thumbprint, $thumb, [System.StringComparison]::OrdinalIgnoreCase)) {
+                throw 'SSL binding did not persist the pinned thumbprint'
             }
             if ($changed) { Write-Output 'changed' } else { Write-Output 'nochange' }
           environment:
@@ -2036,11 +2666,13 @@
         }
         if ([System.Convert]::ToBoolean($env:TLS_ENABLED)) {
             $desiredBinding = '*:' + [int]$env:TLS_PORT + ':'
-            $siteBindings = @(Get-WebBinding -Name 'WSUS Administration' -Protocol https -ErrorAction Stop | Where-Object {
+            $siteBindings = @(Get-WebBinding -Name 'WSUS Administration' -Protocol https -ErrorAction Stop)
+            $desiredSiteBindings = @($siteBindings | Where-Object {
                 [string]::Equals([string]$_.bindingInformation, $desiredBinding, [System.StringComparison]::Ordinal)
             })
-            if ($siteBindings.Count -ne 1 -or [int]($siteBindings[0].sslFlags) -ne 0) {
-                throw ('WSUS site lacks exactly one wildcard, empty-host HTTPS binding ' +
+            if ($siteBindings.Count -ne 1 -or $desiredSiteBindings.Count -ne 1 -or
+                [int]($desiredSiteBindings[0].sslFlags) -ne 0) {
+                throw ('WSUS site lacks exactly one HTTPS binding total, at ' +
                     $desiredBinding + ' with sslFlags=0')
             }
             $binding = Get-Item ('IIS:\SslBindings\0.0.0.0!' + [int]$env:TLS_PORT) -ErrorAction Stop
