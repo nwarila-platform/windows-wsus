@@ -52,25 +52,30 @@
         "ArnLike": {
           "ec2:Vpc": "arn:aws:ec2:<region>:*:vpc/<vpc-id>",
           "ec2:Subnet": "arn:aws:ec2:<region>:*:subnet/<subnet-id>"
-        },
-        "StringEqualsIfExists": {
-          "ec2:ResourceTag/nwarila:management:repository-id": "<repository-id>"
         }
       }
     },
     {
-      "Sid": "RunInstancesSubnetAndGroupsInDeployVpc",
+      "Sid": "RunInstancesInDeploySubnet",
       "Effect": "Allow",
       "Action": "ec2:RunInstances",
-      "Resource": [
-        "arn:aws:ec2:<region>:*:subnet/<subnet-id>",
-        "arn:aws:ec2:<region>:*:security-group/*"
-      ],
+      "Resource": "arn:aws:ec2:<region>:*:subnet/<subnet-id>",
+      "Condition": {
+        "ArnLike": {
+          "ec2:Vpc": "arn:aws:ec2:<region>:*:vpc/<vpc-id>"
+        }
+      }
+    },
+    {
+      "Sid": "RunInstancesWithOwnedSecurityGroups",
+      "Effect": "Allow",
+      "Action": "ec2:RunInstances",
+      "Resource": "arn:aws:ec2:<region>:*:security-group/*",
       "Condition": {
         "ArnLike": {
           "ec2:Vpc": "arn:aws:ec2:<region>:*:vpc/<vpc-id>"
         },
-        "StringEqualsIfExists": {
+        "StringEquals": {
           "ec2:ResourceTag/nwarila:management:repository-id": "<repository-id>"
         }
       }
@@ -142,22 +147,31 @@
       }
     },
     {
-      "Sid": "UseEniSupportingLegs",
+      "Sid": "UseDeploySubnetForEniCreation",
       "Effect": "Allow",
       "Action": "ec2:CreateNetworkInterface",
-      "Resource": [
-        "arn:aws:ec2:<region>:*:subnet/<subnet-id>",
-        "arn:aws:ec2:<region>:*:security-group/*"
-      ],
+      "Resource": "arn:aws:ec2:<region>:*:subnet/<subnet-id>",
       "Condition": {
         "StringEquals": {
           "aws:RequestedRegion": "<region>"
         },
         "ArnLike": {
           "ec2:Vpc": "arn:aws:ec2:<region>:*:vpc/<vpc-id>"
-        },
-        "StringEqualsIfExists": {
+        }
+      }
+    },
+    {
+      "Sid": "UseOwnedSecurityGroupsForEniCreation",
+      "Effect": "Allow",
+      "Action": "ec2:CreateNetworkInterface",
+      "Resource": "arn:aws:ec2:<region>:*:security-group/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "<region>",
           "ec2:ResourceTag/nwarila:management:repository-id": "<repository-id>"
+        },
+        "ArnLike": {
+          "ec2:Vpc": "arn:aws:ec2:<region>:*:vpc/<vpc-id>"
         }
       }
     },

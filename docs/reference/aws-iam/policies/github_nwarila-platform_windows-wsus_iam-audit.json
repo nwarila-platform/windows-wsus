@@ -1,0 +1,88 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ReadTrackedManagedPolicyDocuments",
+      "Effect": "Allow",
+      "Action": [
+        "iam:GetPolicy",
+        "iam:GetPolicyVersion",
+        "iam:ListEntitiesForPolicy"
+      ],
+      "Resource": [
+        "arn:aws:iam::<account-id>:policy/github_nwarila-platform_windows-wsus",
+        "arn:aws:iam::<account-id>:policy/github_nwarila-platform_windows-wsus_iam-audit",
+        "arn:aws:iam::<account-id>:policy/windows-wsus_artifact-assume",
+        "arn:aws:iam::<account-id>:policy/windows-wsus_artifact-folder",
+        "arn:aws:iam::<account-id>:policy/windows-wsus_artifact-read",
+        "arn:aws:iam::<account-id>:policy/windows-wsus_deploy-discovery-iam",
+        "arn:aws:iam::<account-id>:policy/windows-wsus_deploy-ec2-launch",
+        "arn:aws:iam::<account-id>:policy/windows-wsus_deploy-ec2-lifecycle",
+        "arn:aws:iam::<account-id>:policy/windows-wsus_deploy-sg-ssm-kms"
+      ]
+    },
+    {
+      "Sid": "ReadTrackedRoleContracts",
+      "Effect": "Allow",
+      "Action": [
+        "iam:GetRole",
+        "iam:ListAttachedRolePolicies",
+        "iam:ListRolePolicies",
+        "iam:ListRoleTags"
+      ],
+      "Resource": [
+        "arn:aws:iam::<account-id>:role/github_nwarila-platform_windows-wsus",
+        "arn:aws:iam::<account-id>:role/github_nwarila-platform_windows-wsus-admin",
+        "arn:aws:iam::<account-id>:role/github_nwarila-platform_windows-wsus-iam-audit",
+        "arn:aws:iam::<account-id>:role/windows-wsus-artifact-reader",
+        "arn:aws:iam::<account-id>:role/windows-wsus-poc-role"
+      ]
+    },
+    {
+      "Sid": "ReadTrackedInstanceProfile",
+      "Effect": "Allow",
+      "Action": "iam:GetInstanceProfile",
+      "Resource": "arn:aws:iam::<account-id>:instance-profile/windows-wsus-poc-profile"
+    },
+    {
+      "Sid": "ReadTrackedRoleInstanceProfiles",
+      "Effect": "Allow",
+      "Action": "iam:ListInstanceProfilesForRole",
+      "Resource": [
+        "arn:aws:iam::<account-id>:role/github_nwarila-platform_windows-wsus",
+        "arn:aws:iam::<account-id>:role/github_nwarila-platform_windows-wsus-admin",
+        "arn:aws:iam::<account-id>:role/github_nwarila-platform_windows-wsus-iam-audit",
+        "arn:aws:iam::<account-id>:role/windows-wsus-artifact-reader",
+        "arn:aws:iam::<account-id>:role/windows-wsus-poc-role"
+      ]
+    },
+    {
+      "Sid": "ResolveDeploySubnet",
+      "Effect": "Allow",
+      "Action": "ec2:DescribeSubnets",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "<region>"
+        }
+      }
+    },
+    {
+      "Sid": "ResolveEbsKey",
+      "Effect": "Allow",
+      "Action": "kms:DescribeKey",
+      "Resource": "arn:aws:kms:<region>:<account-id>:key/<ebs-kms-key-id>"
+    },
+    {
+      "Sid": "ValidateTrackedDocuments",
+      "Effect": "Allow",
+      "Action": "access-analyzer:ValidatePolicy",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "<region>"
+        }
+      }
+    }
+  ]
+}
