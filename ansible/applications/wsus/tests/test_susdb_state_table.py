@@ -675,29 +675,47 @@ class HttpsListenerContractTest(unittest.TestCase):
                 self.assertIn(diagnostic, helper)
 
         expected_invocations = {
-            TLS_PRE_API_LISTENER_TASK: (
-                "__pre_api_tls_listener_activation__.stdout | trim == 'changed'"
-            ),
-            TLS_LISTENER_TASK: "__tls_listener_activation__.stdout | trim == 'changed'",
+            TLS_PRE_API_LISTENER_TASK,
+            TLS_LISTENER_TASK,
         }
-        for task_name, changed_when in expected_invocations.items():
+        for task_name in expected_invocations:
             with self.subTest(task=task_name):
                 task = named_task(task_name)
-                script = task["ansible.windows.win_shell"]
+                module = task["ansible.windows.win_powershell"]
+                script = module["script"]
                 self.assertIn("{{ __wsus_https_listener_reconciler__ }}", script)
                 self.assertIn("Invoke-LocalWsusHttpsListenerReconcile", script)
                 self.assertNotIn("environment", task)
-                self.assertEqual(task["changed_when"], changed_when)
+                self.assertEqual(module["error_action"], "stop")
+                self.assertNotIn("ansible.windows.win_shell", task)
+                self.assertNotIn("changed_when", task)
+                self.assertIn("$listenerResult = @(", script)
+                self.assertIn("$listenerResult.Count -ne 1", script)
+                self.assertIn("-notin @('changed', 'nochange')", script)
+                self.assertIn("$Ansible.Changed = $false", script)
+                self.assertIn(
+                    "$Ansible.Changed = [string]$listenerResult[0] -eq 'changed'",
+                    script,
+                )
+                self.assertLess(
+                    script.index("$Ansible.Changed = $false"),
+                    script.index("$listenerResult = @("),
+                )
+                self.assertIn("Write-Output ([string]$listenerResult[0])", script)
 
         tasks = list(walk_tasks(yaml.safe_load(TASK_FILE.read_text(encoding="utf-8"))))
         names = [item.get("name") for item in tasks]
         listener_invocations = {
             item["name"]
             for item in tasks
-            if "Invoke-LocalWsusHttpsListenerReconcile"
-            in item.get("ansible.windows.win_shell", "")
+            if (
+                "Invoke-LocalWsusHttpsListenerReconcile"
+                in item.get("ansible.windows.win_powershell", {}).get("script", "")
+                or "Invoke-LocalWsusHttpsListenerReconcile"
+                in item.get("ansible.windows.win_shell", "")
+            )
         }
-        self.assertEqual(listener_invocations, set(expected_invocations))
+        self.assertEqual(listener_invocations, expected_invocations)
         self.assertLess(names.index(WSUS_SERVICES_TASK), names.index(TLS_PRE_API_LISTENER_TASK))
         for api_task in (
             SUSDB_HEALTH_TASK,
