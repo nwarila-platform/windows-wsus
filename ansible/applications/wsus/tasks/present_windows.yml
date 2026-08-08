@@ -2144,242 +2144,245 @@
           changed_when: false
 
         - name: 'MAIN | Bind The Pinned Certificate To The WSUS HTTPS Endpoint'
-          ansible.windows.win_shell: |
-            $ErrorActionPreference = 'Stop'
-            Import-Module WebAdministration
-            $thumb = $env:TLS_THUMBPRINT
-            $port = [int]$env:TLS_PORT
-            $siteName = 'WSUS Administration'
-            $sitePath = Join-Path 'IIS:\Sites' $siteName
-            $desiredBinding = '*:' + $port + ':'
-            $changed = $false
+          ansible.windows.win_powershell:
+            error_action: stop
+            script: |
+              $ErrorActionPreference = 'Stop'
+              $Ansible.Changed = $false
+              Import-Module WebAdministration
+              $thumb = $env:TLS_THUMBPRINT
+              $port = [int]$env:TLS_PORT
+              $siteName = 'WSUS Administration'
+              $sitePath = Join-Path 'IIS:\Sites' $siteName
+              $desiredBinding = '*:' + $port + ':'
+              $changed = $false
 
-            if (-not (Test-Path -LiteralPath $sitePath)) {
-                throw ('required IIS site is absent: ' + $siteName)
-            }
+              if (-not (Test-Path -LiteralPath $sitePath)) {
+                  throw ('required IIS site is absent: ' + $siteName)
+              }
 
-            function Get-IisBindingsAtPort([int]$listenerPort) {
-                $records = @()
-                foreach ($configuredSite in @(Get-Website -ErrorAction Stop)) {
-                    foreach ($configuredBinding in @(Get-WebBinding -Name $configuredSite.Name -ErrorAction Stop)) {
-                        $bindingInformation = [string]$configuredBinding.bindingInformation
-                        # Parse the HTTP(S) ip:port:host form from the right so IPv6 addresses are
-                        # safe, then recognize the leading-port form used by other IIS protocols.
-                        $portMatch = [regex]::Match(
-                            $bindingInformation,
-                            '^(?<address>.*):(?<port>[0-9]{1,5}):(?<host>.*)$'
-                        )
-                        if (-not $portMatch.Success) {
-                            $portMatch = [regex]::Match($bindingInformation, '^(?<port>[0-9]{1,5})(?::|$)')
-                        }
-                        if ($portMatch.Success -and [int]$portMatch.Groups['port'].Value -eq $listenerPort) {
-                            $records += [pscustomobject]@{
-                                Site = [string]$configuredSite.Name
-                                Protocol = [string]$configuredBinding.protocol
-                                BindingInformation = $bindingInformation
-                                Port = [int]$portMatch.Groups['port'].Value
-                                SslFlags = [string]$configuredBinding.sslFlags
-                            }
-                        }
-                    }
-                }
-                return @($records)
-            }
+              function Get-IisBindingsAtPort([int]$listenerPort) {
+                  $records = @()
+                  foreach ($configuredSite in @(Get-Website -ErrorAction Stop)) {
+                      foreach ($configuredBinding in @(Get-WebBinding -Name $configuredSite.Name -ErrorAction Stop)) {
+                          $bindingInformation = [string]$configuredBinding.bindingInformation
+                          # Parse the HTTP(S) ip:port:host form from the right so IPv6 addresses are
+                          # safe, then recognize the leading-port form used by other IIS protocols.
+                          $portMatch = [regex]::Match(
+                              $bindingInformation,
+                              '^(?<address>.*):(?<port>[0-9]{1,5}):(?<host>.*)$'
+                          )
+                          if (-not $portMatch.Success) {
+                              $portMatch = [regex]::Match($bindingInformation, '^(?<port>[0-9]{1,5})(?::|$)')
+                          }
+                          if ($portMatch.Success -and [int]$portMatch.Groups['port'].Value -eq $listenerPort) {
+                              $records += [pscustomobject]@{
+                                  Site = [string]$configuredSite.Name
+                                  Protocol = [string]$configuredBinding.protocol
+                                  BindingInformation = $bindingInformation
+                                  Port = [int]$portMatch.Groups['port'].Value
+                                  SslFlags = [string]$configuredBinding.sslFlags
+                              }
+                          }
+                      }
+                  }
+                  return @($records)
+              }
 
-            function Get-WsusHttpsBindingRecords {
-                $records = @()
-                foreach ($configuredBinding in @(Get-WebBinding -Name $siteName -Protocol https -ErrorAction Stop)) {
-                    $bindingInformation = [string]$configuredBinding.bindingInformation
-                    $portMatch = [regex]::Match(
-                        $bindingInformation,
-                        '^(?<address>.*):(?<port>[0-9]{1,5}):(?<host>.*)$'
-                    )
-                    if (-not $portMatch.Success) {
-                        throw ('cannot safely parse WSUS HTTPS binding port: [' + $bindingInformation + ']')
-                    }
-                    $records += [pscustomobject]@{
-                        Site = $siteName
-                        Protocol = [string]$configuredBinding.protocol
-                        BindingInformation = $bindingInformation
-                        Port = [int]$portMatch.Groups['port'].Value
-                        SslFlags = [string]$configuredBinding.sslFlags
-                    }
-                }
-                return @($records)
-            }
+              function Get-WsusHttpsBindingRecords {
+                  $records = @()
+                  foreach ($configuredBinding in @(Get-WebBinding -Name $siteName -Protocol https -ErrorAction Stop)) {
+                      $bindingInformation = [string]$configuredBinding.bindingInformation
+                      $portMatch = [regex]::Match(
+                          $bindingInformation,
+                          '^(?<address>.*):(?<port>[0-9]{1,5}):(?<host>.*)$'
+                      )
+                      if (-not $portMatch.Success) {
+                          throw ('cannot safely parse WSUS HTTPS binding port: [' + $bindingInformation + ']')
+                      }
+                      $records += [pscustomobject]@{
+                          Site = $siteName
+                          Protocol = [string]$configuredBinding.protocol
+                          BindingInformation = $bindingInformation
+                          Port = [int]$portMatch.Groups['port'].Value
+                          SslFlags = [string]$configuredBinding.sslFlags
+                      }
+                  }
+                  return @($records)
+              }
 
-            function Format-IisBindingOwners($records) {
-                return @( $records | ForEach-Object {
-                    $_.Site + '|' + $_.Protocol + '|' + $_.BindingInformation + '|sslFlags=' + $_.SslFlags
-                })
-            }
+              function Format-IisBindingOwners($records) {
+                  return @( $records | ForEach-Object {
+                      $_.Site + '|' + $_.Protocol + '|' + $_.BindingInformation + '|sslFlags=' + $_.SslFlags
+                  })
+              }
 
-            function Assert-WsusPortExclusive([int]$listenerPort, [string]$operation) {
-                $foreign = @(Get-IisBindingsAtPort $listenerPort | Where-Object {
-                    -not [string]::Equals($_.Site, $siteName, [System.StringComparison]::OrdinalIgnoreCase)
-                })
-                if ($foreign.Count -gt 0) {
-                    throw ($operation + ' would affect a port owned by another IIS site: port=' +
-                        $listenerPort + ' foreignBindings=[' +
-                        ((Format-IisBindingOwners $foreign) -join ';') + ']')
-                }
-            }
+              function Assert-WsusPortExclusive([int]$listenerPort, [string]$operation) {
+                  $foreign = @(Get-IisBindingsAtPort $listenerPort | Where-Object {
+                      -not [string]::Equals($_.Site, $siteName, [System.StringComparison]::OrdinalIgnoreCase)
+                  })
+                  if ($foreign.Count -gt 0) {
+                      throw ($operation + ' would affect a port owned by another IIS site: port=' +
+                          $listenerPort + ' foreignBindings=[' +
+                          ((Format-IisBindingOwners $foreign) -join ';') + ']')
+                  }
+              }
 
-            function Assert-WsusBindingRemovalPortsExclusive($candidates) {
-                $checkedPorts = @{}
-                foreach ($candidate in @($candidates)) {
-                    $candidatePort = [int]$candidate.Port
-                    if ($candidatePort -lt 1 -or $candidatePort -gt 65535) {
-                        throw ('refusing stale WSUS binding removal with an invalid parsed port: binding=[' +
-                            $candidate.Protocol + '|' + $candidate.BindingInformation +
-                            '] parsedPort=' + $candidatePort)
-                    }
-                    if ($checkedPorts.ContainsKey($candidatePort)) { continue }
-                    $checkedPorts[$candidatePort] = $true
-                    Assert-WsusPortExclusive $candidatePort 'stale WSUS binding removal'
-                }
-            }
+              function Assert-WsusBindingRemovalPortsExclusive($candidates) {
+                  $checkedPorts = @{}
+                  foreach ($candidate in @($candidates)) {
+                      $candidatePort = [int]$candidate.Port
+                      if ($candidatePort -lt 1 -or $candidatePort -gt 65535) {
+                          throw ('refusing stale WSUS binding removal with an invalid parsed port: binding=[' +
+                              $candidate.Protocol + '|' + $candidate.BindingInformation +
+                              '] parsedPort=' + $candidatePort)
+                      }
+                      if ($checkedPorts.ContainsKey($candidatePort)) { continue }
+                      $checkedPorts[$candidatePort] = $true
+                      Assert-WsusPortExclusive $candidatePort 'stale WSUS binding removal'
+                  }
+              }
 
-            $portBindings = @(Get-IisBindingsAtPort $port)
-            $foreignBindings = @($portBindings | Where-Object {
-                -not [string]::Equals($_.Site, $siteName, [System.StringComparison]::OrdinalIgnoreCase)
-            })
-            if ($foreignBindings.Count -gt 0) {
-                throw ('target WSUS port is owned by another IIS site; refusing mutation: port=' +
-                    $port + ' foreignBindings=[' + ((Format-IisBindingOwners $foreignBindings) -join ';') + ']')
-            }
+              $portBindings = @(Get-IisBindingsAtPort $port)
+              $foreignBindings = @($portBindings | Where-Object {
+                  -not [string]::Equals($_.Site, $siteName, [System.StringComparison]::OrdinalIgnoreCase)
+              })
+              if ($foreignBindings.Count -gt 0) {
+                  throw ('target WSUS port is owned by another IIS site; refusing mutation: port=' +
+                      $port + ' foreignBindings=[' + ((Format-IisBindingOwners $foreignBindings) -join ';') + ']')
+              }
 
-            $ownedTargetPortBindings = @($portBindings | Where-Object {
-                [string]::Equals($_.Site, $siteName, [System.StringComparison]::OrdinalIgnoreCase)
-            })
-            $ownedHttpsBindings = @(Get-WsusHttpsBindingRecords)
-            $desiredBindings = @($ownedHttpsBindings | Where-Object {
-                [string]::Equals($_.Protocol, 'https', [System.StringComparison]::OrdinalIgnoreCase) -and
-                [string]::Equals($_.BindingInformation, $desiredBinding, [System.StringComparison]::Ordinal)
-            })
-            $nonDesiredTargetPortBindings = @($ownedTargetPortBindings | Where-Object {
-                (-not [string]::Equals($_.Protocol, 'https', [System.StringComparison]::OrdinalIgnoreCase)) -or
-                (-not [string]::Equals($_.BindingInformation, $desiredBinding, [System.StringComparison]::Ordinal))
-            })
-            $bindingDrift = $ownedHttpsBindings.Count -ne 1 -or $desiredBindings.Count -ne 1 -or
-                $nonDesiredTargetPortBindings.Count -gt 0 -or
-                [int]($desiredBindings[0].SslFlags) -ne 0
+              $ownedTargetPortBindings = @($portBindings | Where-Object {
+                  [string]::Equals($_.Site, $siteName, [System.StringComparison]::OrdinalIgnoreCase)
+              })
+              $ownedHttpsBindings = @(Get-WsusHttpsBindingRecords)
+              $desiredBindings = @($ownedHttpsBindings | Where-Object {
+                  [string]::Equals($_.Protocol, 'https', [System.StringComparison]::OrdinalIgnoreCase) -and
+                  [string]::Equals($_.BindingInformation, $desiredBinding, [System.StringComparison]::Ordinal)
+              })
+              $nonDesiredTargetPortBindings = @($ownedTargetPortBindings | Where-Object {
+                  (-not [string]::Equals($_.Protocol, 'https', [System.StringComparison]::OrdinalIgnoreCase)) -or
+                  (-not [string]::Equals($_.BindingInformation, $desiredBinding, [System.StringComparison]::Ordinal))
+              })
+              $bindingDrift = $ownedHttpsBindings.Count -ne 1 -or $desiredBindings.Count -ne 1 -or
+                  $nonDesiredTargetPortBindings.Count -gt 0 -or
+                  [int]($desiredBindings[0].SslFlags) -ne 0
 
-            $bindingsToRemove = @()
-            if ($bindingDrift) {
-                $seenBindings = @{}
-                foreach ($candidate in @($ownedHttpsBindings) + @($ownedTargetPortBindings)) {
-                    $key = $candidate.Protocol.ToLowerInvariant() + '|' + $candidate.BindingInformation
-                    if (-not $seenBindings.ContainsKey($key)) {
-                        $seenBindings[$key] = $true
-                        $bindingsToRemove += $candidate
-                    }
-                }
+              $bindingsToRemove = @()
+              if ($bindingDrift) {
+                  $seenBindings = @{}
+                  foreach ($candidate in @($ownedHttpsBindings) + @($ownedTargetPortBindings)) {
+                      $key = $candidate.Protocol.ToLowerInvariant() + '|' + $candidate.BindingInformation
+                      if (-not $seenBindings.ContainsKey($key)) {
+                          $seenBindings[$key] = $true
+                          $bindingsToRemove += $candidate
+                      }
+                  }
 
-                # An HTTPS certificate mapping is global to its endpoint.  Before stopping the
-                # site, prove that no foreign IIS site shares any binding-removal candidate port.
-                Assert-WsusBindingRemovalPortsExclusive $bindingsToRemove
-            }
+                  # An HTTPS certificate mapping is global to its endpoint.  Before stopping the
+                  # site, prove that no foreign IIS site shares any binding-removal candidate port.
+                  Assert-WsusBindingRemovalPortsExclusive $bindingsToRemove
+              }
 
-            $sslPath = 'IIS:\SslBindings\0.0.0.0!' + $port
-            $boundBefore = Get-Item $sslPath -ErrorAction SilentlyContinue
-            $certificateDriftBefore = -not $boundBefore -or
-                (-not [string]::Equals([string]$boundBefore.Thumbprint, $thumb, [System.StringComparison]::OrdinalIgnoreCase))
+              $sslPath = 'IIS:\SslBindings\0.0.0.0!' + $port
+              $boundBefore = Get-Item $sslPath -ErrorAction SilentlyContinue
+              $certificateDriftBefore = -not $boundBefore -or
+                  (-not [string]::Equals([string]$boundBefore.Thumbprint, $thumb, [System.StringComparison]::OrdinalIgnoreCase))
 
-            if ($bindingDrift -or $certificateDriftBefore) {
-                # Binding/provider changes are committed only while this site is fully stopped.
-                # This prevents WAS from observing a half-updated live listener.  No service or
-                # unrelated site is touched; the shared listener helper starts this site later.
-                $stopIssued = $false
-                $stopped = $false
-                for ($attempt = 0; $attempt -lt 20; $attempt++) {
-                    $siteState = [string](Get-WebItemState -PSPath $sitePath -ErrorAction Stop).Value
-                    if ($siteState -eq 'Stopped') {
-                        $stopped = $true
-                        break
-                    }
-                    if ($siteState -eq 'Started' -and -not $stopIssued) {
-                        Stop-Website -Name $siteName -ErrorAction Stop | Out-Null
-                        $stopIssued = $true
-                    } elseif ($siteState -ne 'Started' -and $siteState -ne 'Starting' -and $siteState -ne 'Stopping') {
-                        throw ('WSUS IIS site has an unsafe state before TLS binding mutation: ' + $siteState)
-                    }
-                    Start-Sleep -Milliseconds 500
-                }
-                if (-not $stopped) {
-                    throw ('WSUS IIS site did not stop within 10 seconds before TLS binding mutation; state=' +
-                        [string](Get-WebItemState -PSPath $sitePath -ErrorAction Stop).Value)
-                }
+              if ($bindingDrift -or $certificateDriftBefore) {
+                  # Binding/provider changes are committed only while this site is fully stopped.
+                  # This prevents WAS from observing a half-updated live listener.  No service or
+                  # unrelated site is touched; the shared listener helper starts this site later.
+                  $stopIssued = $false
+                  $stopped = $false
+                  for ($attempt = 0; $attempt -lt 20; $attempt++) {
+                      $siteState = [string](Get-WebItemState -PSPath $sitePath -ErrorAction Stop).Value
+                      if ($siteState -eq 'Stopped') {
+                          $stopped = $true
+                          break
+                      }
+                      if ($siteState -eq 'Started' -and -not $stopIssued) {
+                          Stop-Website -Name $siteName -ErrorAction Stop | Out-Null
+                          $stopIssued = $true
+                      } elseif ($siteState -ne 'Started' -and $siteState -ne 'Starting' -and $siteState -ne 'Stopping') {
+                          throw ('WSUS IIS site has an unsafe state before TLS binding mutation: ' + $siteState)
+                      }
+                      Start-Sleep -Milliseconds 500
+                  }
+                  if (-not $stopped) {
+                      throw ('WSUS IIS site did not stop within 10 seconds before TLS binding mutation; state=' +
+                          [string](Get-WebItemState -PSPath $sitePath -ErrorAction Stop).Value)
+                  }
 
-                # Re-read every ownership boundary after the bounded stop.  The initial snapshot
-                # may be ten seconds old, so it cannot authorize the global endpoint mutations.
-                Assert-WsusPortExclusive $port 'WSUS TLS reconciliation'
-                if ($bindingDrift) {
-                    Assert-WsusBindingRemovalPortsExclusive $bindingsToRemove
-                    # Remove every WSUS-owned HTTPS endpoint (including a stale old TLS port) and
-                    # every non-HTTPS binding incorrectly placed on the desired TLS port.  The
-                    # WSUS HTTP payload binding on 8530 and every foreign site remain untouched.
-                    foreach ($ownedBinding in $bindingsToRemove) {
-                        Remove-WebBinding -Name $siteName -Protocol $ownedBinding.Protocol `
-                            -BindingInformation $ownedBinding.BindingInformation -ErrorAction Stop `
-                            -Confirm:$false | Out-Null
-                    }
-                    # Omitting HostHeader creates the exact wildcard, empty-host listener.
-                    New-WebBinding -Name $siteName -Protocol https -Port $port -IPAddress '*' -SslFlags 0 | Out-Null
-                    Assert-WsusBindingRemovalPortsExclusive $bindingsToRemove
-                }
+                  # Re-read every ownership boundary after the bounded stop.  The initial snapshot
+                  # may be ten seconds old, so it cannot authorize the global endpoint mutations.
+                  Assert-WsusPortExclusive $port 'WSUS TLS reconciliation'
+                  if ($bindingDrift) {
+                      Assert-WsusBindingRemovalPortsExclusive $bindingsToRemove
+                      # Remove every WSUS-owned HTTPS endpoint (including a stale old TLS port) and
+                      # every non-HTTPS binding incorrectly placed on the desired TLS port.  The
+                      # WSUS HTTP payload binding on 8530 and every foreign site remain untouched.
+                      foreach ($ownedBinding in $bindingsToRemove) {
+                          Remove-WebBinding -Name $siteName -Protocol $ownedBinding.Protocol `
+                              -BindingInformation $ownedBinding.BindingInformation -ErrorAction Stop `
+                              -Confirm:$false | Out-Null
+                      }
+                      # Omitting HostHeader creates the exact wildcard, empty-host listener.
+                      New-WebBinding -Name $siteName -Protocol https -Port $port -IPAddress '*' -SslFlags 0 | Out-Null
+                      Assert-WsusBindingRemovalPortsExclusive $bindingsToRemove
+                  }
 
-                # Re-read after binding normalization: removing/recreating an IIS binding can
-                # change its provider mapping, so the pre-mutation snapshot is not authoritative.
-                $bound = Get-Item $sslPath -ErrorAction SilentlyContinue
-                $certificateDrift = -not $bound -or
-                    (-not [string]::Equals([string]$bound.Thumbprint, $thumb, [System.StringComparison]::OrdinalIgnoreCase))
-                if ($certificateDrift) {
-                    if ($bound) {
-                        Assert-WsusPortExclusive $port 'global SSL mapping removal'
-                        Remove-Item $sslPath -ErrorAction Stop
-                    }
-                    $cert = Get-Item (Join-Path 'Cert:\LocalMachine\My' $thumb) -ErrorAction Stop
-                    if (-not $cert.HasPrivateKey) { throw 'pinned certificate in LocalMachine/My has no private key' }
-                    Assert-WsusPortExclusive $port 'global SSL mapping creation'
-                    New-Item $sslPath -Value $cert | Out-Null
-                }
-                Assert-WsusPortExclusive $port 'post-mutation TLS verification'
-                $changed = $true
-            }
+                  # Re-read after binding normalization: removing/recreating an IIS binding can
+                  # change its provider mapping, so the pre-mutation snapshot is not authoritative.
+                  $bound = Get-Item $sslPath -ErrorAction SilentlyContinue
+                  $certificateDrift = -not $bound -or
+                      (-not [string]::Equals([string]$bound.Thumbprint, $thumb, [System.StringComparison]::OrdinalIgnoreCase))
+                  if ($certificateDrift) {
+                      if ($bound) {
+                          Assert-WsusPortExclusive $port 'global SSL mapping removal'
+                          Remove-Item $sslPath -ErrorAction Stop
+                      }
+                      $cert = Get-Item (Join-Path 'Cert:\LocalMachine\My' $thumb) -ErrorAction Stop
+                      if (-not $cert.HasPrivateKey) { throw 'pinned certificate in LocalMachine/My has no private key' }
+                      Assert-WsusPortExclusive $port 'global SSL mapping creation'
+                      New-Item $sslPath -Value $cert | Out-Null
+                  }
+                  Assert-WsusPortExclusive $port 'post-mutation TLS verification'
+                  $changed = $true
+              }
 
-            $verifyPortBindings = @(Get-IisBindingsAtPort $port)
-            $verifyForeignBindings = @($verifyPortBindings | Where-Object {
-                -not [string]::Equals($_.Site, $siteName, [System.StringComparison]::OrdinalIgnoreCase)
-            })
-            if ($verifyForeignBindings.Count -gt 0) {
-                throw ('foreign IIS ownership appeared during WSUS TLS reconciliation: [' +
-                    ((Format-IisBindingOwners $verifyForeignBindings) -join ';') + ']')
-            }
-            $verifyOwnedBindings = @($verifyPortBindings | Where-Object {
-                [string]::Equals($_.Site, $siteName, [System.StringComparison]::OrdinalIgnoreCase)
-            })
-            $verifyOwnedHttpsBindings = @(Get-WsusHttpsBindingRecords)
-            if ($verifyOwnedBindings.Count -ne 1 -or $verifyOwnedHttpsBindings.Count -ne 1 -or
-                (-not [string]::Equals($verifyOwnedBindings[0].Protocol, 'https', [System.StringComparison]::OrdinalIgnoreCase)) -or
-                (-not [string]::Equals($verifyOwnedBindings[0].BindingInformation, $desiredBinding, [System.StringComparison]::Ordinal)) -or
-                [int]($verifyOwnedBindings[0].SslFlags) -ne 0) {
-                throw ('WSUS site does not expose exactly one HTTPS binding total at target=' +
-                    $desiredBinding + ' sslFlags=0; targetPortActual=[' +
-                    ((Format-IisBindingOwners $verifyOwnedBindings) -join ';') +
-                    '] allHttpsActual=[' + ((Format-IisBindingOwners $verifyOwnedHttpsBindings) -join ';') + ']')
-            }
+              $verifyPortBindings = @(Get-IisBindingsAtPort $port)
+              $verifyForeignBindings = @($verifyPortBindings | Where-Object {
+                  -not [string]::Equals($_.Site, $siteName, [System.StringComparison]::OrdinalIgnoreCase)
+              })
+              if ($verifyForeignBindings.Count -gt 0) {
+                  throw ('foreign IIS ownership appeared during WSUS TLS reconciliation: [' +
+                      ((Format-IisBindingOwners $verifyForeignBindings) -join ';') + ']')
+              }
+              $verifyOwnedBindings = @($verifyPortBindings | Where-Object {
+                  [string]::Equals($_.Site, $siteName, [System.StringComparison]::OrdinalIgnoreCase)
+              })
+              $verifyOwnedHttpsBindings = @(Get-WsusHttpsBindingRecords)
+              if ($verifyOwnedBindings.Count -ne 1 -or $verifyOwnedHttpsBindings.Count -ne 1 -or
+                  (-not [string]::Equals($verifyOwnedBindings[0].Protocol, 'https', [System.StringComparison]::OrdinalIgnoreCase)) -or
+                  (-not [string]::Equals($verifyOwnedBindings[0].BindingInformation, $desiredBinding, [System.StringComparison]::Ordinal)) -or
+                  [int]($verifyOwnedBindings[0].SslFlags) -ne 0) {
+                  throw ('WSUS site does not expose exactly one HTTPS binding total at target=' +
+                      $desiredBinding + ' sslFlags=0; targetPortActual=[' +
+                      ((Format-IisBindingOwners $verifyOwnedBindings) -join ';') +
+                      '] allHttpsActual=[' + ((Format-IisBindingOwners $verifyOwnedHttpsBindings) -join ';') + ']')
+              }
 
-            $verify = Get-Item $sslPath -ErrorAction Stop
-            if (-not [string]::Equals([string]$verify.Thumbprint, $thumb, [System.StringComparison]::OrdinalIgnoreCase)) {
-                throw 'SSL binding did not persist the pinned thumbprint'
-            }
-            if ($changed) { Write-Output 'changed' } else { Write-Output 'nochange' }
+              $verify = Get-Item $sslPath -ErrorAction Stop
+              if (-not [string]::Equals([string]$verify.Thumbprint, $thumb, [System.StringComparison]::OrdinalIgnoreCase)) {
+                  throw 'SSL binding did not persist the pinned thumbprint'
+              }
+              $Ansible.Changed = $changed
+              if ($changed) { Write-Output 'changed' } else { Write-Output 'nochange' }
           environment:
             TLS_THUMBPRINT: '{{ __tls_thumbprint__ }}'
             TLS_PORT: '{{ config.tls.port }}'
           register: __tls_binding__
-          changed_when: "__tls_binding__.stdout | trim == 'changed'"
 
         # configuressl persists the client endpoint contract in the WSUS Server Setup registry
         # key.  Read all three authoritative values before deciding whether the utility must run.
@@ -2534,222 +2537,227 @@
 
     # Independent read-only acceptance gate.  This re-derives the externally meaningful state
     # rather than trusting task return values; it is also safe to run after a second converge.
+    # Run the expanded API helper in the module runspace: win_shell would encode this verifier
+    # into a child-process command line that exceeds Windows' CreateProcess limit.
     - name: 'VERIFY | Assert The Complete WSUS Runtime Contract'
-      ansible.windows.win_shell: |
-        $ErrorActionPreference = 'Stop'
-        Import-Module WebAdministration
-        if ([System.Convert]::ToBoolean($env:TLS_ENABLED)) {
-            $wsusSitePath = 'IIS:\Sites\WSUS Administration'
-            if (-not (Test-Path -LiteralPath $wsusSitePath)) {
-                throw 'required IIS site is absent: WSUS Administration'
-            }
-            $wsusSite = Get-Item -LiteralPath $wsusSitePath -ErrorAction Stop
-            $wsusSiteState = [string](Get-WebItemState -PSPath $wsusSitePath -ErrorAction Stop).Value
-            if ($wsusSiteState -ne 'Started') {
-                throw ('WSUS Administration IIS site is ' + $wsusSiteState + ', not Started')
-            }
-            if (-not [System.Convert]::ToBoolean($wsusSite.serverAutoStart)) {
-                throw 'WSUS Administration IIS site serverAutoStart is not true'
-            }
-        }
-        {{ __wsus_api_invoker__ }}
-        Invoke-LocalWsusApi {
-        param($wsus)
-        $widService = Get-CimInstance -ClassName Win32_Service -Filter 'Name = "MSSQL$MICROSOFT##WID"' -ErrorAction Stop
-        if ($widService.StartMode -ne 'Auto' -or $widService.State -ne 'Running') {
-            throw ('MSSQL$MICROSOFT##WID must be Automatic and Running; startup=' +
-                $widService.StartMode + ' state=' + $widService.State)
-        }
-        foreach ($serviceName in @('W3SVC', 'WsusService')) {
-            $service = Get-Service -Name $serviceName -ErrorAction Stop
-            if ($service.Status -ne 'Running') { throw "$serviceName is $($service.Status), not Running" }
-        }
-        foreach ($path in @($env:CONTENT_DIR, $env:WID_DATA_DIR, $env:IIS_LOG_DIR, $env:IIS_WWWROOT)) {
-            if (-not (Test-Path -LiteralPath $path -PathType Container)) { throw "required directory is absent: $path" }
-        }
-        $cfg = $wsus.GetConfiguration()
-        function Normalize-ContractPath([string]$path) {
-            if ([string]::IsNullOrWhiteSpace($path)) { return '' }
-            return $path.Trim().Replace('/', [char]92).TrimEnd([char]92)
-        }
-        function Test-ContractPath([string]$actual, [string]$expected) {
-            return [string]::Equals(
-                (Normalize-ContractPath $actual),
-                (Normalize-ContractPath $expected),
-                [System.StringComparison]::OrdinalIgnoreCase)
-        }
-        function Test-RequiredAllowAce(
-            [string]$path,
-            [string]$sidValue,
-            [System.Security.AccessControl.FileSystemRights]$rights
-        ) {
-            $inheritance = [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
-                [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
-            $allowed = $false
-            foreach ($rule in (Get-Acl -LiteralPath $path -ErrorAction Stop).Access) {
-                try {
-                    $ruleSid = $rule.IdentityReference.Translate(
-                        [System.Security.Principal.SecurityIdentifier]).Value
-                } catch {
-                    continue
-                }
-                if ($ruleSid -ne $sidValue) { continue }
-                if ($rule.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Deny -and
-                    ($rule.FileSystemRights -band $rights) -ne 0) {
-                    return $false
-                }
-                if ($rule.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow -and
-                    ($rule.FileSystemRights -band $rights) -eq $rights -and
-                    ($rule.InheritanceFlags -band $inheritance) -eq $inheritance) {
-                    $allowed = $true
-                }
-            }
-            return $allowed
-        }
-        function Test-ServerAuthenticationEku(
-            [System.Security.Cryptography.X509Certificates.X509Certificate2]$certificate
-        ) {
-            foreach ($extension in $certificate.Extensions) {
-                if ($extension.Oid.Value -ne '2.5.29.37') { continue }
-                $eku = [System.Security.Cryptography.X509Certificates.X509EnhancedKeyUsageExtension]::new()
-                $eku.CopyFrom($extension)
-                foreach ($usage in $eku.EnhancedKeyUsages) {
-                    if ($usage.Value -eq '1.3.6.1.5.5.7.3.1') { return $true }
-                }
-            }
-            return $false
-        }
-        $contentRoot = Normalize-ContractPath $env:CONTENT_DIR
-        $contentCache = Join-Path $contentRoot 'WsusContent'
-        if (-not (Test-Path -LiteralPath $contentCache -PathType Container)) {
-            throw ('WSUS content cache directory is absent: ' + $contentCache)
-        }
-        $setup = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Update Services\Server\Setup' -ErrorAction Stop
-        $contentVdir = Get-Item -LiteralPath 'IIS:\Sites\WSUS Administration\Content' -ErrorAction Stop
-        if (-not (Test-ContractPath ([string]$setup.ContentDir) $contentRoot) -or
-            -not (Test-ContractPath ([string]$cfg.LocalContentCachePath) $contentCache) -or
-            -not (Test-ContractPath ([string]$contentVdir.physicalPath) $contentCache)) {
-            throw 'registry, API, or IIS WSUS content path differs from the desired content volume'
-        }
-        if (-not (Test-RequiredAllowAce $contentRoot 'S-1-5-32-545' ([System.Security.AccessControl.FileSystemRights]::ReadAndExecute))) {
-            throw 'WSUS content root lacks the inheritable BUILTIN\Users ReadAndExecute grant'
-        }
-        if (-not (Test-RequiredAllowAce $contentCache 'S-1-5-20' ([System.Security.AccessControl.FileSystemRights]::FullControl))) {
-            throw 'WSUS content cache lacks the inheritable NETWORK SERVICE FullControl grant'
-        }
-        $wantPort = [int]$env:UPSTREAM_PORT
-        $wantSsl = [System.Convert]::ToBoolean($env:UPSTREAM_SSL)
-        $wantReplica = [System.Convert]::ToBoolean($env:REPLICA)
-        if ($cfg.SyncFromMicrosoftUpdate -or
-            $cfg.UpstreamWsusServerName -ne $env:UPSTREAM_SERVER -or
-            $cfg.UpstreamWsusServerPortNumber -ne $wantPort -or
-            $cfg.UpstreamWsusServerUseSsl -ne $wantSsl -or
-            $cfg.IsReplicaServer -ne $wantReplica) {
-            throw 'persisted WSUS upstream source differs from the desired contract'
-        }
-        $pool = Get-Item 'IIS:\AppPools\WsusPool' -ErrorAction Stop
-        if ([string]$pool.state -ne 'Started') { throw ('WsusPool is ' + [string]$pool.state) }
-        $wantQueueLength = [long]$env:WSUSPOOL_QUEUE_LENGTH
-        $wantPrivateMemory = [long]$env:WSUSPOOL_PRIVATE_MEMORY_KB
-        $wantVirtualMemory = [long]$env:WSUSPOOL_VIRTUAL_MEMORY_KB
-        $wantPeriodicRestart = [System.TimeSpan]::Parse($env:WSUSPOOL_PERIODIC_RESTART)
-        $wantIdleTimeout = [System.TimeSpan]::Parse($env:WSUSPOOL_IDLE_TIMEOUT)
-        $wantPinging = [System.Convert]::ToBoolean($env:WSUSPOOL_PINGING_ENABLED)
-        $actualPeriodicRestart = [System.TimeSpan]::Parse([string]$pool.recycling.periodicRestart.time)
-        $actualIdleTimeout = [System.TimeSpan]::Parse([string]$pool.processModel.idleTimeout)
-        if ([long]$pool.queueLength -ne $wantQueueLength -or
-            [long]$pool.recycling.periodicRestart.privateMemory -ne $wantPrivateMemory -or
-            [long]$pool.recycling.periodicRestart.memory -ne $wantVirtualMemory -or
-            $actualPeriodicRestart -ne $wantPeriodicRestart -or
-            $actualIdleTimeout -ne $wantIdleTimeout -or
-            [System.Convert]::ToBoolean($pool.processModel.pingingEnabled) -ne $wantPinging) {
-            throw 'WsusPool tuning differs from the desired queue, memory, recycle, idle, or pinging contract'
-        }
-        $defaultSite = Get-Website -Name 'Default Web Site' -ErrorAction Stop
-        if (-not [string]::Equals($defaultSite.physicalPath.TrimEnd([char]92), $env:IIS_WWWROOT.TrimEnd([char]92), [System.StringComparison]::OrdinalIgnoreCase)) {
-            throw ('Default Web Site root differs from ' + $env:IIS_WWWROOT)
-        }
-        $globalLog = (Get-WebConfigurationProperty -Filter 'system.applicationHost/sites/siteDefaults/logFile' -Name directory).Value
-        $globalLogEnabled = (Get-WebConfigurationProperty -Filter 'system.applicationHost/sites/siteDefaults/logFile' -Name enabled).Value
-        if (-not [System.Convert]::ToBoolean($globalLogEnabled)) {
-            throw 'IIS siteDefaults logging is disabled'
-        }
-        if (-not [string]::Equals(([string]$globalLog).TrimEnd([char]92), $env:IIS_LOG_DIR.TrimEnd([char]92), [System.StringComparison]::OrdinalIgnoreCase)) {
-            throw ('IIS siteDefaults log path differs from ' + $env:IIS_LOG_DIR)
-        }
-        foreach ($site in @(Get-Website)) {
-            if (-not [System.Convert]::ToBoolean($site.logFile.enabled)) {
-                throw ($site.Name + ' logging is disabled')
-            }
-            if (-not [string]::Equals(([string]$site.logFile.directory).TrimEnd([char]92), $env:IIS_LOG_DIR.TrimEnd([char]92), [System.StringComparison]::OrdinalIgnoreCase)) {
-                throw ($site.Name + ' log path differs from ' + $env:IIS_LOG_DIR)
-            }
-        }
-        if ([System.Convert]::ToBoolean($env:TLS_ENABLED)) {
-            $desiredBinding = '*:' + [int]$env:TLS_PORT + ':'
-            $siteBindings = @(Get-WebBinding -Name 'WSUS Administration' -Protocol https -ErrorAction Stop)
-            $desiredSiteBindings = @($siteBindings | Where-Object {
-                [string]::Equals([string]$_.bindingInformation, $desiredBinding, [System.StringComparison]::Ordinal)
-            })
-            if ($siteBindings.Count -ne 1 -or $desiredSiteBindings.Count -ne 1 -or
-                [int]($desiredSiteBindings[0].sslFlags) -ne 0) {
-                throw ('WSUS site lacks exactly one HTTPS binding total, at ' +
-                    $desiredBinding + ' with sslFlags=0')
-            }
-            $binding = Get-Item ('IIS:\SslBindings\0.0.0.0!' + [int]$env:TLS_PORT) -ErrorAction Stop
-            if ($binding.Thumbprint -ne $env:TLS_THUMBPRINT) { throw 'IIS SSL binding differs from the pinned certificate' }
-            $certificatePath = Join-Path 'Cert:\LocalMachine\My' $env:TLS_THUMBPRINT
-            $certificate = Get-Item $certificatePath -ErrorAction Stop
-            if (-not (Test-ServerAuthenticationEku $certificate)) {
-                throw 'pinned IIS certificate does not explicitly permit Server Authentication EKU (OID 1.3.6.1.5.5.7.3.1)'
-            }
-            $setup = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Update Services\Server\Setup' -ErrorAction Stop
-            if ([int]$setup.UsingSSL -ne 1 -or
-                [int]$setup.PortNumber -ne [int]$env:TLS_PORT -or
-                (-not [string]::Equals([string]$setup.ServerCertificateName, $env:TLS_DNS_NAME, [System.StringComparison]::OrdinalIgnoreCase))) {
-                throw 'persisted WSUS SSL hostname or port differs from the desired TLS contract'
-            }
-            foreach ($name in @('ApiRemoting30', 'ClientWebService', 'DSSAuthWebService', 'ServerSyncWebService', 'SimpleAuthWebService')) {
-                $location = 'WSUS Administration/' + $name
-                $flags = [string](Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Location $location -Filter 'system.webServer/security/access' -Name 'sslFlags').Value
-                if ($flags -ne 'Ssl' -and $flags -ne '8') { throw ($location + ' does not require SSL') }
-            }
-        }
-        if ([System.Convert]::ToBoolean($env:BOOTSTRAP_ENABLED)) {
-            $serverId = [string]$cfg.ServerId
-            $fingerprintInput = @(
-                $env:UPSTREAM_SERVER.Trim().ToLowerInvariant(),
-                $env:UPSTREAM_PORT,
-                $env:UPSTREAM_SSL.ToLowerInvariant(),
-                $env:REPLICA.ToLowerInvariant(),
-                $env:WSUS_LANGS.ToLowerInvariant()
-            ) -join '|'
-            $sha = [System.Security.Cryptography.SHA256]::Create()
-            try {
-                $expectedFingerprint = ([System.BitConverter]::ToString(
-                    $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($fingerprintInput))
-                )).Replace('-', '')
-            } finally {
-                $sha.Dispose()
-            }
-            $marker = Get-ItemProperty 'HKLM:\SOFTWARE\nwarila-platform\wsus' -ErrorAction Stop
-            if ($marker.category_bootstrap_server_id -ne $serverId -or
-                $marker.category_bootstrap_fingerprint -ne $expectedFingerprint -or
-                [string]::IsNullOrWhiteSpace([string]$marker.category_bootstrap_history_id)) {
-                throw 'terminal-success category bootstrap marker is absent or stale'
-            }
-            $markedHistory = @($wsus.GetSubscription().GetSynchronizationHistory() | Where-Object {
-                [string]$_.Id -eq [string]$marker.category_bootstrap_history_id
-            })
-            if ($markedHistory.Count -ne 1 -or
-                -not [bool]($markedHistory[0].StartedManually) -or
-                [string]($markedHistory[0].Result) -ne 'Succeeded') {
-                throw ('bootstrap marker history ' + [string]$marker.category_bootstrap_history_id +
-                    ' is absent, ambiguous, non-manual, or no longer Succeeded')
-            }
-        }
-        Write-Output 'healthy'
-        }
+      ansible.windows.win_powershell:
+        error_action: stop
+        script: |
+          $ErrorActionPreference = 'Stop'
+          $Ansible.Changed = $false
+          Import-Module WebAdministration
+          if ([System.Convert]::ToBoolean($env:TLS_ENABLED)) {
+              $wsusSitePath = 'IIS:\Sites\WSUS Administration'
+              if (-not (Test-Path -LiteralPath $wsusSitePath)) {
+                  throw 'required IIS site is absent: WSUS Administration'
+              }
+              $wsusSite = Get-Item -LiteralPath $wsusSitePath -ErrorAction Stop
+              $wsusSiteState = [string](Get-WebItemState -PSPath $wsusSitePath -ErrorAction Stop).Value
+              if ($wsusSiteState -ne 'Started') {
+                  throw ('WSUS Administration IIS site is ' + $wsusSiteState + ', not Started')
+              }
+              if (-not [System.Convert]::ToBoolean($wsusSite.serverAutoStart)) {
+                  throw 'WSUS Administration IIS site serverAutoStart is not true'
+              }
+          }
+          {{ __wsus_api_invoker__ }}
+          Invoke-LocalWsusApi {
+          param($wsus)
+          $widService = Get-CimInstance -ClassName Win32_Service -Filter 'Name = "MSSQL$MICROSOFT##WID"' -ErrorAction Stop
+          if ($widService.StartMode -ne 'Auto' -or $widService.State -ne 'Running') {
+              throw ('MSSQL$MICROSOFT##WID must be Automatic and Running; startup=' +
+                  $widService.StartMode + ' state=' + $widService.State)
+          }
+          foreach ($serviceName in @('W3SVC', 'WsusService')) {
+              $service = Get-Service -Name $serviceName -ErrorAction Stop
+              if ($service.Status -ne 'Running') { throw "$serviceName is $($service.Status), not Running" }
+          }
+          foreach ($path in @($env:CONTENT_DIR, $env:WID_DATA_DIR, $env:IIS_LOG_DIR, $env:IIS_WWWROOT)) {
+              if (-not (Test-Path -LiteralPath $path -PathType Container)) { throw "required directory is absent: $path" }
+          }
+          $cfg = $wsus.GetConfiguration()
+          function Normalize-ContractPath([string]$path) {
+              if ([string]::IsNullOrWhiteSpace($path)) { return '' }
+              return $path.Trim().Replace('/', [char]92).TrimEnd([char]92)
+          }
+          function Test-ContractPath([string]$actual, [string]$expected) {
+              return [string]::Equals(
+                  (Normalize-ContractPath $actual),
+                  (Normalize-ContractPath $expected),
+                  [System.StringComparison]::OrdinalIgnoreCase)
+          }
+          function Test-RequiredAllowAce(
+              [string]$path,
+              [string]$sidValue,
+              [System.Security.AccessControl.FileSystemRights]$rights
+          ) {
+              $inheritance = [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+                  [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
+              $allowed = $false
+              foreach ($rule in (Get-Acl -LiteralPath $path -ErrorAction Stop).Access) {
+                  try {
+                      $ruleSid = $rule.IdentityReference.Translate(
+                          [System.Security.Principal.SecurityIdentifier]).Value
+                  } catch {
+                      continue
+                  }
+                  if ($ruleSid -ne $sidValue) { continue }
+                  if ($rule.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Deny -and
+                      ($rule.FileSystemRights -band $rights) -ne 0) {
+                      return $false
+                  }
+                  if ($rule.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow -and
+                      ($rule.FileSystemRights -band $rights) -eq $rights -and
+                      ($rule.InheritanceFlags -band $inheritance) -eq $inheritance) {
+                      $allowed = $true
+                  }
+              }
+              return $allowed
+          }
+          function Test-ServerAuthenticationEku(
+              [System.Security.Cryptography.X509Certificates.X509Certificate2]$certificate
+          ) {
+              foreach ($extension in $certificate.Extensions) {
+                  if ($extension.Oid.Value -ne '2.5.29.37') { continue }
+                  $eku = [System.Security.Cryptography.X509Certificates.X509EnhancedKeyUsageExtension]::new()
+                  $eku.CopyFrom($extension)
+                  foreach ($usage in $eku.EnhancedKeyUsages) {
+                      if ($usage.Value -eq '1.3.6.1.5.5.7.3.1') { return $true }
+                  }
+              }
+              return $false
+          }
+          $contentRoot = Normalize-ContractPath $env:CONTENT_DIR
+          $contentCache = Join-Path $contentRoot 'WsusContent'
+          if (-not (Test-Path -LiteralPath $contentCache -PathType Container)) {
+              throw ('WSUS content cache directory is absent: ' + $contentCache)
+          }
+          $setup = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Update Services\Server\Setup' -ErrorAction Stop
+          $contentVdir = Get-Item -LiteralPath 'IIS:\Sites\WSUS Administration\Content' -ErrorAction Stop
+          if (-not (Test-ContractPath ([string]$setup.ContentDir) $contentRoot) -or
+              -not (Test-ContractPath ([string]$cfg.LocalContentCachePath) $contentCache) -or
+              -not (Test-ContractPath ([string]$contentVdir.physicalPath) $contentCache)) {
+              throw 'registry, API, or IIS WSUS content path differs from the desired content volume'
+          }
+          if (-not (Test-RequiredAllowAce $contentRoot 'S-1-5-32-545' ([System.Security.AccessControl.FileSystemRights]::ReadAndExecute))) {
+              throw 'WSUS content root lacks the inheritable BUILTIN\Users ReadAndExecute grant'
+          }
+          if (-not (Test-RequiredAllowAce $contentCache 'S-1-5-20' ([System.Security.AccessControl.FileSystemRights]::FullControl))) {
+              throw 'WSUS content cache lacks the inheritable NETWORK SERVICE FullControl grant'
+          }
+          $wantPort = [int]$env:UPSTREAM_PORT
+          $wantSsl = [System.Convert]::ToBoolean($env:UPSTREAM_SSL)
+          $wantReplica = [System.Convert]::ToBoolean($env:REPLICA)
+          if ($cfg.SyncFromMicrosoftUpdate -or
+              $cfg.UpstreamWsusServerName -ne $env:UPSTREAM_SERVER -or
+              $cfg.UpstreamWsusServerPortNumber -ne $wantPort -or
+              $cfg.UpstreamWsusServerUseSsl -ne $wantSsl -or
+              $cfg.IsReplicaServer -ne $wantReplica) {
+              throw 'persisted WSUS upstream source differs from the desired contract'
+          }
+          $pool = Get-Item 'IIS:\AppPools\WsusPool' -ErrorAction Stop
+          if ([string]$pool.state -ne 'Started') { throw ('WsusPool is ' + [string]$pool.state) }
+          $wantQueueLength = [long]$env:WSUSPOOL_QUEUE_LENGTH
+          $wantPrivateMemory = [long]$env:WSUSPOOL_PRIVATE_MEMORY_KB
+          $wantVirtualMemory = [long]$env:WSUSPOOL_VIRTUAL_MEMORY_KB
+          $wantPeriodicRestart = [System.TimeSpan]::Parse($env:WSUSPOOL_PERIODIC_RESTART)
+          $wantIdleTimeout = [System.TimeSpan]::Parse($env:WSUSPOOL_IDLE_TIMEOUT)
+          $wantPinging = [System.Convert]::ToBoolean($env:WSUSPOOL_PINGING_ENABLED)
+          $actualPeriodicRestart = [System.TimeSpan]::Parse([string]$pool.recycling.periodicRestart.time)
+          $actualIdleTimeout = [System.TimeSpan]::Parse([string]$pool.processModel.idleTimeout)
+          if ([long]$pool.queueLength -ne $wantQueueLength -or
+              [long]$pool.recycling.periodicRestart.privateMemory -ne $wantPrivateMemory -or
+              [long]$pool.recycling.periodicRestart.memory -ne $wantVirtualMemory -or
+              $actualPeriodicRestart -ne $wantPeriodicRestart -or
+              $actualIdleTimeout -ne $wantIdleTimeout -or
+              [System.Convert]::ToBoolean($pool.processModel.pingingEnabled) -ne $wantPinging) {
+              throw 'WsusPool tuning differs from the desired queue, memory, recycle, idle, or pinging contract'
+          }
+          $defaultSite = Get-Website -Name 'Default Web Site' -ErrorAction Stop
+          if (-not [string]::Equals($defaultSite.physicalPath.TrimEnd([char]92), $env:IIS_WWWROOT.TrimEnd([char]92), [System.StringComparison]::OrdinalIgnoreCase)) {
+              throw ('Default Web Site root differs from ' + $env:IIS_WWWROOT)
+          }
+          $globalLog = (Get-WebConfigurationProperty -Filter 'system.applicationHost/sites/siteDefaults/logFile' -Name directory).Value
+          $globalLogEnabled = (Get-WebConfigurationProperty -Filter 'system.applicationHost/sites/siteDefaults/logFile' -Name enabled).Value
+          if (-not [System.Convert]::ToBoolean($globalLogEnabled)) {
+              throw 'IIS siteDefaults logging is disabled'
+          }
+          if (-not [string]::Equals(([string]$globalLog).TrimEnd([char]92), $env:IIS_LOG_DIR.TrimEnd([char]92), [System.StringComparison]::OrdinalIgnoreCase)) {
+              throw ('IIS siteDefaults log path differs from ' + $env:IIS_LOG_DIR)
+          }
+          foreach ($site in @(Get-Website)) {
+              if (-not [System.Convert]::ToBoolean($site.logFile.enabled)) {
+                  throw ($site.Name + ' logging is disabled')
+              }
+              if (-not [string]::Equals(([string]$site.logFile.directory).TrimEnd([char]92), $env:IIS_LOG_DIR.TrimEnd([char]92), [System.StringComparison]::OrdinalIgnoreCase)) {
+                  throw ($site.Name + ' log path differs from ' + $env:IIS_LOG_DIR)
+              }
+          }
+          if ([System.Convert]::ToBoolean($env:TLS_ENABLED)) {
+              $desiredBinding = '*:' + [int]$env:TLS_PORT + ':'
+              $siteBindings = @(Get-WebBinding -Name 'WSUS Administration' -Protocol https -ErrorAction Stop)
+              $desiredSiteBindings = @($siteBindings | Where-Object {
+                  [string]::Equals([string]$_.bindingInformation, $desiredBinding, [System.StringComparison]::Ordinal)
+              })
+              if ($siteBindings.Count -ne 1 -or $desiredSiteBindings.Count -ne 1 -or
+                  [int]($desiredSiteBindings[0].sslFlags) -ne 0) {
+                  throw ('WSUS site lacks exactly one HTTPS binding total, at ' +
+                      $desiredBinding + ' with sslFlags=0')
+              }
+              $binding = Get-Item ('IIS:\SslBindings\0.0.0.0!' + [int]$env:TLS_PORT) -ErrorAction Stop
+              if ($binding.Thumbprint -ne $env:TLS_THUMBPRINT) { throw 'IIS SSL binding differs from the pinned certificate' }
+              $certificatePath = Join-Path 'Cert:\LocalMachine\My' $env:TLS_THUMBPRINT
+              $certificate = Get-Item $certificatePath -ErrorAction Stop
+              if (-not (Test-ServerAuthenticationEku $certificate)) {
+                  throw 'pinned IIS certificate does not explicitly permit Server Authentication EKU (OID 1.3.6.1.5.5.7.3.1)'
+              }
+              $setup = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Update Services\Server\Setup' -ErrorAction Stop
+              if ([int]$setup.UsingSSL -ne 1 -or
+                  [int]$setup.PortNumber -ne [int]$env:TLS_PORT -or
+                  (-not [string]::Equals([string]$setup.ServerCertificateName, $env:TLS_DNS_NAME, [System.StringComparison]::OrdinalIgnoreCase))) {
+                  throw 'persisted WSUS SSL hostname or port differs from the desired TLS contract'
+              }
+              foreach ($name in @('ApiRemoting30', 'ClientWebService', 'DSSAuthWebService', 'ServerSyncWebService', 'SimpleAuthWebService')) {
+                  $location = 'WSUS Administration/' + $name
+                  $flags = [string](Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Location $location -Filter 'system.webServer/security/access' -Name 'sslFlags').Value
+                  if ($flags -ne 'Ssl' -and $flags -ne '8') { throw ($location + ' does not require SSL') }
+              }
+          }
+          if ([System.Convert]::ToBoolean($env:BOOTSTRAP_ENABLED)) {
+              $serverId = [string]$cfg.ServerId
+              $fingerprintInput = @(
+                  $env:UPSTREAM_SERVER.Trim().ToLowerInvariant(),
+                  $env:UPSTREAM_PORT,
+                  $env:UPSTREAM_SSL.ToLowerInvariant(),
+                  $env:REPLICA.ToLowerInvariant(),
+                  $env:WSUS_LANGS.ToLowerInvariant()
+              ) -join '|'
+              $sha = [System.Security.Cryptography.SHA256]::Create()
+              try {
+                  $expectedFingerprint = ([System.BitConverter]::ToString(
+                      $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($fingerprintInput))
+                  )).Replace('-', '')
+              } finally {
+                  $sha.Dispose()
+              }
+              $marker = Get-ItemProperty 'HKLM:\SOFTWARE\nwarila-platform\wsus' -ErrorAction Stop
+              if ($marker.category_bootstrap_server_id -ne $serverId -or
+                  $marker.category_bootstrap_fingerprint -ne $expectedFingerprint -or
+                  [string]::IsNullOrWhiteSpace([string]$marker.category_bootstrap_history_id)) {
+                  throw 'terminal-success category bootstrap marker is absent or stale'
+              }
+              $markedHistory = @($wsus.GetSubscription().GetSynchronizationHistory() | Where-Object {
+                  [string]$_.Id -eq [string]$marker.category_bootstrap_history_id
+              })
+              if ($markedHistory.Count -ne 1 -or
+                  -not [bool]($markedHistory[0].StartedManually) -or
+                  [string]($markedHistory[0].Result) -ne 'Succeeded') {
+                  throw ('bootstrap marker history ' + [string]$marker.category_bootstrap_history_id +
+                      ' is absent, ambiguous, non-manual, or no longer Succeeded')
+              }
+          }
+          Write-Output 'healthy'
+          }
       environment:
         CONTENT_DIR: '{{ __content_dir__ }}'
         WID_DATA_DIR: '{{ __wid_data_dir__ }}'
@@ -2771,7 +2779,6 @@
         TLS_DNS_NAME: '{{ config.tls.dns_name }}'
         TLS_THUMBPRINT: '{{ config.tls.thumbprint | trim | upper }}'
         BOOTSTRAP_ENABLED: '{{ config.sync.bootstrap_enabled | bool | lower }}'
-      changed_when: false
 
     #endregion --- [ Main: WSUS SSL (delivered certificate) ] ------------------------------- #
 
