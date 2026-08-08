@@ -1233,14 +1233,25 @@
 
     # A host that already persisted UsingSSL=1 must repair its local listener before any API
     # actor attempts the pinned HTTPS session. Fresh pre-SSL installs return nochange here and
-    # activate through the same primitive immediately after configuressl below.
+    # activate through the same primitive immediately after configuressl below. win_powershell
+    # runs this large shared primitive in the module runspace; win_shell would Base64-expand it
+    # beyond the Windows child-process command-line limit before PowerShell could execute it.
     - name: 'MAIN | Reconcile Existing WSUS HTTPS Listener Before API Access'
-      ansible.windows.win_shell: |
-        $ErrorActionPreference = 'Stop'
-        {{ __wsus_https_listener_reconciler__ }}
-        Invoke-LocalWsusHttpsListenerReconcile
+      ansible.windows.win_powershell:
+        error_action: stop
+        script: |
+          $ErrorActionPreference = 'Stop'
+          $Ansible.Changed = $false
+          {{ __wsus_https_listener_reconciler__ }}
+          $listenerResult = @(Invoke-LocalWsusHttpsListenerReconcile)
+          if ($listenerResult.Count -ne 1 -or
+              [string]$listenerResult[0] -notin @('changed', 'nochange')) {
+              throw ('listener reconciler returned an invalid result contract: [' +
+                  (($listenerResult | ForEach-Object { [string]$_ }) -join ';') + ']')
+          }
+          $Ansible.Changed = [string]$listenerResult[0] -eq 'changed'
+          Write-Output ([string]$listenerResult[0])
       register: __pre_api_tls_listener_activation__
-      changed_when: "__pre_api_tls_listener_activation__.stdout | trim == 'changed'"
 
     - name: 'MAIN | Verify SUSDB Relocation Health'
       ansible.windows.win_shell: |
@@ -2424,14 +2435,24 @@
         # that HTTP.sys has activated the listener. Reconcile the site's persistent/runtime state,
         # and recycle only this site when a nominally Started site still has no loopback listener.
         # Listener absence is runtime drift even when persisted TLS configuration is unchanged;
-        # a healthy converged pass performs no restart and reports no change.
+        # a healthy converged pass performs no restart and reports no change. Keep this invocation
+        # in the module runspace for the same command-line-size reason as the pre-API invocation.
         - name: 'MAIN | Activate And Verify The WSUS HTTPS Listener'
-          ansible.windows.win_shell: |
-            $ErrorActionPreference = 'Stop'
-            {{ __wsus_https_listener_reconciler__ }}
-            Invoke-LocalWsusHttpsListenerReconcile
+          ansible.windows.win_powershell:
+            error_action: stop
+            script: |
+              $ErrorActionPreference = 'Stop'
+              $Ansible.Changed = $false
+              {{ __wsus_https_listener_reconciler__ }}
+              $listenerResult = @(Invoke-LocalWsusHttpsListenerReconcile)
+              if ($listenerResult.Count -ne 1 -or
+                  [string]$listenerResult[0] -notin @('changed', 'nochange')) {
+                  throw ('listener reconciler returned an invalid result contract: [' +
+                      (($listenerResult | ForEach-Object { [string]$_ }) -join ';') + ']')
+              }
+              $Ansible.Changed = [string]$listenerResult[0] -eq 'changed'
+              Write-Output ([string]$listenerResult[0])
           register: __tls_listener_activation__
-          changed_when: "__tls_listener_activation__.stdout | trim == 'changed'"
 
         # Validate what IIS actually serves, independently of the certificate-store and binding
         # APIs. Trust distribution is out of scope, so the callback permits the private CA while
