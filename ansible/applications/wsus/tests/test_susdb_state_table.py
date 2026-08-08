@@ -1,6 +1,7 @@
 """Offline coverage for the WSUS role's recovery and content-state contracts."""
 
 from pathlib import Path
+from textwrap import dedent
 import unittest
 
 from jinja2 import Environment
@@ -159,7 +160,7 @@ class PowerShellTransportContractTest(unittest.TestCase):
 
         self.assertTrue(measurements)
         largest = max(measurements)
-        self.assertEqual(largest[1], BOOTSTRAP_TASK)
+        self.assertEqual(largest[1], TLS_CONFIGURESSL_TASK)
 
 
 class SusdbStateTableTest(unittest.TestCase):
@@ -538,6 +539,100 @@ class WsusPoolContractTest(unittest.TestCase):
 
 
 class HttpsListenerContractTest(unittest.TestCase):
+    @staticmethod
+    def normalized_powershell_function(script, function_name):
+        lines = script.splitlines()
+        declaration = f"function {function_name}"
+        starts = [
+            index
+            for index, line in enumerate(lines)
+            if line.lstrip().startswith(declaration)
+        ]
+        if len(starts) != 1:
+            raise AssertionError(
+                f"expected one {function_name} function, found {len(starts)}"
+            )
+        start = starts[0]
+        indentation = len(lines[start]) - len(lines[start].lstrip())
+        closing = " " * indentation + "}"
+        for end in range(start + 1, len(lines)):
+            if lines[end] == closing:
+                return dedent("\n".join(lines[start : end + 1])).strip()
+        raise AssertionError(f"{function_name} function has no closing brace")
+
+    def assert_runtime_mwa_factory(self, script, expected_manager_count):
+        factory_start = script.index("function New-WsusServerManager")
+        first_manager = script.index(
+            "$serverManager = New-WsusServerManager", factory_start
+        )
+        factory = self.normalized_powershell_function(
+            script, "New-WsusServerManager"
+        )
+
+        self.assertNotIn("[Microsoft.Web.Administration.ServerManager]", script)
+        self.assertEqual(script.count("function New-WsusServerManager"), 1)
+        self.assertEqual(
+            script.count("$serverManager = New-WsusServerManager"),
+            expected_manager_count,
+        )
+        self.assertIn("[System.Environment]::Is64BitOperatingSystem", factory)
+        self.assertIn("[System.Environment]::Is64BitProcess", factory)
+        self.assertIn("if (-not $process64) {", factory)
+        self.assertIn("64-bit PowerShell is required for IIS management", factory)
+        self.assertIn("$PSVersionTable.PSVersion", factory)
+        self.assertIn("$PSVersionTable.PSEdition", factory)
+        self.assertIn("function Resolve-LoadedWsusServerManagerType", factory)
+        self.assertIn("[System.AppDomain]::CurrentDomain.GetAssemblies()", factory)
+        self.assertIn("$loadedAssembly.GetName().Name", factory)
+        self.assertIn("$loadedAssembly.GetType(", factory)
+        self.assertIn("$windowsDirectory = [string]$env:WINDIR", factory)
+        self.assertIn(
+            "'System32\\inetsrv\\Microsoft.Web.Administration.dll'", factory
+        )
+        self.assertIn("Test-Path -LiteralPath $assemblyPath -PathType Leaf", factory)
+        self.assertIn("$null = Add-Type -LiteralPath $assemblyPath", factory)
+        self.assertIn("IIS management TypeNotFound", factory)
+        self.assertIn("[System.Activator]::CreateInstance($serverManagerType)", factory)
+        self.assertIn("$_.FullyQualifiedErrorId", factory)
+        self.assertIn("$_.Exception.ToString()", factory)
+        self.assertIn("return $serverManager", factory)
+        self.assertNotIn("Write-Output", factory)
+
+        resolve_statement = (
+            "$serverManagerType = Resolve-LoadedWsusServerManagerType $typeName"
+        )
+        self.assertEqual(factory.count(resolve_statement), 2)
+        self.assertEqual(factory.count("$null = Add-Type -LiteralPath $assemblyPath"), 1)
+        first_resolve = factory.index(resolve_statement)
+        unresolved_guard = factory.index(
+            "if ($null -eq $serverManagerType) {", first_resolve
+        )
+        load_from_path = factory.index(
+            "$null = Add-Type -LiteralPath $assemblyPath", unresolved_guard
+        )
+        second_resolve = factory.index(resolve_statement, load_from_path)
+        activate = factory.index(
+            "[System.Activator]::CreateInstance($serverManagerType)", second_resolve
+        )
+        self.assertLess(first_resolve, unresolved_guard)
+        self.assertLess(unresolved_guard, load_from_path)
+        self.assertLess(load_from_path, second_resolve)
+        self.assertLess(second_resolve, activate)
+        self.assertLess(activate, first_manager)
+
+    def test_mwa_runtime_factories_are_indentation_normalized_identical(self):
+        role_vars = named_task(ROLE_BLOCK_TASK)["vars"]
+        scripts = (
+            role_vars["__wsus_https_listener_reconciler__"],
+            powershell_script(named_task(TLS_CONFIGURESSL_TASK)),
+            powershell_script(named_task(RUNTIME_VERIFY_TASK)),
+        )
+        factories = [
+            self.normalized_powershell_function(script, "New-WsusServerManager")
+            for script in scripts
+        ]
+        self.assertEqual(factories[1:], [factories[0], factories[0]])
+
     def test_every_certificate_gate_requires_explicit_server_authentication_eku(self):
         expected_calls = {
             TLS_STORE_PROBE_TASK: "Test-ServerAuthenticationEku $cert",
@@ -766,9 +861,10 @@ class HttpsListenerContractTest(unittest.TestCase):
         access_reader = helper[access_reader_start:access_writer_start]
         access_writer = helper[access_writer_start:rollback_start]
         rollback = helper[rollback_start:rollback_end]
+        self.assert_runtime_mwa_factory(helper, 2)
         self.assertNotIn("Get-WebConfigurationProperty", access_reader + rollback)
         self.assertNotIn("Set-WebConfigurationProperty", access_writer + rollback)
-        self.assertIn("[Microsoft.Web.Administration.ServerManager]::new()", access_reader)
+        self.assertIn("$serverManager = New-WsusServerManager", access_reader)
         self.assertIn("GetApplicationHostConfiguration()", access_reader)
         self.assertIn(
             ".GetSection(\n                'system.webServer/security/access', $location)",
@@ -778,7 +874,7 @@ class HttpsListenerContractTest(unittest.TestCase):
         self.assertIn("$value = $attribute.Value", access_reader)
         self.assertIn("finally {", access_reader)
         self.assertIn("[void]$serverManager.Dispose()", access_reader)
-        self.assertIn("[Microsoft.Web.Administration.ServerManager]::new()", access_writer)
+        self.assertIn("$serverManager = New-WsusServerManager", access_writer)
         self.assertIn("if ($null -eq $section) {", access_writer)
         self.assertIn("IIS returned no access section for", access_writer)
         self.assertIn(
@@ -938,6 +1034,7 @@ class HttpsListenerContractTest(unittest.TestCase):
         self.assertIn("function Repair-WsusVdirsRequireSsl", script)
         self.assertNotIn("Get-WebConfigurationProperty", script)
         self.assertNotIn("Set-WebConfigurationProperty", script)
+        self.assert_runtime_mwa_factory(script, 2)
         reader_start = script.index("function Get-WsusAccessSslState")
         writer_start = script.index("function Set-WsusAccessSslValue")
         exact_test_start = script.index("function Test-ExactRequiredSsl")
@@ -945,10 +1042,7 @@ class HttpsListenerContractTest(unittest.TestCase):
         writer = script[writer_start:exact_test_start]
         for function_body in (reader, writer):
             with self.subTest(server_manager_function=function_body.splitlines()[0]):
-                self.assertIn(
-                    "[Microsoft.Web.Administration.ServerManager]::new()",
-                    function_body,
-                )
+                self.assertIn("$serverManager = New-WsusServerManager", function_body)
                 self.assertIn("GetApplicationHostConfiguration()", function_body)
                 self.assertIn("finally {", function_body)
                 self.assertIn("[void]$serverManager.Dispose()", function_body)
@@ -1009,8 +1103,9 @@ class HttpsListenerContractTest(unittest.TestCase):
             "'SimpleAuthWebService')) {"
         )
         self.assertIn(verifier_vdir_loop, verifier)
+        self.assert_runtime_mwa_factory(verifier, 1)
         verifier_access = verifier[
-            verifier.index("$serverManager = [Microsoft.Web.Administration.ServerManager]::new()") : verifier.index(
+            verifier.index("$serverManager = New-WsusServerManager") : verifier.index(
                 "if ([System.Convert]::ToBoolean($env:BOOTSTRAP_ENABLED))"
             )
         ]
@@ -1080,7 +1175,7 @@ class HttpsListenerContractTest(unittest.TestCase):
 
         verifier = powershell_script(named_task(RUNTIME_VERIFY_TASK))
         verifier_access = verifier[
-            verifier.index("$serverManager = [Microsoft.Web.Administration.ServerManager]::new()") : verifier.index(
+            verifier.index("$serverManager = New-WsusServerManager") : verifier.index(
                 "if ([System.Convert]::ToBoolean($env:BOOTSTRAP_ENABLED))"
             )
         ]
