@@ -759,8 +759,16 @@ class HttpsListenerContractTest(unittest.TestCase):
         self.assertLess(normalized_guard, start_command)
         self.assertIn("function Repair-PreSslWsusApiAccess", helper)
         self.assertIn("if (Repair-PreSslWsusApiAccess)", helper)
-        self.assertIn("-Name 'sslFlags' -Value 'None'", helper)
+        self.assertIn("-Name 'sslFlags' -Value 0 -ErrorAction Stop | Out-Null", helper)
+        self.assertNotIn("-Value 'None'", helper)
         self.assertIn("pre-SSL WSUS API access rollback did not persist", helper)
+        self.assertIn("type=[' + $valueType +", helper)
+        self.assertIn("expected=[None|0]", helper)
+        zero_write = helper.index("-Name 'sslFlags' -Value 0")
+        rollback_verify = helper.index(
+            "pre-SSL WSUS API access rollback did not persist"
+        )
+        self.assertLess(zero_write, rollback_verify)
         pre_ssl_repair_call = helper.index("if (Repair-PreSslWsusApiAccess)")
         pre_ssl_start_call = helper.index("Start-WsusWebsiteBounded $port $false")
         self.assertLess(pre_ssl_repair_call, pre_ssl_start_call)
@@ -837,6 +845,100 @@ class HttpsListenerContractTest(unittest.TestCase):
         self.assertLess(names.index(TLS_BINDING_TASK), names.index(TLS_LISTENER_TASK))
         self.assertLess(names.index(TLS_CONFIGURESSL_TASK), names.index(TLS_LISTENER_TASK))
         self.assertLess(names.index(TLS_LISTENER_TASK), names.index(TLS_LIVE_TASK))
+        self.assertLess(names.index(TLS_LIVE_TASK), names.index(RUNTIME_VERIFY_TASK))
+
+    def test_ssl_vdir_convergence_uses_numeric_flags_and_two_phase_proof(self):
+        task = named_task(TLS_CONFIGURESSL_TASK)
+        script = task["ansible.windows.win_shell"]
+        exact_vdirs = [
+            "ApiRemoting30",
+            "ClientWebService",
+            "DSSAuthWebService",
+            "ServerSyncWebService",
+            "SimpleAuthWebService",
+        ]
+
+        vdirs_block = script[
+            script.index("$vdirs = @(") : script.index("$changed = $false")
+        ]
+        actual_vdirs = [
+            line.strip().rstrip(",").strip("'")
+            for line in vdirs_block.splitlines()
+            if line.strip().startswith("'")
+        ]
+        self.assertEqual(actual_vdirs, exact_vdirs)
+        for excluded_vdir in (
+            "Content",
+            "Inventory",
+            "ReportingWebService",
+            "SelfUpdate",
+        ):
+            self.assertNotIn(excluded_vdir, vdirs_block)
+
+        self.assertIn("function Get-WsusAccessSslState", script)
+        self.assertIn("function Test-ExactRequiredSsl", script)
+        self.assertIn("function Assert-WsusVdirsRequireSsl", script)
+        self.assertIn("function Repair-WsusVdirsRequireSsl", script)
+        self.assertIn("-PSPath 'MACHINE/WEBROOT/APPHOST'", script)
+        self.assertIn("-Location $location", script)
+        self.assertIn("-Filter 'system.webServer/security/access'", script)
+        self.assertIn("-Name 'sslFlags' `\n            -Value 8 `", script)
+        self.assertIn("-ErrorAction Stop | Out-Null", script)
+        self.assertNotIn("-Value 'Ssl'", script)
+        self.assertIn("$state.Text -eq 'Ssl' -or $state.Text -eq '8'", script)
+
+        numeric_write = script.index("-Value 8")
+        immediate_read = script.index(
+            "$afterWrite = Get-WsusAccessSslState $location", numeric_write
+        )
+        immediate_assert = script.index(
+            "IIS access.sslFlags write did not persist", immediate_read
+        )
+        full_assert = script.index("Assert-WsusVdirsRequireSsl", immediate_assert)
+        self.assertLess(numeric_write, immediate_read)
+        self.assertLess(immediate_read, immediate_assert)
+        self.assertLess(immediate_assert, full_assert)
+
+        repair_calls = [
+            index
+            for index in range(len(script))
+            if script.startswith("if (Repair-WsusVdirsRequireSsl)", index)
+        ]
+        self.assertEqual(len(repair_calls), 2)
+        configuressl = script.index("$out = & $wsusutil configuressl $dns")
+        registry_re_read = script.index(
+            "$after = Get-ItemProperty -Path $setupPath -ErrorAction Stop"
+        )
+        self.assertLess(repair_calls[0], configuressl)
+        self.assertLess(configuressl, repair_calls[1])
+        self.assertLess(repair_calls[1], registry_re_read)
+
+        self.assertIn("does not require exact SSL", script)
+        self.assertIn("location=' + $state.Location", script)
+        self.assertIn("type=[' + $state.Type", script)
+        self.assertIn("expected=[Ssl|8]", script)
+        self.assertEqual(script.count("Write-Output 'changed'"), 1)
+        self.assertEqual(script.count("Write-Output 'nochange'"), 1)
+        self.assertEqual(
+            task["changed_when"],
+            "__tls_configuressl__.stdout | trim == 'changed'",
+        )
+
+        verifier_task = named_task(RUNTIME_VERIFY_TASK)
+        verifier = powershell_script(verifier_task)
+        verifier_vdir_loop = (
+            "foreach ($name in @('ApiRemoting30', 'ClientWebService', "
+            "'DSSAuthWebService', 'ServerSyncWebService', "
+            "'SimpleAuthWebService')) {"
+        )
+        self.assertIn(verifier_vdir_loop, verifier)
+        self.assertIn("-Name 'sslFlags' `\n            -ErrorAction Stop", verifier)
+        self.assertIn("IIS returned no access.sslFlags value for", verifier)
+        self.assertIn("does not require exact SSL: sslFlags=[", verifier)
+        self.assertIn("] type=[", verifier)
+        self.assertIn("expected=[Ssl|8]", verifier)
+        self.assertNotIn("Set-WebConfigurationProperty", verifier)
+        self.assertFalse(verifier_task.get("changed_when", False))
 
     def test_runtime_verifier_rechecks_site_start_and_auto_start_before_the_api(self):
         task = named_task(RUNTIME_VERIFY_TASK)
