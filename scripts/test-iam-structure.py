@@ -35,9 +35,9 @@ EXPECTED_POLICY_DIGESTS = {
     "windows-wsus_artifact-folder.json": "9940186bd44b7d20e9fb8a36fabbb34cad653fefccaf13749a68bfe8d4bbde8d",
     "windows-wsus_artifact-read.json": "a40220bd2c53753d30150f1e87400a5c0843cb00403fabc0c1740488fc51c7b1",
     "windows-wsus_deploy-discovery-iam.json": "0ff1df346dc7fd04864e917e8c95217a007ed01a16cf4acbe30c08305f67097a",
-    "windows-wsus_deploy-ec2-launch.json": "1269b0f05da11f3731aea298302a7473f1892e2e82b1cfbfef7f4d043d43481d",
-    "windows-wsus_deploy-ec2-lifecycle.json": "4a661e872f4218cd25c77ca8f52c03f822d28e8700602e464afcbd16f6d61809",
-    "windows-wsus_deploy-sg-ssm-kms.json": "722720bcf80e52d73ac5d54a974faa392638a8940ce09e687d3a8af004abc433",
+    "windows-wsus_deploy-ec2-launch.json": "d9f8c6f5050f8392b089e9a0166a2f7df613a3bebe8fd00415a2040998ad1754",
+    "windows-wsus_deploy-ec2-lifecycle.json": "f59bb067e68b1d819c72968a4220ae80fc849410030bdb9fb7fb799f4b5fc07a",
+    "windows-wsus_deploy-sg-ssm-kms.json": "605760ee37e6278fd5373845545117fec130c51d5199077c6c27279a29d2554b",
 }
 
 EXPECTED_POLICY_SIDS = {
@@ -216,8 +216,8 @@ def test_identity_policies(assertions: Assertions) -> None:
     account = "<account-id>"
     region = "<region>"
     repository_id = "<repository-id>"
-    request_tag = {"aws:RequestTag/nwarila:management:repository-id": repository_id}
-    resource_tag = {"ec2:ResourceTag/nwarila:management:repository-id": repository_id}
+    request_tag = {"aws:RequestTag/RepositoryId": repository_id}
+    resource_tag = {"ec2:ResourceTag/RepositoryId": repository_id}
 
     state_name = "github_nwarila-platform_windows-wsus.json"
     state = documents[state_name]
@@ -515,7 +515,7 @@ def test_identity_policies(assertions: Assertions) -> None:
         action="ec2:CreateTags",
         resource=f"arn:aws:ec2:{region}:*:*/*",
         condition={
-            "Null": {"ec2:ResourceTag/nwarila:management:repository-id": "false"},
+            "Null": {"ec2:ResourceTag/RepositoryId": "false"},
             "StringNotEquals": resource_tag,
         },
     )
@@ -528,7 +528,7 @@ def test_identity_policies(assertions: Assertions) -> None:
         action="ec2:CreateTags",
         resource=f"arn:aws:ec2:{region}:*:*/*",
         condition={
-            "Null": {"aws:RequestTag/nwarila:management:repository-id": "false"},
+            "Null": {"aws:RequestTag/RepositoryId": "false"},
             "StringNotEquals": request_tag,
         },
     )
@@ -542,7 +542,7 @@ def test_identity_policies(assertions: Assertions) -> None:
         resource=f"arn:aws:ec2:{region}:*:*/*",
         condition={
             "ForAnyValue:StringEquals": {
-                "aws:TagKeys": "nwarila:management:repository-id"
+                "aws:TagKeys": "RepositoryId"
             }
         },
     )
@@ -654,7 +654,7 @@ def test_identity_policies(assertions: Assertions) -> None:
         resource=f"arn:aws:ec2:{region}:*:instance/*",
         condition={
             "StringEquals": {
-                "ssm:resourceTag/nwarila:management:repository-id": repository_id
+                "ssm:resourceTag/RepositoryId": repository_id
             }
         },
     )

@@ -13,10 +13,10 @@ import sys
 from typing import Any, Callable
 
 
-REPOSITORY_TAG = "nwarila:management:repository-id"
-STACK_TAG = "nwarila:management:stack"
-ENVIRONMENT_TAG = "nwarila:management:environment"
-RUN_TAG = "nwarila:provenance:run-id"
+REPOSITORY_TAG = "RepositoryId"
+REPOSITORY_NAME_TAG = "Repository"
+ENVIRONMENT_TAG = "Environment"
+RUN_TAG = "RunId"
 LIVE_INSTANCE_STATES = "pending,running,stopping,stopped,shutting-down"
 EXPECTED_DATA_FUNCTIONS = ("WSUSDB", "WSUSDATA", "WSUSIIS")
 TERRAFORM_EC2_IDS = {
@@ -161,8 +161,11 @@ def exact_one(resources: list[dict[str, Any]], kind: str, identifier: str) -> di
 
 
 class Inventory:
-    def __init__(self, repository_id: str, expected_run_id: str | None = None) -> None:
+    def __init__(
+        self, repository_id: str, repository: str, expected_run_id: str | None = None
+    ) -> None:
         self.repository_id = repository_id
+        self.repository = repository
         self.expected_run_id = expected_run_id
         repository_filter = f"Name=tag:{REPOSITORY_TAG},Values={repository_id}"
         self.instances = {
@@ -206,6 +209,7 @@ class Inventory:
     def from_fixture(
         cls,
         repository_id: str,
+        repository: str,
         instances: list[dict[str, Any]],
         interfaces: list[dict[str, Any]],
         volumes: list[dict[str, Any]],
@@ -214,6 +218,7 @@ class Inventory:
     ) -> "Inventory":
         inventory = cls.__new__(cls)
         inventory.repository_id = repository_id
+        inventory.repository = repository
         inventory.expected_run_id = expected_run_id
         inventory.instances = {item["InstanceId"]: item for item in instances}
         inventory.interfaces = {item["NetworkInterfaceId"]: item for item in interfaces}
@@ -226,11 +231,11 @@ class Inventory:
         run_id = identity.get(RUN_TAG, "")
         expected = {
             REPOSITORY_TAG: self.repository_id,
-            STACK_TAG: "aws-poc",
+            REPOSITORY_NAME_TAG: self.repository,
             ENVIRONMENT_TAG: "test",
         }
         if any(identity.get(key) != value for key, value in expected.items()):
-            raise GraphError(f"{label} has foreign or malformed repository/stack/environment tags")
+            raise GraphError(f"{label} has foreign or malformed repository/environment tags")
         if not run_id.isdigit():
             raise GraphError(f"{label} has no numeric run identity")
         if self.expected_run_id is not None and run_id != self.expected_run_id:
@@ -514,6 +519,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--repository-id", default=os.environ.get("GITHUB_REPOSITORY_ID", "")
     )
+    parser.add_argument(
+        "--repository", default=os.environ.get("GITHUB_REPOSITORY", "")
+    )
     parser.add_argument("--expected-run-id", default=None)
     parser.add_argument("--require-wsus-data-volumes", action="store_true")
     parser.add_argument("--include-terraform-state", action="store_true")
@@ -526,7 +534,7 @@ def main() -> int:
         raise GraphError("repository id must be numeric")
     if args.expected_run_id is not None and not args.expected_run_id.isdigit():
         raise GraphError("expected run id must be numeric")
-    inventory = Inventory(args.repository_id, args.expected_run_id)
+    inventory = Inventory(args.repository_id, args.repository, args.expected_run_id)
     if args.include_terraform_state:
         inventory.include_terraform_state(terraform_show_json())
     inventory.validate(args.require_wsus_data_volumes)

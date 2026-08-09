@@ -29,7 +29,7 @@ materialized copy **cannot** catch that, because the materialized copy is what i
 | `<subnet-id>` | exact deploy subnet | `terraform/aws.tfvars` | fail-closed at launch; parsed from the same file Terraform consumes |
 | `<ebs-kms-key-id>` | the key `alias/aws/ebs` resolves to **in this account** | `aws kms describe-key --key-id alias/aws/ebs` | fail-closed. Account-wide and AWS-managed, so **siblings legitimately share the same key id** |
 | `<owner-id>` | the GitHub organization's numeric id | `gh api orgs/nwarila-platform --jq .id` | fail-closed — the ID-embedded OIDC `sub` form never matches |
-| `<key-pair-name>` | the workflow-managed key name (`windows-wsus-ci`) | `terraform/aws.tfvars` | fail-closed at import/launch/delete |
+| `<key-pair-name>` | the standing launch key name (`nwarila-ec2-key`) | `terraform/aws.tfvars` | fail-closed at launch |
 | `<artifact-bucket>` | the S3 bucket holding deploy artifacts | the shared `<account-id>-ansible` playbook/bootstrap convention | fail-closed if the naming contract diverges; the object-key prefix remains the repository boundary |
 
 The VPC and subnet constrain network placement, but **the immutable repository identity tag is the
@@ -172,8 +172,8 @@ polish; each one is a finding both auditors raised.
   give a read-only check lifecycle mutation authority; adding deploy workflows to the audit role
   would broaden who can inspect IAM without improving the proof.
 - **The EC2 login key is ephemeral.** The lifecycle generates an RSA key on the hosted runner,
-  passes only its public half through the framework's `managed_keypairs`, and destroys the tagged
-  `windows-wsus-ci` key pair with the stack. `ImportKeyPair`, its create-time tag leg, launch use,
+  names the standing `nwarila-ec2-key` pair, whose public half Windows user_data installs from
+  instance metadata. The pinned framework consumes key pairs and never creates them. Launch use,
   and `DeleteKeyPair` are all scoped to the materialized key name and repository identity. No
   long-lived SSH private key is required in GitHub Actions.
 - **IMDS hop limit pinned to 1** at launch and on modify (R3-14), so IMDS cannot be extended past

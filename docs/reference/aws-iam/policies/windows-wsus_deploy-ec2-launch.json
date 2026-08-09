@@ -14,7 +14,7 @@
           ],
           "ec2:Tenancy": "default",
           "ec2:MetadataHttpTokens": "required",
-          "aws:RequestTag/nwarila:management:repository-id": "<repository-id>"
+          "aws:RequestTag/RepositoryId": "<repository-id>"
         },
         "NumericLessThanEquals": {
           "ec2:MetadataHttpPutResponseHopLimit": "1"
@@ -29,7 +29,7 @@
       "Condition": {
         "StringEquals": {
           "ec2:VolumeType": "gp3",
-          "aws:RequestTag/nwarila:management:repository-id": "<repository-id>"
+          "aws:RequestTag/RepositoryId": "<repository-id>"
         },
         "Bool": {
           "ec2:Encrypted": "true"
@@ -76,7 +76,7 @@
           "ec2:Vpc": "arn:aws:ec2:<region>:*:vpc/<vpc-id>"
         },
         "StringEquals": {
-          "ec2:ResourceTag/nwarila:management:repository-id": "<repository-id>"
+          "ec2:ResourceTag/RepositoryId": "<repository-id>"
         }
       }
     },
@@ -108,7 +108,7 @@
       "Condition": {
         "StringEquals": {
           "aws:RequestedRegion": "<region>",
-          "aws:RequestTag/nwarila:management:repository-id": "<repository-id>"
+          "aws:RequestTag/RepositoryId": "<repository-id>"
         }
       }
     },
@@ -120,7 +120,7 @@
       "Condition": {
         "StringEquals": {
           "ec2:VolumeType": "gp3",
-          "aws:RequestTag/nwarila:management:repository-id": "<repository-id>"
+          "aws:RequestTag/RepositoryId": "<repository-id>"
         },
         "Bool": {
           "ec2:Encrypted": "true"
@@ -142,7 +142,7 @@
       "Condition": {
         "StringEquals": {
           "aws:RequestedRegion": "<region>",
-          "aws:RequestTag/nwarila:management:repository-id": "<repository-id>"
+          "aws:RequestTag/RepositoryId": "<repository-id>"
         }
       }
     },
@@ -168,7 +168,7 @@
       "Condition": {
         "StringEquals": {
           "aws:RequestedRegion": "<region>",
-          "ec2:ResourceTag/nwarila:management:repository-id": "<repository-id>"
+          "ec2:ResourceTag/RepositoryId": "<repository-id>"
         },
         "ArnLike": {
           "ec2:Vpc": "arn:aws:ec2:<region>:*:vpc/<vpc-id>"
@@ -183,7 +183,7 @@
       "Condition": {
         "StringEquals": {
           "aws:RequestedRegion": "<region>",
-          "aws:RequestTag/nwarila:management:repository-id": "<repository-id>"
+          "aws:RequestTag/RepositoryId": "<repository-id>"
         }
       }
     }

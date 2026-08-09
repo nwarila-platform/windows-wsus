@@ -133,5 +133,7 @@ terminal-success bootstrap marker.
   account is already elevated and the play must use `become: false`.
 - The pinned ansible-framework and its `windows_disk_manager` and artifact-delivery roles.
 - Exact collection versions from `requirements-quality.yml`.
-- Controller environment values `AWS_ACCOUNT_ID`, `AWS_REGION`, `GITHUB_REPOSITORY_ID`, and
-  `GITHUB_RUN_ID`; the playbook preflight requires an exact numeric run identity.
+- Explicit extra-vars `aws_account_id` and `aws_region` on the playbook invocation (the deploy
+  workflow passes both from its own environment), plus controller environment values
+  `GITHUB_REPOSITORY_ID` and `GITHUB_RUN_ID`; the playbook preflight requires an exact numeric
+  run identity.

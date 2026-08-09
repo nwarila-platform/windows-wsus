@@ -9,7 +9,7 @@
       "Condition": {
         "StringEquals": {
           "aws:RequestedRegion": "<region>",
-          "ec2:ResourceTag/nwarila:management:repository-id": "<repository-id>"
+          "ec2:ResourceTag/RepositoryId": "<repository-id>"
         }
       }
     },
@@ -33,7 +33,7 @@
             "AllocateAddress",
             "ImportKeyPair"
           ],
-          "aws:RequestTag/nwarila:management:repository-id": "<repository-id>"
+          "aws:RequestTag/RepositoryId": "<repository-id>"
         }
       }
     },
@@ -44,9 +44,9 @@
       "Resource": "arn:aws:ec2:<region>:*:volume/*",
       "Condition": {
         "StringEquals": {
-          "aws:RequestTag/nwarila:management:repository-id": "<repository-id>",
+          "aws:RequestTag/RepositoryId": "<repository-id>",
           "aws:RequestedRegion": "<region>",
-          "ec2:ResourceTag/nwarila:management:repository-id": "<repository-id>"
+          "ec2:ResourceTag/RepositoryId": "<repository-id>"
         }
       }
     },
@@ -57,10 +57,10 @@
       "Resource": "arn:aws:ec2:<region>:*:*/*",
       "Condition": {
         "Null": {
-          "ec2:ResourceTag/nwarila:management:repository-id": "false"
+          "ec2:ResourceTag/RepositoryId": "false"
         },
         "StringNotEquals": {
-          "ec2:ResourceTag/nwarila:management:repository-id": "<repository-id>"
+          "ec2:ResourceTag/RepositoryId": "<repository-id>"
         }
       }
     },
@@ -71,10 +71,10 @@
       "Resource": "arn:aws:ec2:<region>:*:*/*",
       "Condition": {
         "Null": {
-          "aws:RequestTag/nwarila:management:repository-id": "false"
+          "aws:RequestTag/RepositoryId": "false"
         },
         "StringNotEquals": {
-          "aws:RequestTag/nwarila:management:repository-id": "<repository-id>"
+          "aws:RequestTag/RepositoryId": "<repository-id>"
         }
       }
     },
@@ -85,7 +85,7 @@
       "Resource": "arn:aws:ec2:<region>:*:*/*",
       "Condition": {
         "ForAnyValue:StringEquals": {
-          "aws:TagKeys": "nwarila:management:repository-id"
+          "aws:TagKeys": "RepositoryId"
         }
       }
     },
@@ -121,7 +121,7 @@
       "Condition": {
         "StringEquals": {
           "aws:RequestedRegion": "<region>",
-          "ec2:ResourceTag/nwarila:management:repository-id": "<repository-id>"
+          "ec2:ResourceTag/RepositoryId": "<repository-id>"
         }
       }
     },
@@ -133,7 +133,7 @@
       "Condition": {
         "StringEquals": {
           "aws:RequestedRegion": "<region>",
-          "ec2:ResourceTag/nwarila:management:repository-id": "<repository-id>"
+          "ec2:ResourceTag/RepositoryId": "<repository-id>"
         }
       }
     },
@@ -145,7 +145,7 @@
       "Condition": {
         "StringEquals": {
           "aws:RequestedRegion": "<region>",
-          "ec2:ResourceTag/nwarila:management:repository-id": "<repository-id>"
+          "ec2:ResourceTag/RepositoryId": "<repository-id>"
         }
       }
     },
@@ -161,7 +161,7 @@
       "Condition": {
         "StringEquals": {
           "aws:RequestedRegion": "<region>",
-          "ec2:ResourceTag/nwarila:management:repository-id": "<repository-id>"
+          "ec2:ResourceTag/RepositoryId": "<repository-id>"
         }
       }
     },
@@ -184,7 +184,7 @@
       "Condition": {
         "StringEquals": {
           "aws:RequestedRegion": "<region>",
-          "ec2:ResourceTag/nwarila:management:repository-id": "<repository-id>"
+          "ec2:ResourceTag/RepositoryId": "<repository-id>"
         },
         "StringEqualsIfExists": {
           "ec2:MetadataHttpTokens": "required"
@@ -202,7 +202,7 @@
       "Condition": {
         "StringEquals": {
           "aws:RequestedRegion": "<region>",
-          "ec2:ResourceTag/nwarila:management:repository-id": "<repository-id>"
+          "ec2:ResourceTag/RepositoryId": "<repository-id>"
         },
         "StringEqualsIfExists": {
           "ec2:VolumeType": "gp3"

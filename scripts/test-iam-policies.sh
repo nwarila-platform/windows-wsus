@@ -68,7 +68,7 @@ cp "${IAM_DIR}/policies/"*.json "${WORK}/policies/"
 cp "${IAM_DIR}/roles/"*.json    "${WORK}/roles/"
 sed -i "s|<account-id>|${ACCOUNT}|g; s|<repository-id>|${REPO_ID}|g; s|<region>|${REGION}|g;
         s|<vpc-id>|vpc-00000000000000000|g; s|<subnet-id>|subnet-00000000000000000|g;
-        s|<ebs-kms-key-id>|${KMS_KEY}|g; s|<key-pair-name>|windows-wsus-ci|g; s|<owner-id>|000000000|g;
+        s|<ebs-kms-key-id>|${KMS_KEY}|g; s|<key-pair-name>|nwarila-ec2-key|g; s|<owner-id>|000000000|g;
         s|<artifact-bucket>|${ACCOUNT}-ansible|g" \
     "${WORK}"/policies/*.json "${WORK}"/roles/*.json
 
@@ -209,8 +209,8 @@ assert_audit() { # name expected action resource context...
     [ "${got}" = "${want}" ] && ok "${name}" "${got}" || bad "${name}" "${got}" "${want}"
 }
 
-TAG='ec2:ResourceTag/nwarila:management:repository-id'
-RTAG='aws:RequestTag/nwarila:management:repository-id'
+TAG='ec2:ResourceTag/RepositoryId'
+RTAG='aws:RequestTag/RepositoryId'
 REG="aws:RequestedRegion=string=${REGION}"
 INST="arn:aws:ec2:${REGION}:${ACCOUNT}:instance/i-0test"
 VOL="arn:aws:ec2:${REGION}:${ACCOUNT}:volume/vol-0test"
@@ -220,7 +220,7 @@ STATE="arn:aws:s3:::${ACCOUNT}-terraform/${OWNER}/${THIS_REPO}"
 # returns implicitDeny for any other ARN, which would make these assertions lie.
 VPC_ID='vpc-00000000000000000'
 SUBNET_ID='subnet-00000000000000000'
-KEY_PAIR='windows-wsus-ci'
+KEY_PAIR='nwarila-ec2-key'
 KEY_ARN="arn:aws:ec2:${REGION}:${ACCOUNT}:key-pair/${KEY_PAIR}"
 ENI="arn:aws:ec2:${REGION}:${ACCOUNT}:network-interface/eni-0test"
 SUBNET="arn:aws:ec2:${REGION}:${ACCOUNT}:subnet/${SUBNET_ID}"
@@ -273,7 +273,7 @@ echo "== cross-repository isolation (the identity tag is the only separator) =="
 assert "terminate own instance"        allowed      ec2:TerminateInstances "${INST}" "${REG}" "${TAG}=string=${REPO_ID}"
 for s in "${SIBLINGS[@]}"; do
   assert "terminate ${s} instance"     implicitDeny ec2:TerminateInstances "${INST}" "${REG}" "${TAG}=string=${SIB_ID[$s]}"
-  assert "SSM shell into ${s}"         implicitDeny ssm:StartSession       "${INST}" "ssm:resourceTag/nwarila:management:repository-id=string=${SIB_ID[$s]}"
+  assert "SSM shell into ${s}"         implicitDeny ssm:StartSession       "${INST}" "ssm:resourceTag/RepositoryId=string=${SIB_ID[$s]}"
   assert "write ${s} tfstate"          implicitDeny s3:PutObject "arn:aws:s3:::${ACCOUNT}-terraform/${OWNER}/${s}/aws.tfstate" \
                                                     "aws:ResourceAccount=string=${ACCOUNT}" "s3:x-amz-server-side-encryption=string=AES256"
 done
@@ -388,7 +388,7 @@ assert "retag a foreign-owned resource" explicitDeny ec2:CreateTags "${VOL}" "${
 assert "stamp a foreign identity"       explicitDeny ec2:CreateTags "${INST}" "${REG}" \
        "ec2:CreateAction=string=RunInstances" "${RTAG}=string=${SIB_ID[${SIBLINGS[0]}]}"
 assert "delete the identity tag"        explicitDeny ec2:DeleteTags "${INST}" "${REG}" \
-       "${TAG}=string=${REPO_ID}" "aws:TagKeys=string=nwarila:management:repository-id"
+       "${TAG}=string=${REPO_ID}" "aws:TagKeys=string=RepositoryId"
 
 echo "== PassRole =="
 assert "pass own instance role"         allowed      iam:PassRole "arn:aws:iam::${ACCOUNT}:role/${THIS_REPO}-poc-role" \
