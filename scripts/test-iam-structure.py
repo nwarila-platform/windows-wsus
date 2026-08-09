@@ -35,8 +35,8 @@ EXPECTED_POLICY_DIGESTS = {
     "windows-wsus_artifact-folder.json": "9940186bd44b7d20e9fb8a36fabbb34cad653fefccaf13749a68bfe8d4bbde8d",
     "windows-wsus_artifact-read.json": "a40220bd2c53753d30150f1e87400a5c0843cb00403fabc0c1740488fc51c7b1",
     "windows-wsus_deploy-discovery-iam.json": "0ff1df346dc7fd04864e917e8c95217a007ed01a16cf4acbe30c08305f67097a",
-    "windows-wsus_deploy-ec2-launch.json": "3f60a4da6b62bcdcc9d4e9831ac048c300c9f52140faa252711aafea12ea8c7e",
-    "windows-wsus_deploy-ec2-lifecycle.json": "723de17825f8c27336dcd36e74949efb4f1e9427e1156bfb717f9136021fe379",
+    "windows-wsus_deploy-ec2-launch.json": "bfb42b805751e570f456050209a4513b8a4409b0084659ea1501919d49e5414c",
+    "windows-wsus_deploy-ec2-lifecycle.json": "bbf046e3f616a4f99eab98c15b347d74c8c37a451405d58befe9a351cc06874d",
     "windows-wsus_deploy-sg-ssm-kms.json": "605760ee37e6278fd5373845545117fec130c51d5199077c6c27279a29d2554b",
 }
 
@@ -83,7 +83,6 @@ EXPECTED_POLICY_SIDS = {
         "CreateEniWithRepoIdentity",
         "UseDeploySubnetForEniCreation",
         "UseOwnedSecurityGroupsForEniCreation",
-        "AllocateTaggedElasticIp",
     },
     "windows-wsus_deploy-ec2-lifecycle.json": {
         "GetConsoleOutputForOurInstances",
@@ -94,9 +93,6 @@ EXPECTED_POLICY_SIDS = {
         "DenyDeleteRepoIdentityTag",
         "DenyDeleteTagsWithoutTagKeys",
         "LifecycleOnlyOnOurTaggedResources",
-        "ElasticIpLifecycleOnOurTagged",
-        "AssociateEipToOurResources",
-        "DisassociateAddressRegionOnly",
         "ModifyMetadataImdsV2Only",
         "ModifyVolumeCapped",
     },
@@ -442,7 +438,6 @@ def test_identity_policies(assertions: Assertions) -> None:
     )
     for sid, action, resource in (
         ("CreateEniWithRepoIdentity", "ec2:CreateNetworkInterface", f"arn:aws:ec2:{region}:*:network-interface/*"),
-        ("AllocateTaggedElasticIp", "ec2:AllocateAddress", f"arn:aws:ec2:{region}:{account}:elastic-ip/*"),
     ):
         exact_statement_fields(
             assertions,
@@ -478,7 +473,6 @@ def test_identity_policies(assertions: Assertions) -> None:
             f"arn:aws:ec2:{region}:*:instance/*",
             f"arn:aws:ec2:{region}:*:volume/*",
             f"arn:aws:ec2:{region}:*:network-interface/*",
-            f"arn:aws:ec2:{region}:*:elastic-ip/*",
         ],
         condition={
             "StringEquals": {
@@ -487,7 +481,6 @@ def test_identity_policies(assertions: Assertions) -> None:
                     "RunInstances",
                     "CreateVolume",
                     "CreateNetworkInterface",
-                    "AllocateAddress",
                 ],
             }
         },

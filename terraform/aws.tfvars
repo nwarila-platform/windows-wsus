@@ -16,11 +16,22 @@
 #
 # REACHABILITY — ZERO INBOUND, SSH OVER SSM: the security group allows NO ingress at all.
 # The runner reaches the instance through an SSM session (AWS-StartSSHSession, tag-gated in
-# the deploy IAM), which rides the SSM AGENT's own outbound 443. That outbound path is why
-# the EIP exists: the framework attaches a pre-created ENI, a launch path AWS never
-# auto-assigns a public IP to, and the account has no NAT and no VPC endpoints — so without
-# the EIP (~$0.005/h for the instance's short life) the agent could never register and
-# nothing could configure the box.
+# the deploy IAM), which rides the SSM AGENT's own outbound 443. The deploy subnet sets
+# MapPublicIpOnLaunch, so the pre-created ENI is auto-assigned a public IPv4 at launch and the
+# agent egresses over it through the internet gateway. No Elastic IP is involved.
+#
+# An earlier version of this header claimed AWS never auto-assigns to a pre-created ENI and
+# that an EIP was therefore mandatory. That is false. Framework commit e40a792 measured the
+# behaviour, and secure-wazuh run 31319282728 launched into this same subnet through the same
+# path with associate_public_ip = false, received an auto-assigned address, and reached Online
+# in SSM. The account has no NAT and no VPC endpoints, so that address was the only possible
+# egress route: registration is the proof it carries traffic. Public IPv4 bills at the same
+# $0.005/h either way, so this is a quota decision, not a cost one.
+#
+# The dependency worth knowing: MapPublicIpOnLaunch is an attribute of a shared subnet no
+# repository owns. If it is ever turned off, an instance without an Elastic IP launches with no
+# address and no egress, and the failure appears minutes later as an SSM agent that never
+# registers rather than as an apply error.
 #
 # readiness_gate is FALSE by design: the framework's gate dials the instance directly over
 # SSH, which a zero-ingress security group forbids. The playbook's first play waits for
@@ -154,10 +165,10 @@ all_systems = [
       }
     ]
 
-    # An Elastic IP on eni-0 — pure EGRESS enablement for the SSM agent (see the header), not
-    # an inbound path. Tag-gated in the deploy IAM (AllocateTaggedElasticIp /
-    # AssociateEipToOurResources).
-    associate_public_ip = true
+    # No Elastic IP: the subnet auto-assigns a public IPv4 at launch, which is all the SSM
+    # agent's outbound registration needs (see the header). This is zero-inbound either way -
+    # the security group allows no ingress - so the address is an egress route, not a door.
+    associate_public_ip = false
   }
 ]
 
