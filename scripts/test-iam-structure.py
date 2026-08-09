@@ -35,8 +35,8 @@ EXPECTED_POLICY_DIGESTS = {
     "windows-wsus_artifact-folder.json": "9940186bd44b7d20e9fb8a36fabbb34cad653fefccaf13749a68bfe8d4bbde8d",
     "windows-wsus_artifact-read.json": "a40220bd2c53753d30150f1e87400a5c0843cb00403fabc0c1740488fc51c7b1",
     "windows-wsus_deploy-discovery-iam.json": "0ff1df346dc7fd04864e917e8c95217a007ed01a16cf4acbe30c08305f67097a",
-    "windows-wsus_deploy-ec2-launch.json": "d9f8c6f5050f8392b089e9a0166a2f7df613a3bebe8fd00415a2040998ad1754",
-    "windows-wsus_deploy-ec2-lifecycle.json": "f59bb067e68b1d819c72968a4220ae80fc849410030bdb9fb7fb799f4b5fc07a",
+    "windows-wsus_deploy-ec2-launch.json": "3f60a4da6b62bcdcc9d4e9831ac048c300c9f52140faa252711aafea12ea8c7e",
+    "windows-wsus_deploy-ec2-lifecycle.json": "723de17825f8c27336dcd36e74949efb4f1e9427e1156bfb717f9136021fe379",
     "windows-wsus_deploy-sg-ssm-kms.json": "605760ee37e6278fd5373845545117fec130c51d5199077c6c27279a29d2554b",
 }
 
@@ -79,7 +79,6 @@ EXPECTED_POLICY_SIDS = {
         "RunInstancesWithOwnedSecurityGroups",
         "RunInstancesImagesFromTrustedOwners",
         "RunInstancesWithPinnedKeyPair",
-        "ImportEphemeralCiKeyPair",
         "CreateDataVolumeCapped",
         "CreateEniWithRepoIdentity",
         "UseDeploySubnetForEniCreation",
@@ -95,7 +94,6 @@ EXPECTED_POLICY_SIDS = {
         "DenyDeleteRepoIdentityTag",
         "DenyDeleteTagsWithoutTagKeys",
         "LifecycleOnlyOnOurTaggedResources",
-        "DeleteEphemeralCiKeyPair",
         "ElasticIpLifecycleOnOurTagged",
         "AssociateEipToOurResources",
         "DisassociateAddressRegionOnly",
@@ -442,16 +440,6 @@ def test_identity_policies(assertions: Assertions) -> None:
         action="ec2:RunInstances",
         resource=key_resource,
     )
-    exact_statement_fields(
-        assertions,
-        launch_name,
-        launch,
-        "ImportEphemeralCiKeyPair",
-        effect="Allow",
-        action="ec2:ImportKeyPair",
-        resource=key_resource,
-        condition={"StringEquals": {**request_tag, "aws:RequestedRegion": region}},
-    )
     for sid, action, resource in (
         ("CreateEniWithRepoIdentity", "ec2:CreateNetworkInterface", f"arn:aws:ec2:{region}:*:network-interface/*"),
         ("AllocateTaggedElasticIp", "ec2:AllocateAddress", f"arn:aws:ec2:{region}:{account}:elastic-ip/*"),
@@ -491,7 +479,6 @@ def test_identity_policies(assertions: Assertions) -> None:
             f"arn:aws:ec2:{region}:*:volume/*",
             f"arn:aws:ec2:{region}:*:network-interface/*",
             f"arn:aws:ec2:{region}:*:elastic-ip/*",
-            key_resource,
         ],
         condition={
             "StringEquals": {
@@ -501,7 +488,6 @@ def test_identity_policies(assertions: Assertions) -> None:
                     "CreateVolume",
                     "CreateNetworkInterface",
                     "AllocateAddress",
-                    "ImportKeyPair",
                 ],
             }
         },
@@ -567,18 +553,6 @@ def test_identity_policies(assertions: Assertions) -> None:
             "ec2:DeleteTags",
         ],
         resource="*",
-        condition={
-            "StringEquals": {"aws:RequestedRegion": region, **resource_tag}
-        },
-    )
-    exact_statement_fields(
-        assertions,
-        lifecycle_name,
-        lifecycle,
-        "DeleteEphemeralCiKeyPair",
-        effect="Allow",
-        action="ec2:DeleteKeyPair",
-        resource=key_resource,
         condition={
             "StringEquals": {"aws:RequestedRegion": region, **resource_tag}
         },

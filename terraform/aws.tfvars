@@ -12,7 +12,7 @@
 #
 # Every value here must stay inside the deploy role's launch boundary
 # (docs/reference/aws-iam/README.md): t3.medium/t3.large only, gp3 encrypted <= 64 GiB,
-# IMDSv2 with hop limit 1, the per-run managed key pair, and the pinned VPC/subnet.
+# IMDSv2 with hop limit 1, the standing account key pair, and the pinned VPC/subnet.
 #
 # REACHABILITY — ZERO INBOUND, SSH OVER SSM: the security group allows NO ingress at all.
 # The runner reaches the instance through an SSM session (AWS-StartSSHSession, tag-gated in

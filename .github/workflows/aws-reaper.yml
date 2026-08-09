@@ -161,7 +161,7 @@ jobs:
           }
 
           capture_repository_rows() {
-            local instance_json interface_json address_json volume_json group_json key_json
+            local instance_json interface_json address_json volume_json group_json
             instance_json="$(aws ec2 describe-instances \
               --filters "${repository_filter}" \
               "Name=instance-state-name,Values=pending,running,stopping,stopped,shutting-down" --output json)"
@@ -170,7 +170,6 @@ jobs:
             address_json="$(aws ec2 describe-addresses --filters "${repository_filter}" --output json)"
             volume_json="$(aws ec2 describe-volumes --filters "${repository_filter}" --output json)"
             group_json="$(aws ec2 describe-security-groups --filters "${repository_filter}" --output json)"
-            key_json="$(aws ec2 describe-key-pairs --filters "${repository_filter}" --output json)"
 
             instance_rows="$(jq -c '.Reservations[].Instances[]
               | {id: .InstanceId, tags: (.Tags | map({key: .Key, value: .Value}) | from_entries)}' \
@@ -187,9 +186,6 @@ jobs:
             group_rows="$(jq -c '.SecurityGroups[]
               | {id: .GroupId, tags: (.Tags | map({key: .Key, value: .Value}) | from_entries)}' \
               <<< "${group_json}")"
-            key_rows="$(jq -c '.KeyPairs[]
-              | {id: .KeyPairId, tags: (.Tags | map({key: .Key, value: .Value}) | from_entries)}' \
-              <<< "${key_json}")"
           }
 
           # Repository id is the IAM-enforced create-time identity. Enumerate by that tag alone so
@@ -202,7 +198,7 @@ jobs:
           record_inventory "${address_rows}"
           record_inventory "${volume_rows}"
           record_inventory "${group_rows}"
-          record_inventory "${key_rows}"
+
           [ "${malformed_identity}" -eq 0 ] || exit 1
 
           now_epoch="$(date -u +%s)"
@@ -492,17 +488,6 @@ jobs:
                 || { echo "::error::Could not delete security group ${group_id}."; exit 1; }
             done
 
-            key_text="$(aws ec2 describe-key-pairs --filters "${filters[@]}" \
-              --query 'KeyPairs[].KeyName' --output text)"
-            split_text_array key_names "${key_text}"
-            if ((${#key_names[@]})); then
-              assert_resource_graph
-              assert_lifecycle_idle
-            fi
-            for key_name in "${key_names[@]}"; do
-              aws ec2 delete-key-pair --key-name "${key_name}"
-            done
-
             # Re-query every supported resource class for this run. Every AWS call is captured
             # and checked before parsing; an expired session or AccessDenied therefore fails.
             deletion_verified=0
@@ -518,18 +503,15 @@ jobs:
                 --query 'Volumes[].VolumeId' --output text)"
               remaining_group_text="$(aws ec2 describe-security-groups --filters "${filters[@]}" \
                 --query 'SecurityGroups[].GroupId' --output text)"
-              remaining_key_text="$(aws ec2 describe-key-pairs --filters "${filters[@]}" \
-                --query 'KeyPairs[].KeyPairId' --output text)"
 
               split_text_array remaining_instance_ids "${remaining_instance_text}"
               split_text_array remaining_interface_ids "${remaining_interface_text}"
               split_text_array remaining_allocation_ids "${remaining_allocation_text}"
               split_text_array remaining_volume_ids "${remaining_volume_text}"
               split_text_array remaining_group_ids "${remaining_group_text}"
-              split_text_array remaining_key_ids "${remaining_key_text}"
               remaining=$((${#remaining_instance_ids[@]} + ${#remaining_interface_ids[@]} + \
                 ${#remaining_allocation_ids[@]} + ${#remaining_volume_ids[@]} + \
-                ${#remaining_group_ids[@]} + ${#remaining_key_ids[@]}))
+                ${#remaining_group_ids[@]}))
               if [ "${remaining}" -eq 0 ]; then
                 deletion_verified=1
                 break
@@ -555,7 +537,7 @@ jobs:
           record_inventory "${address_rows}"
           record_inventory "${volume_rows}"
           record_inventory "${group_rows}"
-          record_inventory "${key_rows}"
+
           [ "${malformed_identity}" -eq 0 ] || exit 1
 
           sweep_performed=true

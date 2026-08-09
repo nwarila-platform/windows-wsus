@@ -31,14 +31,3 @@ temp-password*
 *.key
 *.pfx
 *.p12
-
-# Working notes and audit trail — process records, not repository content. The whole tree is
-# ignored and was purged from history, so nothing under it can reach a commit by any path.
-# The files stay on disk and are read by every session.
-**/_handoff/
-
-# Local operating notes, role contracts and position tracking. Deliberately kept out of the
-# repository: they describe how the work is organised, not what the software does.
-ROADMAP.md
-AGENTS.md
-.claude/
