@@ -33,31 +33,39 @@
 # both with -var, the highest-precedence source, so the environment name and the deployment
 # identity that drives the provider's tags cannot be overridden here.
 
-# Empty on purpose: no framework readiness gate runs (readiness_gate = false below), so no
-# private-key path is needed by Terraform. CI holds the key only for its own SSH stages.
-readiness_private_key_paths = {}
-
 all_systems = [
   {
     region            = "us_east_1"
     hostname          = "wsus-poc-01"
     availability_zone = "us-east-1a"
     subnet_id         = "subnet-0e1c8aae192deff26"
-    # The workflow generates an ephemeral RSA key and passes its public half through the
-    # framework's managed_keypairs input. Terraform creates and destroys this key-pair with
-    # the rest of the run; no long-lived private key is stored in GitHub.
-    key_name             = "windows-wsus-ci"
+    # v3.0.0 CONSUMES key pairs and never creates them, so this names the standing account
+    # key pair. user_data installs its public half by reading IMDS; the private half lives
+    # only in the AWS_EC2_SSH_PRIVATE_KEY org secret and the runner's temporary directory.
+    key_name             = "nwarila-ec2-key"
     iam_instance_profile = "windows-wsus-poc-profile"
     aws_kms_alias        = "aws/ebs"
-    ami                  = "windows_server_2025_base"
-    refresh              = false
+    # Windows_Server-2025-English-STIG-Full-2026.07.15, owner 801119661308. A literal id is
+    # accepted from the framework's vendor allowlist; catalog selectors stay locked to
+    # self-published images. Both sides are transitional — see TD-009.
+    ami     = "ami-04807a1de3f592cc5"
+    refresh = false
     # t3.large, not t3.medium: WSUS postinstall + SUSDB work on 4 GiB regularly pushes past the
     # CI stage budget. Both types are inside the launch policy's type lock.
-    instance_type  = "t3.large"
-    readiness_user = null
-    readiness_gate = false
-    imds_hop_limit = 1
-    set_state      = null
+    instance_type = "t3.large"
+    # Null selects SSH, which keeps the OpenSSH default shell as cmd — the transport the
+    # composed play requires. WinRM is the only other value and is not used here.
+    connection_type = null
+    readiness_user  = null
+    # The framework gate dials the instance's PRIVATE ip, unreachable from a hosted runner,
+    # so it stays off and the play performs readiness itself over SSH-in-SSM. The remaining
+    # readiness attributes are required by the type regardless of the gate being disabled.
+    readiness_gate             = false
+    readiness_command          = null
+    readiness_script_dir       = null
+    readiness_private_key_path = null
+    imds_hop_limit             = 1
+    set_state                  = null
 
     tags = {
       Function = "wsus"
@@ -80,6 +88,8 @@ all_systems = [
     # resolves each disk by (resolve_aws.yml).
     ebs_block_devices = [
       {
+        resource_key = "wsusdb"
+        device_index = 0
         iops         = null
         snapshot_id  = null
         skip_destroy = false
@@ -89,6 +99,8 @@ all_systems = [
         volume_size  = "20"
       },
       {
+        resource_key = "wsusdata"
+        device_index = 1
         iops         = null
         snapshot_id  = null
         skip_destroy = false
@@ -98,6 +110,8 @@ all_systems = [
         volume_size  = "30"
       },
       {
+        resource_key = "wsusiis"
+        device_index = 2
         iops         = null
         snapshot_id  = null
         skip_destroy = false
@@ -107,6 +121,11 @@ all_systems = [
         volume_size  = "20"
       }
     ]
+
+    # Windows_Server-2025-English-STIG-Full declares exactly one EBS mapping — its own root,
+    # already covered by root_block_device above — plus 26 instance-store devices the
+    # framework exempts. Nothing else to override.
+    ami_block_device_overrides = []
 
     network_interfaces = [
       {
@@ -126,7 +145,6 @@ all_systems = [
             from_port                    = 443
             to_port                      = 443
             cidr_ipv4                    = "0.0.0.0/0"
-            cidr_ipv6                    = null
             prefix_list_id               = null
             referenced_security_group_id = null
           }
@@ -145,6 +163,7 @@ all_systems = [
 all_databases      = []
 all_load_balancers = []
 
-# resource_metadata is passed by the workflow as -var (highest precedence, cannot be
-# overridden here); it drives the provider default_tags that satisfy every create-time
-# nwarila:management:repository-id condition in the deploy policies. Never hardcode it.
+# The deployment-identity variables (environment, repository, repository_id, commit_sha,
+# run_id) are passed by the workflow as individual -var flags, which outrank every tfvars
+# source. They stamp the RepositoryId/RunId/Environment/CommitSha/Repository tags that satisfy
+# the create-time conditions in the deploy policies. Never hardcode them here.

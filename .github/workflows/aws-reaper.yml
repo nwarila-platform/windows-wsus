@@ -102,10 +102,10 @@ jobs:
         run: |
           set -euo pipefail
 
-          repository_filter="Name=tag:nwarila:management:repository-id,Values=${GITHUB_REPOSITORY_ID}"
-          stack_filter="Name=tag:nwarila:management:stack,Values=aws-poc"
-          environment_filter="Name=tag:nwarila:management:environment,Values=test"
-          run_tag='nwarila:provenance:run-id'
+          repository_filter="Name=tag:RepositoryId,Values=${GITHUB_REPOSITORY_ID}"
+          repository_name_filter="Name=tag:Repository,Values=${GITHUB_REPOSITORY}"
+          environment_filter="Name=tag:Environment,Values=test"
+          run_tag='RunId'
           lock_key="${STATE_KEY}.tflock"
 
           assert_no_state_lock() {
@@ -141,18 +141,18 @@ jobs:
           malformed_identity=0
           owned_resource_count=0
           record_inventory() {
-            local rows="$1" resource_json resource_id resource_stack resource_environment resource_run_id
+            local rows="$1" resource_json resource_id resource_repository resource_environment resource_run_id
             while IFS= read -r resource_json; do
               [ -n "${resource_json}" ] || continue
               owned_resource_count=$((owned_resource_count + 1))
               resource_id="$(jq -er '.id | select(type == "string" and length > 0)' <<< "${resource_json}")"
-              resource_stack="$(jq -r '.tags["nwarila:management:stack"] // ""' <<< "${resource_json}")"
-              resource_environment="$(jq -r '.tags["nwarila:management:environment"] // ""' <<< "${resource_json}")"
+              resource_repository="$(jq -r '.tags["Repository"] // ""' <<< "${resource_json}")"
+              resource_environment="$(jq -r '.tags["Environment"] // ""' <<< "${resource_json}")"
               resource_run_id="$(jq -r --arg run_tag "${run_tag}" '.tags[$run_tag] // ""' <<< "${resource_json}")"
 
-              if [ "${resource_stack}" != aws-poc ] || [ "${resource_environment}" != test ] || \
+              if [ "${resource_repository}" != "${GITHUB_REPOSITORY}" ] || [ "${resource_environment}" != test ] || \
                 [[ ! "${resource_run_id}" =~ ^[0-9]+$ ]]; then
-                echo "::error::Owned resource ${resource_id} has malformed stack/environment/run identity; refusing all deletion."
+                echo "::error::Owned resource ${resource_id} has malformed repository/environment/run identity; refusing all deletion."
                 malformed_identity=1
               else
                 observed_runs["${resource_run_id}"]=1
@@ -235,14 +235,14 @@ jobs:
                  | select(type == "string" and length > 0)' <<< "${row}")"
               jq -e \
                 --arg repository_id "${GITHUB_REPOSITORY_ID}" \
-                --arg stack aws-poc \
+                --arg repository "${GITHUB_REPOSITORY}" \
                 --arg environment test \
                 --arg run_tag "${run_tag}" \
                 --arg run_id "${expected_run}" '
                   ((.Tags // .TagSet // []) | map({key: .Key, value: .Value}) | from_entries) as $tags
-                  | $tags["nwarila:management:repository-id"] == $repository_id
-                  and $tags["nwarila:management:stack"] == $stack
-                  and $tags["nwarila:management:environment"] == $environment
+                  | $tags["RepositoryId"] == $repository_id
+                  and $tags["Repository"] == $repository
+                  and $tags["Environment"] == $environment
                   and $tags[$run_tag] == $run_id
                 ' <<< "${row}" > /dev/null || {
                   echo "::error::${label} ${resource_id} is cross-run, foreign, or malformed; refusing mutation."
@@ -382,7 +382,7 @@ jobs:
             fi
 
             run_filter="Name=tag:${run_tag},Values=${source_run_id}"
-            filters=("${repository_filter}" "${stack_filter}" "${environment_filter}" "${run_filter}")
+            filters=("${repository_filter}" "${repository_name_filter}" "${environment_filter}" "${run_filter}")
 
             instance_text="$(aws ec2 describe-instances \
               --filters "${filters[@]}" "Name=instance-state-name,Values=pending,running,stopping,stopped,shutting-down" \

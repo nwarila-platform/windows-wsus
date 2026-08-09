@@ -71,7 +71,7 @@
       "Resource": "arn:aws:ec2:<region>:*:instance/*",
       "Condition": {
         "StringEquals": {
-          "ssm:resourceTag/nwarila:management:repository-id": "<repository-id>"
+          "ssm:resourceTag/RepositoryId": "<repository-id>"
         }
       }
     },
@@ -98,7 +98,7 @@
       "Condition": {
         "StringEquals": {
           "aws:RequestedRegion": "<region>",
-          "aws:RequestTag/nwarila:management:repository-id": "<repository-id>"
+          "aws:RequestTag/RepositoryId": "<repository-id>"
         }
       }
     },
@@ -128,7 +128,7 @@
             "AuthorizeSecurityGroupIngress",
             "AuthorizeSecurityGroupEgress"
           ],
-          "aws:RequestTag/nwarila:management:repository-id": "<repository-id>"
+          "aws:RequestTag/RepositoryId": "<repository-id>"
         }
       }
     },
@@ -149,7 +149,7 @@
       "Condition": {
         "StringEquals": {
           "aws:RequestedRegion": "<region>",
-          "ec2:ResourceTag/nwarila:management:repository-id": "<repository-id>"
+          "ec2:ResourceTag/RepositoryId": "<repository-id>"
         },
         "ArnLike": {
           "ec2:Vpc": "arn:aws:ec2:<region>:*:vpc/<vpc-id>"

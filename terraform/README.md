@@ -28,8 +28,8 @@ other is the reaper) does, per run:
    region `us-east-1`. `encrypt` and `use_lockfile` come from the framework's `backend.tf`;
    the state policy denies unencrypted puts and tfstate deletion, and grants lock-object
    (`*.tfstate.tflock`) delete — see `docs/reference/aws-iam/README.md`.
-4. Generates an ephemeral RSA key, passes only its public half through the framework's
-   `managed_keypairs` input, then runs apply → configure (Ansible) → **destroy, always**.
+4. Stages the standing launch key's private half from an organization secret, then runs
+   apply → configure (Ansible) → **destroy, always**.
 5. One fixed state key is protected by the deploy workflow's singleton concurrency group and
    Terraform's S3 lockfile. The separately serialized reaper is a conservative stale-resource
    fallback; it is not part of the deploy queue.
@@ -41,7 +41,7 @@ other is the reaper) does, per run:
   to give that outbound path a route (pre-created ENIs never get auto public IPs; the account
   has no NAT and no VPC endpoints). The deploy subnet must route through an internet gateway;
   the deploy role cannot probe that (`ec2:DescribeRouteTables` is not granted).
-- The deploy role can create and delete only the repository's `windows-wsus-ci` key pair.
+- The deploy role launches with the standing `nwarila-ec2-key` pair; it never creates key pairs.
   The private half remains in the runner's temporary directory and never enters Terraform
   state or GitHub secrets (`readiness_gate = false`, `readiness_private_key_paths = {}`).
 
