@@ -425,11 +425,13 @@ for dependency_contract in (
         failures.append(
             f"{reaper_path} stale-resource mutation is missing dependency proof {dependency_contract!r}"
         )
-if reaper_text.count("assert_resource_graph") != 7 or (
+# One definition plus one call per mutation class: instances, interfaces, addresses, volumes,
+# and security groups. Key pairs are not a repository-owned class - the launch key is standing.
+if reaper_text.count("assert_resource_graph") != 6 or (
     'python3 "${GITHUB_WORKSPACE}/scripts/assert-aws-resource-graph.py"' not in reaper_text
 ):
     failures.append(
-        f"{reaper_path} must run the shared bidirectional graph proof before all six mutation classes"
+        f"{reaper_path} must run the shared bidirectional graph proof before all five mutation classes"
     )
 if reaper_text.count(
     'assert_address_association_identity "${allocation_id}" "${source_run_id}"'

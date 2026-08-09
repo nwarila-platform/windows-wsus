@@ -42,8 +42,9 @@ other is the reaper) does, per run:
   has no NAT and no VPC endpoints). The deploy subnet must route through an internet gateway;
   the deploy role cannot probe that (`ec2:DescribeRouteTables` is not granted).
 - The deploy role launches with the standing `nwarila-ec2-key` pair; it never creates key pairs.
-  The private half remains in the runner's temporary directory and never enters Terraform
-  state or GitHub secrets (`readiness_gate = false`, `readiness_private_key_paths = {}`).
+  The private half lives in the `AWS_EC2_SSH_PRIVATE_KEY` organization secret, is staged into
+  the runner's temporary directory at mode 0600 for the life of one job, and never enters
+  Terraform state (`readiness_gate = false`, `readiness_private_key_path = null`).
 
 ## Local (break-glass) run
 

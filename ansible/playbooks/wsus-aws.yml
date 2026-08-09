@@ -171,6 +171,7 @@
 
   #region ------ [ Roles ] -------------------------------------------------------------------- #
   roles:
+
     #region ------ [ Roles: Windows Disk Manager ] -------------------------------------------- #
     # Guest disk provisioning is delegated to the framework role. Drive letters must match
     # wsus_defaults.data_disks because wsus consumes the volumes by letter; each `function`
