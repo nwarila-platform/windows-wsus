@@ -171,11 +171,11 @@ polish; each one is a finding both auditors raised.
   dual exact subject forms. Adding the attestation workflow to the deploy role would unnecessarily
   give a read-only check lifecycle mutation authority; adding deploy workflows to the audit role
   would broaden who can inspect IAM without improving the proof.
-- **The EC2 login key is ephemeral.** The lifecycle generates an RSA key on the hosted runner,
-  names the standing `nwarila-ec2-key` pair, whose public half Windows user_data installs from
-  instance metadata. The pinned framework consumes key pairs and never creates them. Launch use,
-  and `DeleteKeyPair` are all scoped to the materialized key name and repository identity. No
-  long-lived SSH private key is required in GitHub Actions.
+- **The EC2 login key is a standing, tag-scoped pair.** The pinned framework consumes key pairs
+  and never creates them, so the lifecycle launches with `nwarila-ec2-key`; Windows user_data
+  installs its public half from instance metadata. Launch use is scoped to that exact key name.
+  The private half lives in the `AWS_EC2_SSH_PRIVATE_KEY` organization secret and reaches the
+  runner's temporary directory for one job only.
 - **IMDS hop limit pinned to 1** at launch and on modify (R3-14), so IMDS cannot be extended past
   the host network stack.
 - **Denies carry no substitutable narrowing** (R3 F11). The state Denies dropped
