@@ -53,9 +53,10 @@ all_systems = [
     # t3.large, not t3.medium: WSUS postinstall + SUSDB work on 4 GiB regularly pushes past the
     # CI stage budget. Both types are inside the launch policy's type lock.
     instance_type = "t3.large"
-    # Null selects SSH, which keeps the OpenSSH default shell as cmd — the transport the
-    # composed play requires. WinRM is the only other value and is not used here.
-    connection_type = null
+    # "ssh-ssm" names what actually happens: SSH on the wire, reached through an SSM tunnel
+    # with no inbound path opened. The framework requires readiness_gate = false for this
+    # transport because its gate dials directly and cannot traverse the tunnel.
+    connection_type = "ssh-ssm"
     readiness_user  = null
     # The framework gate dials the instance's PRIVATE ip, unreachable from a hosted runner,
     # so it stays off and the play performs readiness itself over SSH-in-SSM. The remaining
