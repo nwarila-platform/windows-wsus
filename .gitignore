@@ -1,33 +1,100 @@
-# composition build tree (framework checkout + overlaid role) — never committed
-.frameworks/
-.quality/
-.quality-local.*/
+# Deny-all .gitignore strategy per org ADR-0003: everything is ignored, and every tracked
+# path is allowlisted explicitly below. The leading `**` is the only wildcard permitted;
+# each entry names one directory or one file, so nothing can enter the repository silently.
+**
 
-# ansible scratch
-*.retry
-*.log
+# Root
+!/.editorconfig
+!/.gitignore
+!/.shellcheckrc
+!/.yamllint.yml
+!/LICENSE
+!/README.md
+!/SECURITY.md
+!/quality-tools.env
+!/requirements-quality.txt
+!/requirements-quality.yml
 
-# Python/controller environments and caches
-.venv/
-venv/
-**/__pycache__/
-*.py[cod]
+# .github/
+!/.github/
+!/.github/workflows/
+!/.github/CODEOWNERS
+!/.github/ansible-framework-pin
+!/.github/renovate.json5
+!/.github/terraform-framework-pin
+!/.github/workflows/aws-deploy.yml
+!/.github/workflows/aws-reaper.yml
+!/.github/workflows/iam-drift.yml
+!/.github/workflows/pin-bump.yml
+!/.github/workflows/quality.yml
 
-# Terraform working data and local plans/state
-**/.terraform/
-*.tfstate
-*.tfstate.*
-*.tfplan
-crash.log
+# ansible/
+!/ansible/
+!/ansible/applications/
+!/ansible/applications/wsus/
+!/ansible/applications/wsus/defaults/
+!/ansible/applications/wsus/meta/
+!/ansible/applications/wsus/tasks/
+!/ansible/applications/wsus/tests/
+!/ansible/applications/wsus/vars/
+!/ansible/inventory/
+!/ansible/playbooks/
+!/ansible/applications/wsus/README.md
+!/ansible/applications/wsus/defaults/main.yml
+!/ansible/applications/wsus/meta/main.yml
+!/ansible/applications/wsus/tasks/clean_windows.yml
+!/ansible/applications/wsus/tasks/main.yml
+!/ansible/applications/wsus/tasks/present_windows.yml
+!/ansible/applications/wsus/tasks/validate.yml
+!/ansible/applications/wsus/tests/test_susdb_state_table.py
+!/ansible/applications/wsus/vars/windows.yml
+!/ansible/inventory/aws_ec2.yml
+!/ansible/playbooks/wsus-aws.yml
 
-# build worktrees live outside the repo (../.worktrees) but guard anyway
-.worktrees/
+# docs/
+!/docs/
+!/docs/reference/
+!/docs/reference/aws-iam/
+!/docs/reference/aws-iam/policies/
+!/docs/reference/aws-iam/roles/
+!/docs/OPERATIONS.md
+!/docs/TECH-DEBT.md
+!/docs/ansible-style-guide.md
+!/docs/reference/aws-iam/README.md
+!/docs/reference/aws-iam/policies/github_nwarila-platform_windows-wsus.json
+!/docs/reference/aws-iam/policies/github_nwarila-platform_windows-wsus_iam-audit.json
+!/docs/reference/aws-iam/policies/windows-wsus_artifact-assume.json
+!/docs/reference/aws-iam/policies/windows-wsus_artifact-folder.json
+!/docs/reference/aws-iam/policies/windows-wsus_artifact-read.json
+!/docs/reference/aws-iam/policies/windows-wsus_deploy-discovery-iam.json
+!/docs/reference/aws-iam/policies/windows-wsus_deploy-ec2-launch.json
+!/docs/reference/aws-iam/policies/windows-wsus_deploy-ec2-lifecycle.json
+!/docs/reference/aws-iam/policies/windows-wsus_deploy-sg-ssm-kms.json
+!/docs/reference/aws-iam/roles/github_nwarila-platform_windows-wsus-admin.trust.json
+!/docs/reference/aws-iam/roles/github_nwarila-platform_windows-wsus-iam-audit.trust.json
+!/docs/reference/aws-iam/roles/github_nwarila-platform_windows-wsus.trust.json
+!/docs/reference/aws-iam/roles/windows-wsus-artifact-reader.trust.json
+!/docs/reference/aws-iam/roles/windows-wsus-poc-role.trust.json
 
-# local-only secrets / scratch (never commit credentials)
-*.secret
-temp-password*
-*.password
-*.pem
-*.key
-*.pfx
-*.p12
+# scripts/
+!/scripts/
+!/scripts/assert-aws-clean.sh
+!/scripts/assert-aws-resource-graph.py
+!/scripts/bootstrap-iam.sh
+!/scripts/check-action-pins.py
+!/scripts/check-iam-literals.sh
+!/scripts/check-renovate-config.py
+!/scripts/check-winshell-splitargs.py
+!/scripts/check-workflow-trigger.sh
+!/scripts/terraform-consumer.tftest.hcl
+!/scripts/test-aws-clean.sh
+!/scripts/test-aws-resource-graph.py
+!/scripts/test-iam-drift-structure.py
+!/scripts/test-iam-policies.sh
+!/scripts/test-iam-structure.py
+!/scripts/verify.sh
+
+# terraform/
+!/terraform/
+!/terraform/README.md
+!/terraform/aws.tfvars
