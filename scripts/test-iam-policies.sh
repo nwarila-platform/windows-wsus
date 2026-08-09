@@ -339,29 +339,15 @@ assert "create ENI with owned security group in foreign VPC -> deny" implicitDen
        "ec2:Vpc=string=arn:aws:ec2:${REGION}:${ACCOUNT}:vpc/vpc-0foreign" \
        "${TAG}=string=${REPO_ID}"
 
-echo "== ephemeral key-pair lifecycle =="
-assert "import exact key with repository tag" allowed ec2:ImportKeyPair "${KEY_ARN}" \
+echo "== key-pair lifecycle is NOT granted (the launch key is standing, not per-run) =="
+# The deploy role launches with a pre-existing key pair and never creates or destroys one. These
+# assert the absence of that authority: a regression that re-adds it fails here, not in production.
+assert "import the launch key" implicitDeny ec2:ImportKeyPair "${KEY_ARN}" \
        "${REG}" "${RTAG}=string=${REPO_ID}"
-assert "import key without repository tag" implicitDeny ec2:ImportKeyPair "${KEY_ARN}" "${REG}"
-assert "import key with foreign repository tag" implicitDeny ec2:ImportKeyPair "${KEY_ARN}" \
-       "${REG}" "${RTAG}=string=${SIB_ID[${SIBLINGS[0]}]}"
-assert "import a different key name" implicitDeny ec2:ImportKeyPair \
-       "arn:aws:ec2:${REGION}:${ACCOUNT}:key-pair/some-other-key" \
-       "${REG}" "${RTAG}=string=${REPO_ID}"
-assert "tag imported key at create time" allowed ec2:CreateTags "${KEY_ARN}" \
+assert "delete the launch key" implicitDeny ec2:DeleteKeyPair "${KEY_ARN}" \
+       "${REG}" "${TAG}=string=${REPO_ID}"
+assert "tag a key pair at create time" implicitDeny ec2:CreateTags "${KEY_ARN}" \
        "ec2:CreateAction=string=ImportKeyPair" "${RTAG}=string=${REPO_ID}"
-assert "tag imported key without identity" implicitDeny ec2:CreateTags "${KEY_ARN}" \
-       "ec2:CreateAction=string=ImportKeyPair"
-assert "tag imported key with foreign identity" explicitDeny ec2:CreateTags "${KEY_ARN}" \
-       "ec2:CreateAction=string=ImportKeyPair" "${RTAG}=string=${SIB_ID[${SIBLINGS[0]}]}"
-assert "delete owned ephemeral key" allowed ec2:DeleteKeyPair "${KEY_ARN}" \
-       "${REG}" "${TAG}=string=${REPO_ID}"
-assert "delete key without ownership tag" implicitDeny ec2:DeleteKeyPair "${KEY_ARN}" "${REG}"
-assert "delete foreign-owned key" implicitDeny ec2:DeleteKeyPair "${KEY_ARN}" \
-       "${REG}" "${TAG}=string=${SIB_ID[${SIBLINGS[0]}]}"
-assert "delete a different key name" implicitDeny ec2:DeleteKeyPair \
-       "arn:aws:ec2:${REGION}:${ACCOUNT}:key-pair/some-other-key" \
-       "${REG}" "${TAG}=string=${REPO_ID}"
 
 echo "== omitted-key bypass (a condition avoided by omission is not a control) =="
 # Every one of these omits the key entirely. If the result is `allowed`, the control is decoration.
