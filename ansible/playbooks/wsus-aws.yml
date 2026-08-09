@@ -28,7 +28,7 @@
     __wsus_inventory_hosts__: "{{ groups['wsus_servers'] | default([]) }}"
     __expected_repository_id__: "{{ lookup('ansible.builtin.env', 'GITHUB_REPOSITORY_ID') | trim }}"
     __expected_run_id__: "{{ lookup('ansible.builtin.env', 'GITHUB_RUN_ID') | trim }}"
-    __expected_region__: "{{ lookup('ansible.builtin.env', 'AWS_REGION') | default('us-east-1', true) | trim }}"
+    __expected_region__: "{{ aws_region | default('') | trim }}"
 
   tasks:
     - name: 'INVENTORY | Require One Host And An Immutable Repository Identity'
@@ -37,7 +37,7 @@
           - __wsus_inventory_hosts__ | length == 1
           - __expected_repository_id__ is match('^[0-9]+$')
           - __expected_run_id__ is match('^[0-9]+$')
-          - __expected_region__ is match('^[a-z]{2}(-gov)?-[a-z]+-[0-9]+$')
+          - __expected_region__ is match('^[a-z]{2}(-[a-z]+)+-[0-9]$')
         fail_msg: >-
           Refusing to configure: expected exactly one running Function=wsus instance and a
           numeric GITHUB_REPOSITORY_ID and GITHUB_RUN_ID, but inventory
@@ -61,9 +61,9 @@
           - (__selected__.ec2_platform | default('') | lower) == 'windows'
           - (__selected__.ec2_state.name | default('')) == 'running'
           - (__selected_tags__.Function | default('')) == 'wsus'
-          - (__selected_tags__['nwarila:management:repository-id'] | default('') | string) == __expected_repository_id__
+          - (__selected_tags__['RepositoryId'] | default('') | string) == __expected_repository_id__
           - (__selected__.ec2_placement.availability_zone | default('')).startswith(__expected_region__)
-          - (__selected_tags__['nwarila:provenance:run-id'] | default('') | string) == __expected_run_id__
+          - (__selected_tags__['RunId'] | default('') | string) == __expected_run_id__
         fail_msg: >-
           Refusing to configure {{ __wsus_inventory_host__ }}: it is not the one running Windows
           instance owned by repository id {{ __expected_repository_id__ }} in
@@ -110,7 +110,6 @@
       changed_when: false
 #endregion --- [ Play: Windows Readiness ] ---------------------------------------------------- #
 
-
 - name: 'PLAY | WSUS Server (WID-backed, ephemeral AWS)'
   hosts: 'wsus_servers'
   # Roles gather the facts they need themselves at present-time; the play gathers nothing.
@@ -147,28 +146,25 @@
   #region ------ [ Pre-Tasks ] ---------------------------------------------------------------- #
   pre_tasks:
 
-    #region ------ [ Pre-Tasks: Load AWS Account Information ] -------------------------------- #
+    #region ------ [ Pre-Tasks: Assert AWS Deployment Identity ] ------------------------------ #
     # The ROLE never reaches into an environment variable: every configuration value flows
-    # through the 'wsus:' override dict. Account-derived values are imported HERE, once, from
-    # the CONTROLLER environment the workflow already holds authoritatively — AWS_ACCOUNT_ID
-    # is the same value the OIDC role ARN was built from, so the play and the deploy identity
-    # can never disagree. lookup('env') evaluates on the controller, not the target.
-    - name: 'PRE | Import AWS account information from the controller environment'
-      ansible.builtin.set_fact:
-        aws_account_id: "{{ lookup('ansible.builtin.env', 'AWS_ACCOUNT_ID') | trim }}"
-        aws_region: "{{ lookup('ansible.builtin.env', 'AWS_REGION') | default('us-east-1', true) | trim }}"
-
-    - name: 'PRE | Assert the account id was provided'
+    # through the 'wsus:' override dict. Account-derived values are passed EXPLICITLY on the
+    # ansible-playbook invocation (-e aws_account_id=… -e aws_region=…), the same way the
+    # Terraform framework receives its deployment-identity variables — the workflow supplies
+    # both from its own environment, so the play and the deploy identity can never disagree.
+    - name: 'PRE | Assert the AWS deployment identity was provided'
       ansible.builtin.assert:
         that:
-          - (aws_account_id | length) == 12
+          - aws_account_id is defined
           - aws_account_id is match('^[0-9]{12}$')
+          - aws_region is defined
+          - aws_region is match('^[a-z]{2}(-[a-z]+)+-[0-9]$')
         fail_msg: >-
-          AWS_ACCOUNT_ID is missing or malformed in the controller environment. The aws-deploy
-          workflow exports it on the play step (from the same secret the OIDC role ARN uses);
-          a local run must export it before invoking this playbook.
+          aws_account_id and aws_region must be provided as extra-vars. The aws-deploy workflow
+          passes them from its own environment (the same values the OIDC role ARN and region
+          use); a local run must pass both explicitly.
         quiet: true
-    #endregion --- [ Pre-Tasks: Load AWS Account Information ] -------------------------------- #
+    #endregion --- [ Pre-Tasks: Assert AWS Deployment Identity ] ------------------------------ #
 
   #endregion --- [ Pre-Tasks ] ---------------------------------------------------------------- #
 
@@ -198,6 +194,7 @@
               label: "{{ wsus_disk_layout.iis.label }}"
               allocation_unit: "{{ wsus_disk_layout.iis.allocation_unit }}"
     #endregion --- [ Roles: Windows Disk Manager ] -------------------------------------------- #
+
     #region ------ [ Roles: Windows Server Update Service ] ----------------------------------- #
     - role: 'wsus'
       vars:

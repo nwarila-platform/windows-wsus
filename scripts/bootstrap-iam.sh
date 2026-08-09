@@ -100,7 +100,7 @@ key_pair_text="$(sed -nE \
 mapfile -t KEY_PAIRS <<< "${key_pair_text}"
 [ "${#KEY_PAIRS[@]}" -eq 1 ] || die 'terraform/aws.tfvars must declare exactly one key_name'
 KEY_PAIR="${KEY_PAIRS[0]}"
-[ "${KEY_PAIR}" = 'windows-wsus-ci' ] || die "unexpected workflow-managed key_name '${KEY_PAIR}'"
+[ "${KEY_PAIR}" = 'nwarila-ec2-key' ] || die "unexpected key_name '${KEY_PAIR}'"
 # The OIDC subject GitHub actually emits embeds the OWNER id as well as the repository id
 # (proven by CloudTrail). Resolve it rather than hard-coding it.
 OWNER_ID="$(gh api "orgs/${OWNER}" --jq .id)" || die "cannot resolve owner id for ${OWNER}"
@@ -1178,7 +1178,7 @@ sp() { aws iam simulate-principal-policy --policy-source-arn "arn:aws:iam::${ACC
        --action-names "$1" --resource-arns "$2" --context-entries "${@:3}" \
        "${AWS_PROFILE_ARGS[@]}" --region "${REGION}" \
        --query 'EvaluationResults[0].EvalDecision' --output text; }
-TAGK='ContextKeyName=ec2:ResourceTag/nwarila:management:repository-id,ContextKeyType=string,ContextKeyValues'
+TAGK='ContextKeyName=ec2:ResourceTag/RepositoryId,ContextKeyType=string,ContextKeyValues'
 REGK="ContextKeyName=aws:RequestedRegion,ContextKeyType=string,ContextKeyValues=${REGION}"
 own_decision="$(sp ec2:TerminateInstances "arn:aws:ec2:${REGION}:${ACCOUNT}:instance/i-0a" \
   "${REGK}" "${TAGK}=${REPO_ID}")" || die 'own-resource simulation failed'

@@ -38,7 +38,7 @@ split_text_array() {
     done <<< "${raw}"
 }
 
-filters=("Name=tag:nwarila:management:repository-id,Values=${GITHUB_REPOSITORY_ID}")
+filters=("Name=tag:RepositoryId,Values=${GITHUB_REPOSITORY_ID}")
 lock_key="${STATE_KEY}.tflock"
 instance_ids=()
 interface_ids=()

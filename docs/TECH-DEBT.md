@@ -90,3 +90,21 @@ workarounds are not accidentally restored.
   and is CODEOWNED. The offline required gate enforces Renovate presence and Dependabot absence.
   Exact `quality-tools.env` tuple discovery deliberately remains TD-007; do not reintroduce a
   second dependency bot to conceal it.
+
+## TD-009 — the Windows image is a pinned vendor AMI, not a self-published one
+
+- **What:** `terraform/aws.tfvars` addresses the image by literal id
+  (`ami-04807a1de3f592cc5`, `Windows_Server-2025-English-STIG-Full-2026.07.15`, owner
+  `801119661308`). The pinned framework accepts that only through a vendor allowlist its own
+  source marks `TEMPORARY — hardcoded until those images are mirrored into the catalog`.
+  Catalog selectors remain locked to images the deploying account published.
+- **Consequence:** the pin does not track upstream. Amazon republishes the STIG images roughly
+  monthly, and nothing in this repository detects that ours has aged — a green proof badge can
+  therefore attest to a months-old image. This is accepted deliberately, not overlooked.
+- **Current containment:** the id is reviewed source, changed only through the required gate,
+  and the proof exercises whatever image is pinned. Staleness is silent; freshness is manual.
+- **Exit criteria:** a self-published, account-owned Windows Server 2025 image stamped with
+  `ImageFamily`/`ImageVersion` and pointed at by `/nwarila/ami/windows/*`. At that point `ami`
+  becomes the catalog selector `windows@2025`, the framework's vendor allowlist collapses back
+  to `["self"]`, and version currency becomes the publisher's monotonicity guarantee rather
+  than a human noticing. Close this entry only when the selector is a catalog address.

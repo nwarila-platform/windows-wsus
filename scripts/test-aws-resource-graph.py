@@ -12,6 +12,7 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "assert-aws-resource-graph.py"
+REPOSITORY = "nwarila-platform/windows-wsus"
 spec = importlib.util.spec_from_file_location("aws_resource_graph", SCRIPT)
 assert spec and spec.loader
 graph = importlib.util.module_from_spec(spec)
@@ -24,7 +25,7 @@ RUN_ID = "42"
 def tag_list(run_id: str = RUN_ID, repository_id: str = REPOSITORY_ID, **extra: str):
     values = {
         graph.REPOSITORY_TAG: repository_id,
-        graph.STACK_TAG: "aws-poc",
+        graph.REPOSITORY_NAME_TAG: REPOSITORY,
         graph.ENVIRONMENT_TAG: "test",
         graph.RUN_TAG: run_id,
         **extra,
@@ -77,7 +78,7 @@ def healthy_inventory():
         "InstanceId": "i-owned",
     }
     return graph.Inventory.from_fixture(
-        REPOSITORY_ID, [instance], [interface], volumes, [address], RUN_ID
+        REPOSITORY_ID, REPOSITORY, [instance], [interface], volumes, [address], RUN_ID
     )
 
 
@@ -86,7 +87,7 @@ class ResourceGraphTests(unittest.TestCase):
         healthy_inventory().validate(require_wsus_data_volumes=True)
 
     def test_empty_preclean_graph_passes(self):
-        graph.Inventory.from_fixture(REPOSITORY_ID, [], [], [], []).validate()
+        graph.Inventory.from_fixture(REPOSITORY_ID, REPOSITORY, [], [], [], []).validate()
 
     def test_foreign_attached_volume_fails(self):
         inventory = healthy_inventory()
@@ -149,7 +150,7 @@ class ResourceGraphTests(unittest.TestCase):
             inventory.validate(require_wsus_data_volumes=True)
 
     def test_terraform_state_ids_are_unioned_with_tag_discovery(self):
-        inventory = graph.Inventory.from_fixture(REPOSITORY_ID, [], [], [], [])
+        inventory = graph.Inventory.from_fixture(REPOSITORY_ID, REPOSITORY, [], [], [], [])
         state = {
             "values": {
                 "root_module": {
@@ -183,7 +184,7 @@ class ResourceGraphTests(unittest.TestCase):
             inventory.validate()
 
     def test_destroyed_resource_left_in_state_is_treated_as_absent(self):
-        inventory = graph.Inventory.from_fixture(REPOSITORY_ID, [], [], [], [])
+        inventory = graph.Inventory.from_fixture(REPOSITORY_ID, REPOSITORY, [], [], [], [])
         state = {
             "values": {
                 "root_module": {
@@ -202,7 +203,7 @@ class ResourceGraphTests(unittest.TestCase):
         inventory.validate()
 
     def test_state_lookup_authorization_failure_is_never_absence(self):
-        inventory = graph.Inventory.from_fixture(REPOSITORY_ID, [], [], [], [])
+        inventory = graph.Inventory.from_fixture(REPOSITORY_ID, REPOSITORY, [], [], [], [])
         state = {
             "values": {
                 "root_module": {
@@ -251,7 +252,7 @@ class ResourceGraphTests(unittest.TestCase):
     def test_successful_malformed_aws_response_never_becomes_empty(self):
         with mock.patch.object(graph, "aws_json", return_value={}):
             with self.assertRaisesRegex(graph.GraphError, "Reservations"):
-                graph.Inventory(REPOSITORY_ID)
+                graph.Inventory(REPOSITORY_ID, REPOSITORY)
 
     def test_malformed_optional_edge_mapping_is_not_ignored(self):
         inventory = healthy_inventory()

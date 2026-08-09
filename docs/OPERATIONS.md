@@ -14,12 +14,14 @@ workflow opens one durable incident per failing subsystem rather than one issue 
 | `IAM Drift Attestation` | daily schedule or main-only manual dispatch | dedicated read-only GitHub OIDC audit role | live policies, trusts, role attachments/tags, inverse policy consumers/boundary uses, role metadata, and bidirectional instance-profile membership exactly match source |
 | `Framework Pin Discovery` | weekly schedule | repository write only | update one reviewable framework-pin PR; never execute candidate workflow code with AWS credentials |
 
-The AWS proof uses a dedicated state key and a singleton deploy concurrency group. It generates an
-ephemeral RSA key for the run, gives Terraform only the public half, and deletes the EC2 key pair
-with the stack. The private half exists only in the hosted runner's temporary directory. Before
-each apply, the workflow destroys any interrupted predecessor state under the Terraform lock and
-proves the repository-owned inventory is empty; an old instance cannot be adopted because its
-one-time private key is intentionally gone.
+The AWS proof uses a dedicated state key and a singleton deploy concurrency group. It launches with
+the standing account key pair, whose public half Windows user_data installs by reading instance
+metadata; the private half is an organization secret and is written to the runner's temporary
+directory for the job only. Because that key is not unique to one run, key custody alone does not
+prevent adopting a stranded predecessor. Before each apply the workflow therefore destroys any
+interrupted predecessor state under the Terraform lock and proves the repository-owned inventory is
+empty, and every target is separately checked against the current run's exact identity tags and
+dependency graph.
 
 The proof inventory is generated from Terraform's `aws_instances` output and checked against live
 EC2 ownership and run tags. A broad `Function=wsus` discovery result is not accepted as proof.

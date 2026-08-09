@@ -67,7 +67,8 @@ jobs:
       AWS_REGION: us-east-1
       DEPLOY_ROLE: github_nwarila-platform_windows-wsus
       STATE_KEY: nwarila-platform/windows-wsus/aws-poc.tfstate
-      CI_KEY_NAME: windows-wsus-ci
+      # Must match key_name in terraform/aws.tfvars.
+      CI_KEY_NAME: nwarila-ec2-key
 
     steps:
       - name: Checkout
@@ -112,20 +113,21 @@ jobs:
           ./scripts/check-workflow-trigger.sh
           python3 ./scripts/check-winshell-splitargs.py
 
-      # The framework imports only the public half and destroys the EC2 key pair with the stack.
-      # The private half exists only in this runner's temporary directory for this one lifecycle.
-      - name: Generate an ephemeral SSH key
+      # The framework consumes a pre-existing key pair and never creates one, so the standing
+      # account key pair named in terraform/aws.tfvars is the launch key. Windows user_data
+      # installs its public half by reading IMDS; only the private half is secret, and it
+      # exists solely in this runner's temporary directory, mode 0600, for this one job.
+      - name: Stage the launch private key
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.AWS_EC2_SSH_PRIVATE_KEY }}
         run: |
           set -euo pipefail
-          private_key="${RUNNER_TEMP}/windows-wsus-ci.pem"
-          ssh-keygen -q -t rsa -b 3072 -N '' \
-            -C "windows-wsus-ci-${GITHUB_RUN_ID}" -f "${private_key}"
-          managed_keypairs="$(jq -cn \
-            --arg name "${CI_KEY_NAME}" \
-            --arg public_key "$(< "${private_key}.pub")" \
-            '{($name): {public_key: $public_key, tags: {}}}')"
+          private_key="${RUNNER_TEMP}/${CI_KEY_NAME}.pem"
+          umask 077
+          printf '%s\n' "${SSH_PRIVATE_KEY}" > "${private_key}"
+          ssh-keygen -y -f "${private_key}" > /dev/null \
+            || { echo "::error::AWS_EC2_SSH_PRIVATE_KEY is not a usable private key."; exit 1; }
           echo "CI_PRIVATE_KEY=${private_key}" >> "${GITHUB_ENV}"
-          echo "TF_VAR_managed_keypairs=${managed_keypairs}" >> "${GITHUB_ENV}"
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
@@ -213,8 +215,6 @@ jobs:
             -var "environment=test" \
             -var "repository=${GITHUB_REPOSITORY}" \
             -var "repository_id=${GITHUB_REPOSITORY_ID}" \
-            -var "stack=aws-poc" \
-            -var "owner=${GITHUB_REPOSITORY_OWNER}" \
             -var "commit_sha=$(git -C "${GITHUB_WORKSPACE}" rev-parse HEAD)" \
             -var "run_id=${GITHUB_RUN_ID}"
 
@@ -245,8 +245,6 @@ jobs:
             -var "environment=test" \
             -var "repository=${GITHUB_REPOSITORY}" \
             -var "repository_id=${GITHUB_REPOSITORY_ID}" \
-            -var "stack=aws-poc" \
-            -var "owner=${GITHUB_REPOSITORY_OWNER}" \
             -var "commit_sha=$(git -C "${GITHUB_WORKSPACE}" rev-parse HEAD)" \
             -var "run_id=${GITHUB_RUN_ID}"
 
@@ -301,15 +299,16 @@ jobs:
           instance_json="$(aws ec2 describe-instances --instance-ids "${instance_id}" --output json)"
           jq -e \
             --arg repository_id "${GITHUB_REPOSITORY_ID}" \
+            --arg repository "${GITHUB_REPOSITORY}" \
             --arg run_id "${GITHUB_RUN_ID}" '
               [.Reservations[].Instances[]] as $instances
               | ($instances | length) == 1
               and $instances[0].State.Name == "running"
               and ($instances[0].Tags | map({key: .Key, value: .Value}) | from_entries) as $tags
-              | $tags["nwarila:management:repository-id"] == $repository_id
-              and $tags["nwarila:provenance:run-id"] == $run_id
-              and $tags["nwarila:management:environment"] == "test"
-              and $tags["nwarila:management:stack"] == "aws-poc"
+              | $tags["RepositoryId"] == $repository_id
+              and $tags["RunId"] == $run_id
+              and $tags["Environment"] == "test"
+              and $tags["Repository"] == $repository
             ' <<< "${instance_json}" > /dev/null \
             || { echo "::error::EC2 target ownership/state assertion failed for ${instance_id}."; exit 1; }
 
@@ -378,14 +377,17 @@ jobs:
         working-directory: .frameworks/ansible-framework
         env:
           ANSIBLE_CONFIG: ${{ github.workspace }}/.frameworks/ansible-framework/ansible.cfg
-          # Imported by the play's pre-tasks — same value the OIDC role ARN is built from.
+          # Passed to the play as explicit extra-vars — same value the OIDC role ARN is built from.
           AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
           GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
           GITHUB_RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
           ansible-playbook -i "${RUNNER_TEMP}/aws-inventory.json" \
-            "${GITHUB_WORKSPACE}/ansible/playbooks/wsus-aws.yml" -e env=test
+            "${GITHUB_WORKSPACE}/ansible/playbooks/wsus-aws.yml" \
+            -e env=test \
+            -e aws_account_id="${AWS_ACCOUNT_ID}" \
+            -e aws_region="${AWS_REGION}"
 
       - name: Refresh AWS credentials before second converge (OIDC)
         uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
@@ -409,7 +411,10 @@ jobs:
           set -euo pipefail
           recap_file="${RUNNER_TEMP}/ansible-second-converge.log"
           ansible-playbook -i "${RUNNER_TEMP}/aws-inventory.json" \
-            "${GITHUB_WORKSPACE}/ansible/playbooks/wsus-aws.yml" -e env=test | tee "${recap_file}"
+            "${GITHUB_WORKSPACE}/ansible/playbooks/wsus-aws.yml" \
+            -e env=test \
+            -e aws_account_id="${AWS_ACCOUNT_ID}" \
+            -e aws_region="${AWS_REGION}" | tee "${recap_file}"
           mapfile -t recaps < <(awk \
             '/PLAY RECAP/{seen=1; next} seen && /^[^[:space:]].*: +ok=/{print}' "${recap_file}")
           ((${#recaps[@]} > 0)) \
@@ -470,8 +475,6 @@ jobs:
             -var "environment=test" \
             -var "repository=${GITHUB_REPOSITORY}" \
             -var "repository_id=${GITHUB_REPOSITORY_ID}" \
-            -var "stack=aws-poc" \
-            -var "owner=${GITHUB_REPOSITORY_OWNER}" \
             -var "commit_sha=$(git -C "${GITHUB_WORKSPACE}" rev-parse HEAD)" \
             -var "run_id=${GITHUB_RUN_ID}"
 
