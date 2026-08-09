@@ -57,9 +57,6 @@
 !/docs/reference/aws-iam/
 !/docs/reference/aws-iam/policies/
 !/docs/reference/aws-iam/roles/
-!/docs/OPERATIONS.md
-!/docs/TECH-DEBT.md
-!/docs/ansible-style-guide.md
 !/docs/reference/aws-iam/README.md
 !/docs/reference/aws-iam/policies/github_nwarila-platform_windows-wsus.json
 !/docs/reference/aws-iam/policies/github_nwarila-platform_windows-wsus_iam-audit.json
@@ -75,6 +72,12 @@
 !/docs/reference/aws-iam/roles/github_nwarila-platform_windows-wsus.trust.json
 !/docs/reference/aws-iam/roles/windows-wsus-artifact-reader.trust.json
 !/docs/reference/aws-iam/roles/windows-wsus-poc-role.trust.json
+!/docs/explanation/
+!/docs/how-to/
+!/docs/README.md
+!/docs/explanation/technical-debt.md
+!/docs/how-to/operations.md
+!/docs/reference/ansible-style-guide.md
 
 # scripts/
 !/scripts/

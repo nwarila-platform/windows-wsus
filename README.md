@@ -32,7 +32,7 @@ destroy.
 
 The public proof intentionally cannot reach the placeholder corporate upstream, so category
 synchronization is disabled there. It proves the desired downstream configuration, not a
-successful upstream synchronization. See [Operations](docs/OPERATIONS.md) for the precise
+successful upstream synchronization. See [Operations](docs/how-to/operations.md) for the precise
 assurance boundary.
 
 ## Repository layout
@@ -103,9 +103,9 @@ of the attested metadata contract.
 
 ## Operating and support references
 
-- [Operations, incidents, IAM drift, dependency policy, and decommissioning](docs/OPERATIONS.md)
+- [Operations, incidents, IAM drift, dependency policy, and decommissioning](docs/how-to/operations.md)
 - [WSUS role inputs and invariants](ansible/applications/wsus/README.md)
-- [Known debt and explicit exit criteria](docs/TECH-DEBT.md)
+- [Known debt and explicit exit criteria](docs/explanation/technical-debt.md)
 - [Security reporting](SECURITY.md)
 - [IAM source-document contract](docs/reference/aws-iam/README.md)
 
