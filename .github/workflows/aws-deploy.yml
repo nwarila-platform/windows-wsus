@@ -490,7 +490,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ -n "${CI_PRIVATE_KEY:-}" ]; then
-            rm -f -- "${CI_PRIVATE_KEY}" "${CI_PRIVATE_KEY}.pub"
+            rm -f -- "${CI_PRIVATE_KEY}"
           fi
 
   report:

@@ -43,8 +43,8 @@ shellcheck --shell=sh --severity=warning "${ROOT}/quality-tools.env"
 
 section 'workflow syntax and immutable dependencies'
 actionlint -no-color
-python3 "${ROOT}/scripts/check-action-pins.py" --self-test
-python3 "${ROOT}/scripts/check-action-pins.py"
+python3 -B "${ROOT}/scripts/check-action-pins.py" --self-test
+python3 -B "${ROOT}/scripts/check-action-pins.py"
 
 section 'YAML, JSON, Python, and Terraform syntax'
 yamllint -c "${ROOT}/.yamllint.yml" \
@@ -161,13 +161,13 @@ fi
 
 section 'offline repository contracts'
 "${ROOT}/scripts/check-iam-literals.sh"
-python3 "${ROOT}/scripts/test-iam-structure.py"
-python3 "${ROOT}/scripts/test-iam-drift-structure.py"
+python3 -B "${ROOT}/scripts/test-iam-structure.py"
+python3 -B "${ROOT}/scripts/test-iam-drift-structure.py"
 "${ROOT}/scripts/check-workflow-trigger.sh"
-python3 "${ROOT}/scripts/check-renovate-config.py"
+python3 -B "${ROOT}/scripts/check-renovate-config.py"
 "${ROOT}/scripts/test-aws-clean.sh"
 python3 -B "${ROOT}/scripts/test-aws-resource-graph.py"
-python3 "${ROOT}/scripts/check-winshell-splitargs.py"
+python3 -B "${ROOT}/scripts/check-winshell-splitargs.py"
 python3 -B "${ROOT}/ansible/applications/wsus/tests/test_susdb_state_table.py"
 
 if [ "${QUALITY_ENFORCE_TOOL_VERSIONS:-0}" = '1' ]; then

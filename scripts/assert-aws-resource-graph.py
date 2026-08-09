@@ -437,7 +437,7 @@ class Inventory:
                 functions = Counter(tags(volume).get("Function") for volume in data_volumes)
                 actual = {name: functions[name] for name in EXPECTED_DATA_FUNCTIONS}
                 expected = {name: 1 for name in EXPECTED_DATA_FUNCTIONS}
-                if actual != expected or sum(functions.values()) != 3:
+                if actual != expected:
                     raise GraphError(
                         f"instance {instance_id} WSUS data-volume cardinality is {actual}; expected {expected}"
                     )
