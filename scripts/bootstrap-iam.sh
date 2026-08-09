@@ -19,8 +19,8 @@
 # Substitution values are resolved from the live account and the live GitHub repository, never
 # hand-typed: the account from sts, the repository id from the GitHub API, the EBS key from the
 # alias, and the VPC/subnet from the deploy environment. The artifact bucket follows the same
-# `<account-id>-ansible` convention the playbook consumes. The workflow creates its ephemeral EC2
-# key pair; this script only scopes IAM to the key name declared in the tfvars.
+# `<account-id>-ansible` convention the playbook consumes. The standing EC2 key pair is created
+# out of band; this script only scopes IAM to the key name declared in the tfvars.
 # =========================================================================================== #
 set -euo pipefail
 
@@ -1192,4 +1192,4 @@ say 'iam:AttachRolePolicy (escalation probe)' "${escalation_decision}"
 [ "${own_decision}" = allowed ] || die 'own tagged instance is not allowed'
 [[ "${foreign_decision}" =~ ^(implicitDeny|explicitDeny)$ ]] || die 'foreign instance is not denied'
 [[ "${escalation_decision}" =~ ^(implicitDeny|explicitDeny)$ ]] || die 'IAM escalation is not denied'
-printf '\nbootstrap-iam: applied. The workflow, not this bootstrap, imports and destroys the\nephemeral %s key pair.\n' "${KEY_PAIR}"
+printf '\nbootstrap-iam: applied. The pinned framework consumes the standing %s key pair;\nneither this script nor the workflow creates or destroys it.\n' "${KEY_PAIR}"
