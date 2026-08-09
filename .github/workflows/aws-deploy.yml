@@ -236,17 +236,35 @@ jobs:
       # The environment and deployment identity are individual -var flags — the highest-
       # precedence source, so the tfvars cannot override who this fresh deployment says it is.
       - name: Terraform apply
-        timeout-minutes: 30
+        timeout-minutes: 45
         working-directory: .frameworks/aws-terraform-framework/terraform
         run: |
           set -euo pipefail
-          terraform apply -input=false -auto-approve -lock-timeout=120s \
-            -var-file="${GITHUB_WORKSPACE}/terraform/aws.tfvars" \
-            -var "environment=test" \
-            -var "repository=${GITHUB_REPOSITORY}" \
-            -var "repository_id=${GITHUB_REPOSITORY_ID}" \
-            -var "commit_sha=$(git -C "${GITHUB_WORKSPACE}" rev-parse HEAD)" \
-            -var "run_id=${GITHUB_RUN_ID}"
+
+          # Elastic IP allocation is the one failure here that says nothing about the change under
+          # test: the account's EIP quota is shared with sibling repositories, and a concurrent
+          # deployment can legitimately hold every free address. Retry that error alone, so any
+          # real failure still stops on the first attempt instead of being masked by three more.
+          apply_log="${RUNNER_TEMP}/terraform-apply.log"
+          for attempt in 1 2 3 4; do
+            if terraform apply -input=false -auto-approve -lock-timeout=120s \
+              -var-file="${GITHUB_WORKSPACE}/terraform/aws.tfvars" \
+              -var "environment=test" \
+              -var "repository=${GITHUB_REPOSITORY}" \
+              -var "repository_id=${GITHUB_REPOSITORY_ID}" \
+              -var "commit_sha=$(git -C "${GITHUB_WORKSPACE}" rev-parse HEAD)" \
+              -var "run_id=${GITHUB_RUN_ID}" 2>&1 | tee "${apply_log}"; then
+              exit 0
+            fi
+            if ! grep -q 'AddressLimitExceeded' "${apply_log}"; then
+              echo "::error::Terraform apply failed for a reason unrelated to Elastic IP capacity."
+              exit 1
+            fi
+            echo "::warning::No Elastic IP available (attempt ${attempt}/4); a sibling deployment holds the account quota."
+            [ "${attempt}" -eq 4 ] || sleep 120
+          done
+          echo "::error::No Elastic IP became available. This is shared-account capacity, not a defect in this repository."
+          exit 1
 
       # Fresh two-hour session for the longest stage: the play's disk resolver and artifact
       # delivery use AWS late in a converge whose hard timeout is 100 minutes.
