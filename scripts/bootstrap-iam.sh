@@ -416,7 +416,6 @@ expected_instance_profiles_for_role() {
 
 wait_for_instance_profile_roles() {
     local expected="$1" actual attempt
-    actual='not-yet-checked'
     for attempt in 1 2 3 4 5 6 7 8 9 10; do
         if actual="$(instance_profile_roles)" && [ "${actual}" = "${expected}" ]; then
             return 0
@@ -428,7 +427,6 @@ wait_for_instance_profile_roles() {
 
 wait_for_instance_profile_path() {
     local expected="$1" actual attempt
-    actual='not-yet-checked'
     for attempt in 1 2 3 4 5 6 7 8 9 10; do
         if actual="$(instance_profile_path)" && [ "${actual}" = "${expected}" ]; then
             return 0
@@ -440,7 +438,6 @@ wait_for_instance_profile_path() {
 
 wait_for_role_instance_profiles() {
     local role="$1" expected="$2" actual attempt
-    actual='not-yet-checked'
     for attempt in 1 2 3 4 5 6 7 8 9 10; do
         actual="$(instance_profiles_for_role "${role}")" \
           || die "could not verify instance profiles for ${role}"
@@ -914,7 +911,7 @@ wait_for_live_role_source() {
     die "role trust/metadata reconciliation did not settle for ${name}"
 }
 
-apply_role() { # role-name trust-file
+apply_role() { # role-name trust-file max-session-duration
     local name="$1" trust="$2" duration="$3" metadata path
     local -a fields
     if exists_role "${name}"; then
@@ -959,7 +956,6 @@ unexpected_role_policy_arns() {
 wait_for_role_policy_boundary() {
     local role="$1" unexpected inline attempt
     shift
-    unexpected='not-yet-checked'; inline='not-yet-checked'
     for attempt in 1 2 3 4 5 6 7 8 9 10; do
         unexpected="$(unexpected_role_policy_arns "${role}" "$@")" \
           || die "could not verify attachments for ${role}"
@@ -974,7 +970,7 @@ wait_for_role_policy_boundary() {
 }
 
 strip_unexpected_role_policies() {
-    local role="$1" actual arn inline name keep
+    local role="$1" actual arn expected inline name keep
     shift
     actual="$(attached_policy_arns "${role}")" || die "could not read attachments for ${role}"
     while IFS= read -r arn; do
