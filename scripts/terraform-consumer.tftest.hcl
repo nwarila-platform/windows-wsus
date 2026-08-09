@@ -8,6 +8,24 @@ mock_provider "aws" {
   mock_data "aws_subnet" {
     defaults = {
       vpc_id = "vpc-quality-gate"
+      # v3.0.0 asserts the system's declared zone equals its subnet's real zone. A random mock
+      # zone would fail that precondition, so it mirrors the zone declared in aws.tfvars.
+      availability_zone = "us-east-1a"
+    }
+  }
+
+  # Every image is fetched by id and must be verified available before use. Under a mocked
+  # provider the state is random, so it is pinned here; the id itself still comes from tfvars.
+  mock_data "aws_ami" {
+    defaults = {
+      state = "available"
+    }
+  }
+
+  # The framework consumes a pre-existing key pair; the mocked lookup only has to resolve.
+  mock_data "aws_key_pair" {
+    defaults = {
+      key_name = "nwarila-ec2-key"
     }
   }
 
@@ -24,8 +42,6 @@ variables {
   environment   = "test"
   repository    = "nwarila-platform/windows-wsus"
   repository_id = "123456789"
-  stack         = "aws-poc"
-  owner         = "nwarila-platform"
   commit_sha    = "0123456789abcdef0123456789abcdef01234567"
   run_id        = "1"
 }
