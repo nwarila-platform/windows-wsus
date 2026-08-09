@@ -20,16 +20,14 @@
       "Resource": [
         "arn:aws:ec2:<region>:*:instance/*",
         "arn:aws:ec2:<region>:*:volume/*",
-        "arn:aws:ec2:<region>:*:network-interface/*",
-        "arn:aws:ec2:<region>:*:elastic-ip/*"
+        "arn:aws:ec2:<region>:*:network-interface/*"
       ],
       "Condition": {
         "StringEquals": {
           "ec2:CreateAction": [
             "RunInstances",
             "CreateVolume",
-            "CreateNetworkInterface",
-            "AllocateAddress"
+            "CreateNetworkInterface"
           ],
           "aws:RequestTag/RepositoryId": "<repository-id>"
         }
@@ -120,45 +118,6 @@
         "StringEquals": {
           "aws:RequestedRegion": "<region>",
           "ec2:ResourceTag/RepositoryId": "<repository-id>"
-        }
-      }
-    },
-    {
-      "Sid": "ElasticIpLifecycleOnOurTagged",
-      "Effect": "Allow",
-      "Action": "ec2:ReleaseAddress",
-      "Resource": "arn:aws:ec2:<region>:*:elastic-ip/*",
-      "Condition": {
-        "StringEquals": {
-          "aws:RequestedRegion": "<region>",
-          "ec2:ResourceTag/RepositoryId": "<repository-id>"
-        }
-      }
-    },
-    {
-      "Sid": "AssociateEipToOurResources",
-      "Effect": "Allow",
-      "Action": "ec2:AssociateAddress",
-      "Resource": [
-        "arn:aws:ec2:<region>:*:elastic-ip/*",
-        "arn:aws:ec2:<region>:*:instance/*",
-        "arn:aws:ec2:<region>:*:network-interface/*"
-      ],
-      "Condition": {
-        "StringEquals": {
-          "aws:RequestedRegion": "<region>",
-          "ec2:ResourceTag/RepositoryId": "<repository-id>"
-        }
-      }
-    },
-    {
-      "Sid": "DisassociateAddressRegionOnly",
-      "Effect": "Allow",
-      "Action": "ec2:DisassociateAddress",
-      "Resource": "*",
-      "Condition": {
-        "StringEquals": {
-          "aws:RequestedRegion": "<region>"
         }
       }
     },
