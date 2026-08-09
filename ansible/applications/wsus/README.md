@@ -101,7 +101,7 @@ Every run observes the attached SUSDB location and both source/target file pairs
 only unambiguous partial targets, treats a complete attached target as authoritative even when an
 interrupted cleanup left one source file behind, restores a complete healthy attachment after a
 relocation failure, and refuses ambiguous unattached states. WID relocation is nevertheless
-outside Microsoft's support guidance; see [TD-005](../../../docs/TECH-DEBT.md).
+outside Microsoft's support guidance; see [TD-005](../../../docs/explanation/technical-debt.md).
 
 When an OS-volume replacement loses the post-install registry flags but retains the data volume,
 the role performs that authority check before `wsusutil postinstall`: a sole complete target pair
