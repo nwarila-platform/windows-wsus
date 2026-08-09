@@ -64,8 +64,8 @@ run "repository_tfvars_are_framework_compatible" {
       length(aws_network_interface.us_east_1) == 1 &&
       length(aws_security_group.us_east_1) == 1 &&
       length(aws_ebs_volume.us_east_1) == 3 &&
-      length(aws_eip.us_east_1) == 1
+      length(aws_eip.us_east_1) == 0
     )
-    error_message = "The WSUS tfvars must render the expected instance, ENI, firewall, data disks, and EIP."
+    error_message = "The WSUS tfvars must render the expected instance, ENI, firewall, and data disks, and must allocate no Elastic IP."
   }
 }
