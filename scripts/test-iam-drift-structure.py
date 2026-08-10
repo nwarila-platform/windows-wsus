@@ -35,7 +35,6 @@ TRUST = (
     / "github_nwarila-platform_windows-wsus-iam-audit.trust.json"
 )
 BOOTSTRAP = ROOT / "scripts" / "bootstrap-iam.sh"
-IAM_POLICY_TEST = ROOT / "scripts" / "test-iam-policies.sh"
 
 failures: list[str] = []
 assertions = 0
@@ -273,7 +272,6 @@ for description, fragment in (
     expect(description, fragment in report_run, True)
 
 bootstrap_text = BOOTSTRAP.read_text(encoding="utf-8")
-policy_test_text = IAM_POLICY_TEST.read_text(encoding="utf-8")
 expect(
     "profile option appears only in the profile-argument constructor",
     [
@@ -535,33 +533,6 @@ expect(
     "aws iam delete-instance-profile" not in bootstrap_text
     and "aws iam tag-instance-profile" not in bootstrap_text
     and "aws iam untag-instance-profile" not in bootstrap_text,
-    True,
-)
-
-ci_policy_match = re.search(
-    r"ci_policy_names = \[(.*?)\]\njson\.dump", policy_test_text, flags=re.DOTALL
-)
-ci_policy_names = (
-    re.findall(r'"([^"]+\.json)"', ci_policy_match.group(1)) if ci_policy_match else []
-)
-expect(
-    "deploy simulation uses the exact CI attachment policy documents",
-    ci_policy_names,
-    [
-        "github_nwarila-platform_windows-wsus.json",
-        "windows-wsus_artifact-assume.json",
-        "windows-wsus_deploy-discovery-iam.json",
-        "windows-wsus_deploy-ec2-launch.json",
-        "windows-wsus_deploy-ec2-lifecycle.json",
-        "windows-wsus_deploy-sg-ssm-kms.json",
-    ],
-)
-deploy_simulation = policy_test_text.split("simulate()", 1)[1].split("assert()", 1)[0]
-expect("deploy simulation never globs every policy", "glob" in deploy_simulation, False)
-audit_simulation = policy_test_text.split("simulate_audit()", 1)[1].split("assert_audit()", 1)[0]
-expect(
-    "audit simulation uses only the audit policy document",
-    "github_nwarila-platform_windows-wsus_iam-audit.json" in audit_simulation,
     True,
 )
 

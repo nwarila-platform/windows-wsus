@@ -1559,7 +1559,7 @@
 
     # Fail-closed guard: win_iis_webapppool state:started would create a bogus generic pool
     # if WsusPool were absent, leaving WSUS silently broken. Refuse to tune unless install +
-    # postinstall created it. Read-only (changed_when:false); §4b guard / §8 win_shell.
+    # postinstall created it. Read-only (changed_when:false); §4b guard / §5 win_shell.
     - name: 'MAIN | Assert WsusPool Exists Before Tuning'
       ansible.windows.win_shell: |
         $ErrorActionPreference = 'Stop'

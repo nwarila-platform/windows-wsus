@@ -9,8 +9,8 @@
 #   ./scripts/bootstrap-iam.sh [--apply|--check-drift] [--ambient|aws-profile]
 #
 # --check-drift compares LIVE IAM against the tracked source and fails on any difference. That is
-# the one comparison neither other gate makes: check-iam-literals.sh reads source vs filesystem,
-# and test-iam-policies.sh materializes FROM source, so both pass while live holds an older version.
+# the one comparison no other gate makes: every offline check reads the source documents, so all of
+# them pass while live IAM still holds an older version.
 #
 # Without --apply it PLANS: materializes, gates, validates every document through Access
 # Analyzer, and prints what would be created or updated. Nothing is written to AWS.
@@ -720,9 +720,9 @@ wait_for_live_policy_source() {
 }
 
 # ---- drift mode ------------------------------------------------------------------------------
-# The gap this closes, learned the hard way 2026-07-29: check-iam-literals.sh compares the SOURCE
-# documents to the filesystem, and test-iam-policies.sh MATERIALIZES from source — so both pass
-# happily while LIVE IAM still holds an older version. Editing a trust and forgetting to re-apply
+# The gap this closes, learned the hard way 2026-07-29: every other gate reads the SOURCE
+# documents, so all of them pass happily while LIVE IAM still holds an older version.
+# Editing a trust and forgetting to re-apply
 # left two repositories whose live trust named a workflow that no longer existed, meaning no CI job
 # could assume the deploy role at all. Nothing detected it because nothing compared source to live.
 if [ "${DRIFT:-false}" = 'true' ]; then
