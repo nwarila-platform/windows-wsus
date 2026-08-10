@@ -7,3 +7,5 @@ collections:
     version: '3.7.0'
   - name: community.windows
     version: '3.3.0'
+  - name: microsoft.iis
+    version: '1.2.1'

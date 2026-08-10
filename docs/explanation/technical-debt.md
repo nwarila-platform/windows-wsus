@@ -30,14 +30,15 @@ workarounds are not accidentally restored.
 
 ## TD-004 — deprecated IIS application-pool module
 
-- **What:** WsusPool tuning uses `community.windows.win_iis_webapppool`, which is deprecated for
+- **What:** WsusPool tuning used `community.windows.win_iis_webapppool`, which is deprecated for
   removal in `community.windows` 4.0.0 in favor of `microsoft.iis.web_app_pool`.
-- **Why it remains:** the pinned collection set is `community.windows` 3.3.0 and does not yet carry
-  `microsoft.iis`; changing module families without a live convergence proof is higher risk than
-  retaining the pinned implementation.
-- **Exit criteria:** add an exact `microsoft.iis` collection pin, migrate and validate the attribute
-  mapping, prove two live converges with `changed=0` on the second pass, then remove the deprecated
-  collection dependency if no other task consumes it.
+- **Progress:** 2026-08-10 — the task now calls `microsoft.iis.web_app_pool` under an exact
+  `microsoft.iis` `1.2.1` pin. The replacement is the same implementation under the new
+  namespace (identical option spec, `WebAdministration` import, and dotted-attribute
+  handling), so the attribute map carried over unchanged.
+- **Exit criteria:** prove two live converges on the migrated module with `changed=0` on the
+  second pass, then remove the `community.windows` pin if no other task consumes it and close
+  this entry.
 
 ## TD-005 — SUSDB relocation is outside Microsoft support guidance
 
