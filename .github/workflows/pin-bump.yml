@@ -1,7 +1,8 @@
 # =========================================================================================== #
 # Framework Pin Discovery
 # ------------------------------------------------------------------------------------------- #
-# This default-branch schedule discovers upstream movement and maintains one reviewable PR. It
+# This default-branch schedule discovers upstream movement — framework commits and the coupled
+# quality-tool version/checksum tuples — and maintains one reviewable PR per concern. It
 # deliberately does not dispatch an AWS workflow, enable auto-merge, or treat raw upstream main as
 # trusted. Promotion remains behind the repository's required quality and review controls.
 # =========================================================================================== #
@@ -98,6 +99,145 @@ jobs:
             exit 1
           fi
           existing_pr="${managed_pr_numbers[0]:-}"
+
+          # ---- quality-tools.env tuple discovery (TD-007) -----------------------------------
+          # Each tuple is discovered from its primary source, the artifact is downloaded and
+          # validated here, and the whole file changes in one commit so a version and its
+          # checksum can never land separately. Terraform is not fetched: its value is coupled
+          # to the pinned framework's exact required_version.
+          TOOLS_BRANCH=automation/quality-tools
+          tools_work="$(mktemp -d)"
+
+          actionlint_tag="$(gh api repos/rhysd/actionlint/releases/latest --jq '.tag_name')"
+          actionlint_candidate="${actionlint_tag#v}"
+          [[ "${actionlint_candidate}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+            || { echo "::error::Unrecognized actionlint release tag ${actionlint_tag}."; exit 1; }
+          actionlint_base="https://github.com/rhysd/actionlint/releases/download/v${actionlint_candidate}"
+          curl -fsSLo "${tools_work}/actionlint.tar.gz" \
+            "${actionlint_base}/actionlint_${actionlint_candidate}_linux_amd64.tar.gz"
+          curl -fsSLo "${tools_work}/actionlint_checksums.txt" \
+            "${actionlint_base}/actionlint_${actionlint_candidate}_checksums.txt"
+          actionlint_sha="$(awk -v file="actionlint_${actionlint_candidate}_linux_amd64.tar.gz" \
+            '$2 == file { print $1 }' "${tools_work}/actionlint_checksums.txt")"
+          [[ "${actionlint_sha}" =~ ^[0-9a-f]{64}$ ]] \
+            || { echo "::error::actionlint release publishes no linux_amd64 checksum."; exit 1; }
+          printf '%s  %s\n' "${actionlint_sha}" "${tools_work}/actionlint.tar.gz" \
+            | sha256sum --check --strict --quiet
+          tar -xzf "${tools_work}/actionlint.tar.gz" -C "${tools_work}" actionlint
+          [ "$("${tools_work}/actionlint" -version | head -n 1)" = "${actionlint_candidate}" ] \
+            || { echo "::error::Downloaded actionlint does not report its own version."; exit 1; }
+
+          sudo apt-get update -qq
+          shellcheck_candidate="$(apt-cache policy shellcheck | awk '/Candidate:/ { print $2 }')"
+          [[ "${shellcheck_candidate}" =~ ^[0-9][A-Za-z0-9.+~:-]*$ ]] \
+            || { echo "::error::No apt candidate for shellcheck."; exit 1; }
+
+          terraform_required="$(gh api \
+            "repos/nwarila-platform/aws-terraform-framework/contents/terraform/versions.tf?ref=${terraform_pin}" \
+            --jq '.content' | base64 --decode \
+            | sed -n 's/^[[:space:]]*required_version[[:space:]]*=[[:space:]]*"= \([0-9][0-9.]*\)".*$/\1/p')"
+          [[ "${terraform_required}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+            || { echo "::error::Pinned framework declares no exact Terraform required_version."; exit 1; }
+
+          smp_candidate="$(curl -fsS \
+            'https://s3.amazonaws.com/session-manager-downloads/plugin/latest/VERSION' | tr -d '[:space:]')"
+          [[ "${smp_candidate}" =~ ^[0-9]+(\.[0-9]+)+$ ]] \
+            || { echo "::error::Unrecognized session-manager-plugin VERSION ${smp_candidate}."; exit 1; }
+          curl -fsSLo "${tools_work}/session-manager-plugin.deb" \
+            "https://s3.amazonaws.com/session-manager-downloads/plugin/${smp_candidate}/ubuntu_64bit/session-manager-plugin.deb"
+          dpkg-deb --info "${tools_work}/session-manager-plugin.deb" > /dev/null
+          dpkg-deb -x "${tools_work}/session-manager-plugin.deb" "${tools_work}/smp"
+          smp_reported="$("${tools_work}/smp/usr/local/sessionmanagerplugin/bin/session-manager-plugin" \
+            --version | tr -d '[:space:]')"
+          [ "${smp_reported}" = "${smp_candidate}" ] \
+            || { echo "::error::session-manager-plugin binary reports ${smp_reported}, not ${smp_candidate}."; exit 1; }
+          smp_sha="$(sha256sum "${tools_work}/session-manager-plugin.deb" | cut -d' ' -f1)"
+
+          current_tools_env="$(gh api \
+            "repos/${GITHUB_REPOSITORY}/contents/quality-tools.env?ref=${base_sha}" \
+            --jq '.content' | base64 --decode)"
+          for tuple_var in ACTIONLINT_VERSION ACTIONLINT_LINUX_AMD64_SHA256 SHELLCHECK_APT_VERSION \
+            SESSION_MANAGER_PLUGIN_VERSION SESSION_MANAGER_PLUGIN_DEB_SHA256 TERRAFORM_VERSION; do
+            [ "$(grep -c "^${tuple_var}=" <<< "${current_tools_env}")" -eq 1 ] \
+              || { echo "::error::quality-tools.env must declare ${tuple_var} exactly once."; exit 1; }
+          done
+          candidate_tools_env="$(sed \
+            -e "s/^ACTIONLINT_VERSION=.*/ACTIONLINT_VERSION='${actionlint_candidate}'/" \
+            -e "s/^ACTIONLINT_LINUX_AMD64_SHA256=.*/ACTIONLINT_LINUX_AMD64_SHA256='${actionlint_sha}'/" \
+            -e "s/^SHELLCHECK_APT_VERSION=.*/SHELLCHECK_APT_VERSION='${shellcheck_candidate}'/" \
+            -e "s/^SESSION_MANAGER_PLUGIN_VERSION=.*/SESSION_MANAGER_PLUGIN_VERSION='${smp_candidate}'/" \
+            -e "s/^SESSION_MANAGER_PLUGIN_DEB_SHA256=.*/SESSION_MANAGER_PLUGIN_DEB_SHA256='${smp_sha}'/" \
+            -e "s/^TERRAFORM_VERSION=.*/TERRAFORM_VERSION='${terraform_required}'/" \
+            <<< "${current_tools_env}")"
+
+          mapfile -t managed_tools_pr_numbers < <(jq -r \
+            --arg branch "${TOOLS_BRANCH}" --arg owner "${repository_owner}" '
+              [.[] | select(
+                .headRefName == $branch
+                and .headRepositoryOwner.login == $owner
+                and .isCrossRepository == false
+              )]
+              | sort_by(.number)
+              | .[].number
+            ' <<< "${managed_prs_json}")
+          if [ "${#managed_tools_pr_numbers[@]}" -gt 1 ]; then
+            echo "::error::Multiple local managed PRs target ${TOOLS_BRANCH}; refusing ambiguity."
+            exit 1
+          fi
+          existing_tools_pr="${managed_tools_pr_numbers[0]:-}"
+
+          if [ "${candidate_tools_env}" = "${current_tools_env}" ]; then
+            echo "quality-tools.env already matches every discovered primary source."
+            if [ -n "${existing_tools_pr}" ]; then
+              gh pr close "${existing_tools_pr}" --repo "${GITHUB_REPOSITORY}" \
+                --comment "Closing: protected main already carries the discovered tool tuples."
+            fi
+          else
+            if gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${TOOLS_BRANCH}" > /dev/null 2>&1; then
+              gh api --method PATCH "repos/${GITHUB_REPOSITORY}/git/refs/heads/${TOOLS_BRANCH}" \
+                -f sha="${base_sha}" -F force=true > /dev/null
+            else
+              gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+                -f ref="refs/heads/${TOOLS_BRANCH}" -f sha="${base_sha}" > /dev/null
+            fi
+            tools_blob_sha="$(gh api \
+              "repos/${GITHUB_REPOSITORY}/contents/quality-tools.env?ref=${TOOLS_BRANCH}" --jq '.sha')"
+            gh api --method PUT "repos/${GITHUB_REPOSITORY}/contents/quality-tools.env" \
+              -f branch="${TOOLS_BRANCH}" \
+              -f message='chore: discover quality-tool version and checksum tuples' \
+              -f content="$(printf '%s\n' "${candidate_tools_env}" | base64 -w 0)" \
+              -f sha="${tools_blob_sha}" > /dev/null
+
+          tools_body="$(cat <<EOF
+          Automated discovery only; every artifact was downloaded and validated in this run, and
+          auto-merge is not enabled. Terraform is coupled to the pinned framework's exact
+          required_version, not fetched independently.
+
+          | Tuple | Source | Candidate |
+          |---|---|---|
+          | actionlint | GitHub release + published checksum, binary self-reports | ${actionlint_candidate} |
+          | shellcheck (apt) | Ubuntu 24.04 archive candidate | ${shellcheck_candidate} |
+          | terraform | framework versions.tf at the current pin | ${terraform_required} |
+          | session-manager-plugin | AWS latest VERSION, deb verified, binary self-reports | ${smp_candidate} |
+
+          An unchanged version with a changed checksum means the published artifact mutated —
+          treat that as an incident, not an update.
+          EOF
+          )"
+            if [ -n "${existing_tools_pr}" ]; then
+              gh pr edit "${existing_tools_pr}" --repo "${GITHUB_REPOSITORY}" \
+                --title "chore: review discovered quality-tool tuple updates" --body "${tools_body}"
+              gh pr comment "${existing_tools_pr}" --repo "${GITHUB_REPOSITORY}" \
+                --body "Discovery refreshed by ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}."
+            else
+              gh pr create --repo "${GITHUB_REPOSITORY}" --base main --head "${TOOLS_BRANCH}" \
+                --title "chore: review discovered quality-tool tuple updates" --body "${tools_body}"
+            fi
+            tools_branch_sha="$(gh api \
+              "repos/${GITHUB_REPOSITORY}/git/ref/heads/${TOOLS_BRANCH}" --jq '.object.sha')"
+            ensure_quality_run "${tools_branch_sha}"
+          fi
+          # ---- end quality-tools.env tuple discovery ----------------------------------------
 
           if [ "${ansible_candidate}" = "${ansible_pin}" ] && \
             [ "${terraform_candidate}" = "${terraform_pin}" ]; then

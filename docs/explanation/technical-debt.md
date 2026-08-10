@@ -74,10 +74,15 @@ workarounds are not accidentally restored.
 - **Current containment:** every clean CI run installs or verifies the exact set, and the recurring
   AWS proof exercises the runtime pins. Breakage is loud, but a compatible old release can age
   silently.
-- **Exit criteria:** add a supported, primary-source-backed updater that changes each version and
-  checksum atomically, validates the downloaded artifacts, couples Terraform to the pinned
-  framework's exact requirement, and maintains one reviewable PR without credentials or
-  auto-merge. Do not replace this with arbitrary or unauthenticated version scraping.
+- **Progress:** 2026-08-10 — pin discovery now carries a tuple phase: actionlint from its GitHub
+  release with the published checksum and a binary self-report, shellcheck from the Ubuntu 24.04
+  archive candidate, session-manager-plugin from the AWS VERSION endpoint with the deb validated
+  and its binary self-reporting, and Terraform read from the pinned framework's exact
+  `required_version` rather than fetched. The whole file changes in one commit on its own managed
+  branch, without credentials or auto-merge; the deploy workflow now reads its Terraform version
+  from `quality-tools.env` instead of a duplicated literal.
+- **Exit criteria:** close after the first scheduled discovery maintains a correct tuple PR
+  end-to-end. Do not replace this with arbitrary or unauthenticated version scraping.
 
 ## TD-008 — CLOSED: dependency automation conforms to the Renovate-only org policy
 
