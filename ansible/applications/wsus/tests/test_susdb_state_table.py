@@ -500,7 +500,7 @@ class WsusApiConnectionContractTest(unittest.TestCase):
 
 class WsusPoolContractTest(unittest.TestCase):
     def test_runtime_verifier_rechecks_every_declared_pool_tuning_value(self):
-        actor = named_task(WSUSPOOL_TASK)["community.windows.win_iis_webapppool"]
+        actor = named_task(WSUSPOOL_TASK)["microsoft.iis.web_app_pool"]
         self.assertEqual(
             set(actor["attributes"]),
             {

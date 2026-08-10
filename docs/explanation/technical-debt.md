@@ -30,14 +30,15 @@ workarounds are not accidentally restored.
 
 ## TD-004 — deprecated IIS application-pool module
 
-- **What:** WsusPool tuning uses `community.windows.win_iis_webapppool`, which is deprecated for
+- **What:** WsusPool tuning used `community.windows.win_iis_webapppool`, which is deprecated for
   removal in `community.windows` 4.0.0 in favor of `microsoft.iis.web_app_pool`.
-- **Why it remains:** the pinned collection set is `community.windows` 3.3.0 and does not yet carry
-  `microsoft.iis`; changing module families without a live convergence proof is higher risk than
-  retaining the pinned implementation.
-- **Exit criteria:** add an exact `microsoft.iis` collection pin, migrate and validate the attribute
-  mapping, prove two live converges with `changed=0` on the second pass, then remove the deprecated
-  collection dependency if no other task consumes it.
+- **Progress:** 2026-08-10 — the task now calls `microsoft.iis.web_app_pool` under an exact
+  `microsoft.iis` `1.2.1` pin. The replacement is the same implementation under the new
+  namespace (identical option spec, `WebAdministration` import, and dotted-attribute
+  handling), so the attribute map carried over unchanged.
+- **Exit criteria:** prove two live converges on the migrated module with `changed=0` on the
+  second pass, then remove the `community.windows` pin if no other task consumes it and close
+  this entry.
 
 ## TD-005 — SUSDB relocation is outside Microsoft support guidance
 
@@ -73,10 +74,15 @@ workarounds are not accidentally restored.
 - **Current containment:** every clean CI run installs or verifies the exact set, and the recurring
   AWS proof exercises the runtime pins. Breakage is loud, but a compatible old release can age
   silently.
-- **Exit criteria:** add a supported, primary-source-backed updater that changes each version and
-  checksum atomically, validates the downloaded artifacts, couples Terraform to the pinned
-  framework's exact requirement, and maintains one reviewable PR without credentials or
-  auto-merge. Do not replace this with arbitrary or unauthenticated version scraping.
+- **Progress:** 2026-08-10 — pin discovery now carries a tuple phase: actionlint from its GitHub
+  release with the published checksum and a binary self-report, shellcheck from the Ubuntu 24.04
+  archive candidate, session-manager-plugin from the AWS VERSION endpoint with the deb validated
+  and its binary self-reporting, and Terraform read from the pinned framework's exact
+  `required_version` rather than fetched. The whole file changes in one commit on its own managed
+  branch, without credentials or auto-merge; the deploy workflow now reads its Terraform version
+  from `quality-tools.env` instead of a duplicated literal.
+- **Exit criteria:** close after the first scheduled discovery maintains a correct tuple PR
+  end-to-end. Do not replace this with arbitrary or unauthenticated version scraping.
 
 ## TD-008 — CLOSED: dependency automation conforms to the Renovate-only org policy
 
@@ -108,3 +114,30 @@ workarounds are not accidentally restored.
   becomes the catalog selector `windows@2025`, the framework's vendor allowlist collapses back
   to `["self"]`, and version currency becomes the publisher's monotonicity guarantee rather
   than a human noticing. Close this entry only when the selector is a catalog address.
+
+## TD-010 — the role's embedded PowerShell has no parse, lint, or unit gate
+
+- **Recorded:** 2026-08-10
+- **What:** 2,288 of `present_windows.yml`'s 3,195 lines are PowerShell stored as YAML string
+  literals, including a 704-line HTTPS listener reconciler interpolated into two tasks and
+  roughly 500 lines of verbatim helper duplication (`New-WsusServerManager` exists three times;
+  the SUSDB location probe twice, byte-identical). No gate parses that code: `verify.sh` runs
+  no `pwsh`, so a quoting error in a rescue-path block ships green and first executes during an
+  incident — the C12c failure class at larger scale. Part of the offline suite pins source
+  substrings to hold the duplicates identical, a test standing in for a missing abstraction.
+  One interpolation (`config.tls.thumbprint` at the listener reconciler's recovery path)
+  violates the style guide's §5 env-only input rule and is likewise pinned by a test.
+- **Current containment:** the split-args gate covers the free-form `win_shell` transport
+  hazard; the offline suite pins the load-bearing contracts; the live lifecycle with its
+  second-converge `changed=0` assertion remains the only executable proof of the PowerShell.
+- **Exit criteria:** extract the embedded programs to role `files/*.ps1` invoked through
+  `win_powershell` `path:` with typed `parameters:` (available at the pinned `ansible.windows`
+  3.7.0), one arc per change, each proven by the live lifecycle; keep the native-module tasks
+  and the `block`/`rescue`/`always` boundaries exactly where they are. Gate every extracted
+  file with a PowerShell parse check, PSScriptAnalyzer, and Pester scoped to the pure
+  functions, pinned in `quality-tools.env` like the other tools. Shared helpers end up defined
+  once; the substring-synchronization tests are replaced by unit tests on the extracted
+  functions, never deleted ahead of that replacement. If migration empties the `win_shell`
+  inventory, invert the split-args gate to assert absence. Close this entry when
+  `present_windows.yml` carries orchestration only and every `.ps1` parses and lints in the
+  credential-free gate.

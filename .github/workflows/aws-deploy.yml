@@ -9,8 +9,8 @@
 #     the credential-free quality workflow; feature-branch workflow code never reaches AWS.
 #   * Reachability: ZERO INBOUND — SSH over SSM. The SG allows no ingress; the runner's SSH
 #     tunnels through an SSM session (AWS-StartSSHSession) riding the agent's own outbound
-#     443, and the EIP exists purely so that outbound path works (pre-created ENIs never get
-#     auto public IPs; the account has no NAT). readiness_gate=false because the framework's
+#     443, egressing over the public IPv4 the subnet auto-assigns at launch — no Elastic IP
+#     (the account has no NAT). readiness_gate=false because the framework's
 #     gate dials the instance directly; the playbook's first play waits over SSM-SSH instead.
 #   * Credentials re-exchange per stage (MaxSessionDuration < job runtime); a destroy with
 #     dead credentials strands paid resources.
@@ -86,6 +86,7 @@ jobs:
       # The controller toolchain, first: the split_args gate below imports ansible's own
       # parser, and everything here is needed by the configure stage anyway.
       - name: Install Ansible and the SSM session plugin
+        id: runtime-tools
         env:
           PIP_DISABLE_PIP_VERSION_CHECK: '1'
         run: |
@@ -102,6 +103,7 @@ jobs:
             "https://s3.amazonaws.com/session-manager-downloads/plugin/${SESSION_MANAGER_PLUGIN_VERSION}/ubuntu_64bit/session-manager-plugin.deb"
           echo "${SESSION_MANAGER_PLUGIN_DEB_SHA256}  /tmp/session-manager-plugin.deb" | sha256sum --check --strict
           sudo dpkg -i /tmp/session-manager-plugin.deb > /dev/null
+          echo "terraform=${TERRAFORM_VERSION}" >> "${GITHUB_OUTPUT}"
 
       # Fail-closed source gates, before any credential exists: IAM placeholders + the
       # workflow-rename tripwire, the trigger contract, and the win_shell split_args scan
@@ -181,8 +183,9 @@ jobs:
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
         with:
-          # The framework's required_version is exact.
-          terraform_version: '1.15.1'
+          # quality-tools.env is the one canonical pin; pin discovery couples it to the
+          # framework's exact required_version.
+          terraform_version: ${{ steps.runtime-tools.outputs.terraform }}
           terraform_wrapper: false
 
       - name: Terraform init
