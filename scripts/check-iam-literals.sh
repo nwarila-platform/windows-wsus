@@ -55,8 +55,8 @@ readonly -a FOREIGN_IDENTITY_PATTERNS=(
 # documents, which must carry placeholders, but accepted in an untracked materialized copy because
 # the live resolver may legitimately select them for this repository too.
 readonly -a ENVIRONMENT_PATTERNS=(
-    'vpc-03c38504869c1c9bb'
-    'subnet-0e1c8aae192deff26'
+    'vpc-024afb5e25a56792c'
+    'subnet-0d218a2ee096f694a'
     '381209c1-5530-4c19-8f9d-5d75e401790b'
 )
 
