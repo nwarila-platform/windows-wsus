@@ -1557,7 +1557,7 @@
 
     #region ------ [ Main: WSUS Tuning ] --------------------------------------------------- #
 
-    # Fail-closed guard: win_iis_webapppool state:started would create a bogus generic pool
+    # Fail-closed guard: web_app_pool state:started would create a bogus generic pool
     # if WsusPool were absent, leaving WSUS silently broken. Refuse to tune unless install +
     # postinstall created it. Read-only (changed_when:false); §4b guard / §5 win_shell.
     - name: 'MAIN | Assert WsusPool Exists Before Tuning'
@@ -1565,7 +1565,7 @@
         $ErrorActionPreference = 'Stop'
         Import-Module WebAdministration
         if (-not (Test-Path 'IIS:\AppPools\WsusPool')) {
-            throw 'WsusPool application pool not found - WSUS install + postinstall must complete before tuning; refusing to let win_iis_webapppool create a bogus pool.'
+            throw 'WsusPool application pool not found - WSUS install + postinstall must complete before tuning; refusing to let web_app_pool create a bogus pool.'
         }
         Write-Output 'present'
       changed_when: false
@@ -1576,7 +1576,7 @@
     # native module diffs current vs desired (idempotent). Source:
     # learn.microsoft.com/troubleshoot/mem/configmgr/update-management/windows-server-update-services-best-practices
     - name: 'MAIN | Tune WsusPool Application Pool'
-      community.windows.win_iis_webapppool:
+      microsoft.iis.web_app_pool:
         name: WsusPool
         state: started
         attributes:

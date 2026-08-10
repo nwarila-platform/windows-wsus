@@ -260,4 +260,7 @@ clobber, verified at the module source). These stay `quiet: true` with an action
   documentation of the `<role>:` dict shape.
 - Handler usage and service-restart conventions on Windows.
 - A Molecule (or equivalent) test story for Windows roles.
-- Secrets handling for Windows; this repository uses none.
+- A general Windows secrets convention. The one secret this repository handles — the CA-issued
+  PFX and its passphrase — is delivered controller-side from the pinned artifact prefix, enters
+  the play only under `no_log`, and never persists on the target beyond its staged, cleaned-up
+  lifetime; nothing broader is defined here.
