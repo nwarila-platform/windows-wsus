@@ -9,8 +9,8 @@
 #     the credential-free quality workflow; feature-branch workflow code never reaches AWS.
 #   * Reachability: ZERO INBOUND — SSH over SSM. The SG allows no ingress; the runner's SSH
 #     tunnels through an SSM session (AWS-StartSSHSession) riding the agent's own outbound
-#     443, and the EIP exists purely so that outbound path works (pre-created ENIs never get
-#     auto public IPs; the account has no NAT). readiness_gate=false because the framework's
+#     443, egressing over the public IPv4 the subnet auto-assigns at launch — no Elastic IP
+#     (the account has no NAT). readiness_gate=false because the framework's
 #     gate dials the instance directly; the playbook's first play waits over SSM-SSH instead.
 #   * Credentials re-exchange per stage (MaxSessionDuration < job runtime); a destroy with
 #     dead credentials strands paid resources.

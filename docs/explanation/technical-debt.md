@@ -108,3 +108,30 @@ workarounds are not accidentally restored.
   becomes the catalog selector `windows@2025`, the framework's vendor allowlist collapses back
   to `["self"]`, and version currency becomes the publisher's monotonicity guarantee rather
   than a human noticing. Close this entry only when the selector is a catalog address.
+
+## TD-010 — the role's embedded PowerShell has no parse, lint, or unit gate
+
+- **Recorded:** 2026-08-10
+- **What:** 2,288 of `present_windows.yml`'s 3,195 lines are PowerShell stored as YAML string
+  literals, including a 704-line HTTPS listener reconciler interpolated into two tasks and
+  roughly 500 lines of verbatim helper duplication (`New-WsusServerManager` exists three times;
+  the SUSDB location probe twice, byte-identical). No gate parses that code: `verify.sh` runs
+  no `pwsh`, so a quoting error in a rescue-path block ships green and first executes during an
+  incident — the C12c failure class at larger scale. Part of the offline suite pins source
+  substrings to hold the duplicates identical, a test standing in for a missing abstraction.
+  One interpolation (`config.tls.thumbprint` at the listener reconciler's recovery path)
+  violates the style guide's §5 env-only input rule and is likewise pinned by a test.
+- **Current containment:** the split-args gate covers the free-form `win_shell` transport
+  hazard; the offline suite pins the load-bearing contracts; the live lifecycle with its
+  second-converge `changed=0` assertion remains the only executable proof of the PowerShell.
+- **Exit criteria:** extract the embedded programs to role `files/*.ps1` invoked through
+  `win_powershell` `path:` with typed `parameters:` (available at the pinned `ansible.windows`
+  3.7.0), one arc per change, each proven by the live lifecycle; keep the native-module tasks
+  and the `block`/`rescue`/`always` boundaries exactly where they are. Gate every extracted
+  file with a PowerShell parse check, PSScriptAnalyzer, and Pester scoped to the pure
+  functions, pinned in `quality-tools.env` like the other tools. Shared helpers end up defined
+  once; the substring-synchronization tests are replaced by unit tests on the extracted
+  functions, never deleted ahead of that replacement. If migration empties the `win_shell`
+  inventory, invert the split-args gate to assert absence. Close this entry when
+  `present_windows.yml` carries orchestration only and every `.ps1` parses and lints in the
+  credential-free gate.

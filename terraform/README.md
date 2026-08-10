@@ -37,10 +37,12 @@ other is the reaper) does, per run:
 ## Assumptions this layer does not (cannot) verify
 
 - **Reachability is zero-inbound SSH over SSM:** the SG allows no ingress; the runner
-  tunnels through an SSM session riding the agent's own outbound 443. The EIP exists purely
-  to give that outbound path a route (pre-created ENIs never get auto public IPs; the account
-  has no NAT and no VPC endpoints). The deploy subnet must route through an internet gateway;
-  the deploy role cannot probe that (`ec2:DescribeRouteTables` is not granted).
+  tunnels through an SSM session riding the agent's own outbound 443. That path egresses over
+  the public IPv4 the subnet's `MapPublicIpOnLaunch` auto-assigns to the pre-created ENI at
+  launch — no Elastic IP is involved (the account has no NAT and no VPC endpoints; see the
+  `aws.tfvars` header for the measurement that retired the EIP). The deploy subnet must route
+  through an internet gateway; the deploy role cannot probe that (`ec2:DescribeRouteTables` is
+  not granted).
 - The deploy role launches with the standing `nwarila-ec2-key` pair; it never creates key pairs.
   The private half lives in the `AWS_EC2_SSH_PRIVATE_KEY` organization secret, is staged into
   the runner's temporary directory at mode 0600 for the life of one job, and never enters
