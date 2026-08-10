@@ -108,7 +108,6 @@
 !/scripts/test-aws-clean.sh
 !/scripts/test-aws-resource-graph.py
 !/scripts/test-iam-drift-structure.py
-!/scripts/test-iam-policies.sh
 !/scripts/test-iam-structure.py
 !/scripts/verify.sh
 
