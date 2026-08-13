@@ -25,11 +25,14 @@
 # behaviour, and secure-wazuh run 31319282728 launched through the same path with
 # associate_public_ip = false, received an auto-assigned address, and reached Online in SSM.
 # That proof ran in the retired wazuh-era subnet; the account's VPCs were rebuilt on
-# 2026-08-10 and the current us-east-1c subnet below was verified live to carry the same
-# MapPublicIpOnLaunch=true attribute and an internet-gateway default route before it was
-# pinned here. The account has no NAT and no VPC endpoints, so the auto-assigned address is
-# the only possible egress route. Public IPv4 bills at the same $0.005/h either way, so this
-# is a quota decision, not a cost one.
+# 2026-08-10. The us-east-1c subnet below is the rebuilt DEPLOY-account subnet
+# (nwarila-platform-use1c-01 in vpc-0724440de2891a1ee), confirmed MapPublicIpOnLaunch=true
+# by describe in that account, and its egress path is proven live: pdq-deploy-inventory
+# launches into this same subnet and its instances register Online in SSM. An earlier repin
+# attempt pinned a lookalike subnet from the wrong AWS account here - always describe against
+# the account the OIDC deploy role lives in. The account has no NAT and no VPC endpoints, so
+# the auto-assigned address is the only possible egress route. Public IPv4 bills at the same
+# $0.005/h either way, so this is a quota decision, not a cost one.
 #
 # The dependency worth knowing: MapPublicIpOnLaunch is an attribute of a shared subnet no
 # repository owns. If it is ever turned off, an instance without an Elastic IP launches with no
@@ -52,7 +55,7 @@ all_systems = [
     region            = "us_east_1"
     hostname          = "wsus-poc-01"
     availability_zone = "us-east-1c"
-    subnet_id         = "subnet-0d218a2ee096f694a"
+    subnet_id         = "subnet-03a855e712be7b399"
     # v3.0.0 CONSUMES key pairs and never creates them, so this names the standing account
     # key pair. user_data installs its public half by reading IMDS; the private half lives
     # only in the AWS_EC2_SSH_PRIVATE_KEY org secret and the runner's temporary directory.
