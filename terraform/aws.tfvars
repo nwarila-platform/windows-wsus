@@ -22,11 +22,14 @@
 #
 # An earlier version of this header claimed AWS never auto-assigns to a pre-created ENI and
 # that an EIP was therefore mandatory. That is false. Framework commit e40a792 measured the
-# behaviour, and secure-wazuh run 31319282728 launched into this same subnet through the same
-# path with associate_public_ip = false, received an auto-assigned address, and reached Online
-# in SSM. The account has no NAT and no VPC endpoints, so that address was the only possible
-# egress route: registration is the proof it carries traffic. Public IPv4 bills at the same
-# $0.005/h either way, so this is a quota decision, not a cost one.
+# behaviour, and secure-wazuh run 31319282728 launched through the same path with
+# associate_public_ip = false, received an auto-assigned address, and reached Online in SSM.
+# That proof ran in the retired wazuh-era subnet; the account's VPCs were rebuilt on
+# 2026-08-10 and the current us-east-1c subnet below was verified live to carry the same
+# MapPublicIpOnLaunch=true attribute and an internet-gateway default route before it was
+# pinned here. The account has no NAT and no VPC endpoints, so the auto-assigned address is
+# the only possible egress route. Public IPv4 bills at the same $0.005/h either way, so this
+# is a quota decision, not a cost one.
 #
 # The dependency worth knowing: MapPublicIpOnLaunch is an attribute of a shared subnet no
 # repository owns. If it is ever turned off, an instance without an Elastic IP launches with no
@@ -48,8 +51,8 @@ all_systems = [
   {
     region            = "us_east_1"
     hostname          = "wsus-poc-01"
-    availability_zone = "us-east-1a"
-    subnet_id         = "subnet-0e1c8aae192deff26"
+    availability_zone = "us-east-1c"
+    subnet_id         = "subnet-0d218a2ee096f694a"
     # v3.0.0 CONSUMES key pairs and never creates them, so this names the standing account
     # key pair. user_data installs its public half by reading IMDS; the private half lives
     # only in the AWS_EC2_SSH_PRIVATE_KEY org secret and the runner's temporary directory.

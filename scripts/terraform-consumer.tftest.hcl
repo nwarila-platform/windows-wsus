@@ -10,7 +10,7 @@ mock_provider "aws" {
       vpc_id = "vpc-quality-gate"
       # v3.0.0 asserts the system's declared zone equals its subnet's real zone. A random mock
       # zone would fail that precondition, so it mirrors the zone declared in aws.tfvars.
-      availability_zone = "us-east-1a"
+      availability_zone = "us-east-1c"
     }
   }
 
