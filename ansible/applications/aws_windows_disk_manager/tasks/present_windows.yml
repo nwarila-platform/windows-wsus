@@ -1,0 +1,341 @@
+# =========================================================================================== #
+# File: '{{ role_path }}/tasks/present_windows.yml'
+# --- [ Description ] ----------------------------------------------------------------------- #
+# Windows / state=present provider. Receives merged configuration as 'config'.
+# Resolves every declared `function` (EBS Function tag) via tasks/resolve_aws.yml and the
+# Nitro serial==volume-id guarantee, makes declared disks online/writable, classifies their
+# observed contents, and provisions only positively recognized blank or unformatted disks.
+# validate.yml has already enforced the function-only identity contract at loader INIT, so
+# every loop below runs over config.disks without re-checking identity shape.
+# =========================================================================================== #
+
+#region ------ [ Script ] -------------------------------------------------------------------- #
+
+- name: 'INFO | Entering OS Tasks (present_windows - aws_windows_disk_manager)'
+  block:
+
+    # The role pulls the facts it needs itself (plays run gather_facts: false): the vendor
+    # assertion below reads ansible_facts.system_vendor, which the loader's OS-facts pass
+    # does not carry — and the Windows setup module's named subsets do not map it either
+    # (proven live: the 'hardware' subset still left it '<missing>'), so gather the full set
+    # once, guarded.
+    - name: 'BEGIN | Load Facts For The Vendor Assertion'
+      when: ansible_facts.system_vendor is not defined
+      ansible.windows.setup:
+
+    # This role supports exactly one platform, so the vendor probe is the whole platform
+    # contract: anything that is not Amazon EC2 fails before facts or mutation.
+    - name: 'BEGIN | Assert The Target Is Amazon EC2'
+      ansible.builtin.assert:
+        that:
+          - (ansible_facts.system_vendor | default('')) == 'Amazon EC2'
+        fail_msg: >-
+          aws_windows_disk_manager supports Amazon EC2 only, but detected system vendor
+          '{{ ansible_facts.system_vendor | default('<missing>') }}'. Use the framework's
+          windows_disk_manager for any other platform.
+        quiet: true
+
+    # Function-tag resolution: one controller-side describe for the whole host maps each
+    # declared Function tag to its attached volume-id (see resolve_aws.yml). The volume-id is
+    # matched to a physical disk AFTER facts load, via the Nitro serial==volume-id guarantee.
+    - name: 'BEGIN | Resolve Declared Function Tags To Attached Volumes'
+      when: (config.disks | length) > 0
+      ansible.builtin.include_tasks: 'resolve_aws.yml'
+
+    - name: 'BEGIN | Load Disk, Partition And Volume Facts'
+      when: (config.disks | length) > 0
+      community.windows.win_disk_facts:
+        filter:
+          - 'physical_disk'
+          - 'partitions'
+          - 'volumes'
+
+    # NEGATIVE PROOF, per declared entry: exactly one physical disk may carry the resolved
+    # volume's serial (Nitro: NVMe serial == volume-id without its hyphen, sometimes with a
+    # padded suffix — hence the anchored prefix match). Runs before materialization so a zero
+    # or multiple match names the function and the observed serials, not a downstream
+    # empty-unique_id symptom.
+    - name: 'BEGIN | Assert Exactly One Attached Disk Serial Per Resolved Function'
+      when: (config.disks | length) > 0
+      loop: "{{ config.disks }}"
+      loop_control:
+        loop_var: 'disk'
+        label: "{{ disk.function }}"
+      vars:
+        __volume_id__: >-
+          {{ (__aws_vol_info__.volumes | selectattr('tags')
+          | selectattr('tags.Function', 'defined')
+          | selectattr('tags.Function', 'equalto', disk.function)
+          | map(attribute='id') | first) }}
+        __expected_serial__: "{{ __volume_id__ | replace('-', '') }}"
+        __serial_matches__: >-
+          {{ ansible_facts.disks
+          | selectattr('serial_number', 'defined')
+          | selectattr('serial_number', 'match', '(?i)' ~ __expected_serial__)
+          | list }}
+      ansible.builtin.assert:
+        that:
+          - __serial_matches__ | length == 1
+        fail_msg: >-
+          Expected exactly one attached disk whose serial starts with
+          '{{ __expected_serial__ }}' (volume {{ __volume_id__ }},
+          Function={{ disk.function }}), found {{ __serial_matches__ | length }}. Observed
+          disks: {% for attached in ansible_facts.disks %}number={{ attached.number
+          | default('unknown') }}, serial={{ attached.serial_number | default('unknown')
+          }}{%- if not loop.last %}; {% endif %}{% endfor %}.
+        quiet: true
+
+    # Materialize ONE declaration list in which every entry carries the serial-matched disk's
+    # OBSERVED UniqueId (the same storage-subsystem value every downstream
+    # Get-Disk/win_disk_facts comparison uses). Everything below this point loops
+    # __declared_disks__, never config.disks, so resolution converges here exactly once.
+    - name: 'BEGIN | Reset Materialized Disk Declarations'
+      when: (config.disks | length) > 0
+      ansible.builtin.set_fact:
+        __declared_disks__: []
+
+    - name: 'BEGIN | Materialize Declared Disk Identities'
+      when: (config.disks | length) > 0
+      loop: "{{ config.disks }}"
+      loop_control:
+        loop_var: 'disk'
+        label: "{{ disk.function }}"
+      vars:
+        __volume_id__: >-
+          {{ (__aws_vol_info__.volumes | selectattr('tags')
+          | selectattr('tags.Function', 'defined')
+          | selectattr('tags.Function', 'equalto', disk.function)
+          | map(attribute='id') | first) }}
+        __expected_serial__: "{{ __volume_id__ | replace('-', '') }}"
+        __serial_matches__: >-
+          {{ ansible_facts.disks
+          | selectattr('serial_number', 'defined')
+          | selectattr('serial_number', 'match', '(?i)' ~ __expected_serial__)
+          | list }}
+        __resolved_unique_id__: >-
+          {{ __serial_matches__ | map(attribute='unique_id') | first | default('') }}
+      ansible.builtin.set_fact:
+        __declared_disks__: >-
+          {{ (__declared_disks__ | default([]))
+          + [disk | combine({'unique_id': (__resolved_unique_id__ | trim)})] }}
+
+    - name: 'BEGIN | Assert Declared Disks Are Attached'
+      when: (config.disks | length) > 0
+      loop: "{{ __declared_disks__ | default([]) }}"
+      loop_control:
+        loop_var: 'disk'
+        label: "{{ disk.unique_id }}"
+      vars:
+        __matches__: >-
+          {{ ansible_facts.disks
+          | selectattr('unique_id', 'defined')
+          | selectattr('unique_id', 'equalto', disk.unique_id)
+          | list }}
+      ansible.builtin.assert:
+        that:
+          - __matches__ | length == 1
+        fail_msg: >-
+          Expected exactly one attached disk matching unique_id '{{ disk.unique_id }}', but
+          found {{ __matches__ | length }}. Attached disks:
+          {% for attached in ansible_facts.disks %}
+          number={{ attached.number | default('unknown') }},
+          unique_id={{ attached.unique_id | default('unknown') }}{%- if not loop.last %};
+          {% endif %}
+          {% endfor %}
+        quiet: true
+
+    # An offline disk may expose no partitions. Clear read-only first, then offline, and emit
+    # the changed sentinel only after every requested transition has completed successfully.
+    - name: 'BEGIN | Bring Declared Disks Online And Writable'
+      when: (config.disks | length) > 0
+      ansible.windows.win_shell: |
+        $ErrorActionPreference = 'Stop'
+        $changed = $false
+        foreach ($id in ($env:DISK_IDS -split ';' | Where-Object { $_ })) {
+            $disk = Get-Disk -ErrorAction Stop | Where-Object { $_.UniqueId -eq $id }
+            if ($disk.IsReadOnly) {
+                Set-Disk -Number $disk.Number -IsReadOnly $false -ErrorAction Stop
+                $changed = $true
+            }
+            if ($disk.IsOffline) {
+                Set-Disk -Number $disk.Number -IsOffline $false -ErrorAction Stop
+                $changed = $true
+            }
+        }
+        if ($changed) {
+            Write-Output 'changed'
+        } else {
+            Write-Output 'nochange'
+        }
+      environment:
+        DISK_IDS: "{{ __declared_disks__ | default([]) | map(attribute='unique_id') | join(';') }}"
+      register: '__disk_online__'
+      changed_when: (__disk_online__.stdout | trim) == 'changed'
+
+    - name: 'BEGIN | Re-load Disk Facts After Online/Writable Fixup'
+      when: (config.disks | length) > 0
+      community.windows.win_disk_facts:
+        filter:
+          - 'physical_disk'
+          - 'partitions'
+          - 'volumes'
+
+    #region ------ [ Disk-state classification and mutation-safety guard ] -------------------- #
+
+    # Physical-disk facts carry volumes below partitions, not at the disk's top level. Classify
+    # each resolved disk from positively observed facts. First match wins; anything not
+    # recognized as ours, blank, or safely resumable is foreign by default.
+    - name: 'MAIN | Reset Resolved Disk State'
+      when: (config.disks | length) > 0
+      ansible.builtin.set_fact:
+        __resolved_disks__: []
+
+    - name: 'MAIN | Resolve Declared Disks And Classify Observed State'
+      when: (config.disks | length) > 0
+      loop: "{{ __declared_disks__ | default([]) }}"
+      loop_control:
+        loop_var: 'disk'
+        label: "{{ disk.unique_id }}"
+      vars:
+        __matches__: >-
+          {{ ansible_facts.disks
+          | selectattr('unique_id', 'defined')
+          | selectattr('unique_id', 'equalto', disk.unique_id)
+          | list }}
+        __matched_disk__: "{{ __matches__ | first }}"
+        __classification_json__: >-
+          {%- set enumerated = 'partitions' in __matched_disk__ -%}
+          {%- set parts = namespace(items=[]) -%}
+          {%- if enumerated -%}
+            {%- for partition in __matched_disk__.partitions | default([], true) -%}
+              {%- if (partition.type | default('', true) | string) != 'Reserved' -%}
+                {%- set parts.items = parts.items + [partition] -%}
+              {%- endif -%}
+            {%- endfor -%}
+          {%- endif -%}
+          {%- set vols = namespace(items=[]) -%}
+          {%- set all_parts_have_volumes = namespace(value=true) -%}
+          {%- for partition in parts.items -%}
+            {%- if 'volumes' in partition -%}
+              {%- set vols.items = vols.items + (partition.volumes | default([], true)) -%}
+            {%- else -%}
+              {%- set all_parts_have_volumes.value = false -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {%- set observed = namespace(items=[]) -%}
+          {%- set all_vols_observed = namespace(value=true) -%}
+          {%- for volume in vols.items -%}
+            {%- if 'type' in volume and volume.type is not none -%}
+              {%- set observed.items = observed.items + [volume] -%}
+            {%- else -%}
+              {%- set all_vols_observed.value = false -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {%- set fsvols = namespace(items=[]) -%}
+          {%- set ours = namespace(value=false) -%}
+          {%- for volume in observed.items -%}
+            {%- if (volume.type | string | trim | length) > 0 -%}
+              {%- set fsvols.items = fsvols.items + [volume] -%}
+              {%- if (volume.type | string | upper) == 'NTFS'
+                and (volume.label | default('', true) | string | lower)
+                == (disk.label | string | lower) -%}
+                {%- set ours.value = true -%}
+              {%- endif -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {%- set classification = namespace(value='foreign') -%}
+          {%- if ours.value -%}
+            {%- set classification.value = 'ours' -%}
+          {%- elif (__matched_disk__.partition_style | default('', true) | string | upper)
+              == 'RAW' -%}
+            {%- set classification.value = 'blank' -%}
+          {%- elif (__matched_disk__.partition_style | default('', true) | string | upper)
+              == 'GPT'
+              and enumerated
+              and (fsvols.items | length) == 0
+              and (
+                (parts.items | length) == 0
+                or (
+                  all_parts_have_volumes.value
+                  and all_vols_observed.value
+                  and (observed.items | length) > 0
+                )
+              ) -%}
+            {%- set classification.value = 'unfmtd' -%}
+          {%- endif -%}
+          {{ classification.value | to_json }}
+      ansible.builtin.set_fact:
+        __resolved_disks__: >-
+          {{ (__resolved_disks__ | default([])) + [{
+            'disk': disk,
+            'matched_disk': __matched_disk__,
+            'classification': (__classification_json__ | from_json),
+            'drive_letter': (disk.drive_letter | regex_search('^[A-Za-z]') | upper)
+          }] }}
+
+    # A failure in this read-only loop stops the play before any provisioning task is entered,
+    # so one foreign declared disk refuses provisioning for the entire declaration set.
+    - name: 'BEGIN | Assert No Foreign Disk Layout Before Provisioning'
+      loop: "{{ __resolved_disks__ | default([]) }}"
+      loop_control:
+        loop_var: 'managed_disk'
+        label: "{{ managed_disk.disk.unique_id }}"
+      ansible.builtin.assert:
+        that:
+          - managed_disk.classification != 'foreign'
+        fail_msg: >-
+          Refusing to provision declared disk unique_id '{{ managed_disk.disk.unique_id }}'
+          with label '{{ managed_disk.disk.label }}': its observed layout classified as
+          'foreign'. Observed on-disk signature:
+          partition_style={{ managed_disk.matched_disk.partition_style
+          | default('<missing>', true) | to_json }},
+          partitions={% if 'partitions' in managed_disk.matched_disk
+          %}{{ managed_disk.matched_disk.partitions | to_json }}{% else %}<not enumerated>{% endif %}.
+          Verify that this declaration's function identifies the intended disk. Point it only
+          at a RAW disk, a positively recognized unformatted GPT disk, or a disk already carrying
+          an NTFS volume labeled '{{ managed_disk.disk.label }}'. If this foreign layout is on
+          the intended disk, preserve any required data before clearing it and re-running.
+        quiet: true
+
+    #endregion --- [ Disk-state classification and mutation-safety guard ] -------------------- #
+
+    - name: 'MAIN | Initialize Declared Disk (GPT, Online, Writable)'
+      when: managed_disk.classification in ['blank', 'unfmtd']
+      loop: "{{ __resolved_disks__ | default([]) }}"
+      loop_control:
+        loop_var: 'managed_disk'
+        label: "{{ managed_disk.disk.unique_id }}"
+      community.windows.win_initialize_disk:
+        uniqueid: "{{ managed_disk.disk.unique_id }}"
+        style: 'gpt'
+        online: true
+        force: false
+
+    - name: 'MAIN | Create Full Declared Disk Partition'
+      when: managed_disk.classification in ['blank', 'unfmtd']
+      loop: "{{ __resolved_disks__ | default([]) }}"
+      loop_control:
+        loop_var: 'managed_disk'
+        label: "{{ managed_disk.disk.unique_id }}"
+      community.windows.win_partition:
+        disk_number: "{{ managed_disk.matched_disk.number }}"
+        partition_size: -1
+        drive_letter: "{{ managed_disk.drive_letter }}"
+        gpt_type: 'basic_data'
+        state: 'present'
+
+    - name: 'MAIN | Format Declared Disk Volume (NTFS)'
+      when: managed_disk.classification in ['blank', 'unfmtd']
+      loop: "{{ __resolved_disks__ | default([]) }}"
+      loop_control:
+        loop_var: 'managed_disk'
+        label: "{{ managed_disk.disk.unique_id }}"
+      community.windows.win_format:
+        drive_letter: "{{ managed_disk.drive_letter }}"
+        file_system: 'ntfs'
+        new_label: "{{ managed_disk.disk.label }}"
+        allocation_unit_size: "{{ managed_disk.disk.allocation_unit | default(4096) }}"
+        full: false
+        force: false
+
+#endregion --- [ Script ] -------------------------------------------------------------------- #

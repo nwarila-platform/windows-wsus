@@ -39,6 +39,7 @@ assurance boundary.
 
 | Path | Purpose |
 |---|---|
+| `ansible/applications/aws_windows_disk_manager/` | Repository-owned AWS-only Windows disk provisioning (Function-tag identity) |
 | `ansible/applications/wsus/` | WSUS/WID role, validation, convergence, and independent verifier |
 | `ansible/playbooks/wsus-aws.yml` | Exact inventory preflight, Windows readiness, disk provisioning, and role invocation |
 | `terraform/aws.tfvars` | Data-only input for the pinned Terraform framework |
