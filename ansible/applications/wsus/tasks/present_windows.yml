@@ -5,7 +5,7 @@
 # Complete install and configuration path for the wsus role on the Windows family (resolved by
 # the v3 loader via first_found). Receives the merged running configuration as 'config'.
 #
-# Disk provisioning is delegated to windows_disk_manager, which the playbook runs first. The wsus
+# Disk provisioning is delegated to aws_windows_disk_manager, which the playbook runs first. The wsus
 # role builds WID and WSUS content paths from the database and content letters; its IIS letter
 # anchors both literal IIS paths. The playbook feeds both roles one shared layout, and this role's
 # independently reusable configuration invariants are enforced in tasks/validate.yml.

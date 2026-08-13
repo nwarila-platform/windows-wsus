@@ -1,0 +1,142 @@
+# =========================================================================================== #
+# File: '{{ role_path }}/tasks/validate.yml'
+# --- [ Description ] ----------------------------------------------------------------------- #
+# Config-contract validation, auto-discovered and run ONCE by the shared loader's
+# 'INIT | Validating Merged Configuration' hook after configuration merging and before an
+# OS-specific task file. Receives the fully merged config as 'config'.
+#
+# STATE SCOPE: the loader runs this file for every state. Every guard is deliberately scoped
+# to state=present so state=clean remains a supported no-op with the default empty disk list.
+# =========================================================================================== #
+
+#region ------ [ Retired-contract guards ] ---------------------------------------------------- #
+
+# This role is the AWS+Windows narrowing of the framework's windows_disk_manager. A caller
+# migrating from that role could still carry its `platform` knob or a literal `unique_id`
+# identity; both would be silently ignored here, so both are refused by name instead. A
+# unique_id in particular could point at a DIFFERENT disk than the Function tag beside it —
+# silent-wrong, not just stale.
+- name: 'BEGIN | Refuse Retired windows_disk_manager Contract Keys'
+  when: (state | default('present') | string | lower | trim) == 'present'
+  vars:
+    __unique_id_disks__: >-
+      {{ config.disks | default([], true) | selectattr('unique_id', 'defined')
+      | map(attribute='drive_letter', default='<no drive_letter>') | list }}
+  ansible.builtin.assert:
+    that:
+      - "'platform' not in config"
+      - __unique_id_disks__ | length == 0
+    fail_msg: >-
+      The aws_windows_disk_manager override dict carries retired windows_disk_manager keys:
+      {{ "'platform' (this role is AWS-only; delete the key)" if 'platform' in config else '' }}
+      {{ "disk entries declaring 'unique_id' (drive letter(s): " ~ (__unique_id_disks__ | join(', '))
+      ~ "; identity here is the EBS Function tag only)" if (__unique_id_disks__ | length) > 0 else '' }}.
+      Refusing rather than silently ignoring an identity input.
+    quiet: true
+
+#endregion --- [ Retired-contract guards ] ---------------------------------------------------- #
+
+#region ------ [ Disk contract guards ] ------------------------------------------------------ #
+
+# Identity guard at loader INIT, before any connection: every entry must carry a non-empty
+# Function tag value, because it is the ONLY identity this role resolves. present_windows.yml
+# assumes this holds and loops config.disks without re-checking.
+- name: 'BEGIN | Assert Every Disk Declares A Function Tag Identity'
+  when: (state | default('present') | string | lower | trim) == 'present'
+  loop: "{{ config.disks | default([], true) }}"
+  loop_control:
+    loop_var: 'disk'
+    label: "{{ disk.function | default('<missing>') }}"
+  ansible.builtin.assert:
+    that:
+      - disk.function is defined
+      - (disk.function | string | trim | length) > 0
+    fail_msg: >-
+      aws_windows_disk_manager.disks entry (drive letter
+      '{{ disk.drive_letter | default('<missing>') }}') declares no `function`. Every disk is
+      identified by its EBS volume's `Function` tag value; there is no other identity mode.
+    quiet: true
+
+# The grammar check must precede canonicalization. A first-character-only transform would
+# otherwise silently accept malformed values such as Data, D::, D\, or D:\path.
+- name: 'BEGIN | Assert Drive Letter Grammar'
+  when: (state | default('present') | string | lower | trim) == 'present'
+  loop: "{{ config.disks | default([], true) }}"
+  loop_control:
+    loop_var: 'disk'
+    label: "{{ disk.drive_letter | default('<missing>') }}"
+  ansible.builtin.assert:
+    that:
+      - disk.drive_letter is defined
+      - (disk.drive_letter | string) is match('^[A-Za-z](?::\\\\?)?$')
+    fail_msg: >-
+      aws_windows_disk_manager.disks drive_letter
+      '{{ disk.drive_letter | default('<missing>') }}' is invalid. Use one ASCII letter with
+      an optional colon and an optional single backslash after the colon (for example D, D:,
+      or D:\).
+    quiet: true
+
+# Validate labels before disk mutation because win_format otherwise rejects an invalid NTFS
+# volume label only after the disk has been brought online, initialized, and partitioned.
+- name: 'BEGIN | Assert Volume Label Grammar'
+  when: (state | default('present') | string | lower | trim) == 'present'
+  loop: "{{ config.disks | default([], true) }}"
+  loop_control:
+    loop_var: 'disk'
+    label: "{{ disk.drive_letter | default('<missing>') }}"
+  ansible.builtin.assert:
+    that:
+      - disk.label is defined
+      - disk.label is string
+      - (disk.label | trim | length) >= 1
+      - (disk.label | trim | length) <= 32
+    fail_msg: >-
+      aws_windows_disk_manager.disks entry for drive_letter
+      '{{ disk.drive_letter | default('<missing>') }}' has an invalid label. Label must be a
+      string whose trimmed length is between 1 and 32 characters (the NTFS volume-label limit).
+    quiet: true
+
+# Validate classic NTFS cluster sizes before mutation; larger newer-Windows sizes are unmeasured
+# for the role's standard NTFS data volumes and are rejected fail-closed.
+- name: 'BEGIN | Assert Allocation Unit Is A Valid NTFS Cluster Size'
+  when: (state | default('present') | string | lower | trim) == 'present'
+  loop: "{{ config.disks | default([], true) }}"
+  loop_control:
+    loop_var: 'disk'
+    label: "{{ disk.drive_letter | default('<missing>') }}"
+  ansible.builtin.assert:
+    that:
+      - >-
+        disk.allocation_unit is not defined or
+        (disk.allocation_unit | string) is match('^[0-9]+$')
+      - >-
+        disk.allocation_unit is not defined or
+        (disk.allocation_unit | int) in [512, 1024, 2048, 4096, 8192, 16384, 32768, 65536]
+    fail_msg: >-
+      aws_windows_disk_manager.disks entry for drive_letter
+      '{{ disk.drive_letter | default('<missing>') }}' has invalid allocation_unit
+      '{{ disk.allocation_unit | default('<missing>') }}'. Accepted NTFS cluster sizes are
+      512, 1024, 2048, 4096, 8192, 16384, 32768, and 65536 bytes.
+    quiet: true
+
+# Drive letters are canonicalized only after the grammar guard: accepted forms all reduce to
+# their first character uppercased (D, d, D:, d:, D:\, and d:\ all become D).
+- name: 'BEGIN | Reject Duplicate Functions And Drive Letters'
+  when: (state | default('present') | string | lower | trim) == 'present'
+  vars:
+    __disks__: "{{ config.disks | default([], true) }}"
+    __functions__: "{{ __disks__ | map(attribute='function', default='') | list }}"
+    __drive_letters__: >-
+      {{ __disks__ | map(attribute='drive_letter', default='') |
+      map('regex_search', '^[A-Za-z]') | map('upper') | list }}
+  ansible.builtin.assert:
+    that:
+      - (__functions__ | unique | length) == (__functions__ | length)
+      - (__drive_letters__ | unique | length) == (__drive_letters__ | length)
+    fail_msg: >-
+      aws_windows_disk_manager.disks declares a duplicate function or canonical drive letter.
+      Every entry must target a distinct disk and drive letter. function values:
+      {{ __functions__ }}; canonical drive letters: {{ __drive_letters__ }}.
+    quiet: true
+
+#endregion --- [ Disk contract guards ] ------------------------------------------------------ #

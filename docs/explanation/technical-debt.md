@@ -108,3 +108,24 @@ workarounds are not accidentally restored.
   becomes the catalog selector `windows@2025`, the framework's vendor allowlist collapses back
   to `["self"]`, and version currency becomes the publisher's monotonicity guarantee rather
   than a human noticing. Close this entry only when the selector is a catalog address.
+
+## TD-011 — aws_windows_disk_manager is a narrowing fork of the framework role
+
+- **Recorded:** 2026-08-13
+- **What:** guest disk provisioning moved from the framework's `windows_disk_manager` to the
+  repository-owned `ansible/applications/aws_windows_disk_manager/`, forked at ansible-framework
+  pin `24a8ec74a7965b3a6f9cc827455962d541ff6d73` and narrowed to one platform: the `platform`
+  knob and the literal `unique_id` identity mode were removed, and both retired keys are refused
+  by name at validation. The classification and mutation-safety contract, the resolver, and the
+  shared v3.3.0 loader (byte-identical) were carried unchanged.
+- **Consequence:** upstream fixes to `windows_disk_manager` no longer reach this repository
+  through a framework pin bump. A resolver or classification correction upstream must be noticed
+  and ported by hand; nothing here detects the divergence. This is accepted deliberately — the
+  one platform this repository deploys to gets exactly one disk-identity code path it owns.
+- **Current containment:** the fork records its exact fork-point pin in every file header that
+  diverged, the composed quality gate lints and syntax-checks it on every change, and the live
+  lifecycle's second-converge `changed=0` assertion exercises it on every proof.
+- **Exit criteria:** when a framework pin bump changes `applications/windows_disk_manager`,
+  diff the fork against the new upstream and port or decline each change explicitly. Close this
+  entry only if the role returns to framework ownership or the framework retires its
+  multi-platform variant.

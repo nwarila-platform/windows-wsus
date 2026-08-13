@@ -4,9 +4,9 @@ Installs and verifies Windows Server Update Services backed by Windows Internal 
 Windows Server 2025. The role carries the byte-identical v3.3.0 framework loader, merged-input
 validation, Windows convergence, recovery guards, and an independent final verifier.
 
-Disk selection and formatting belong to the framework's `windows_disk_manager` role. Run that
-role first and feed both roles one shared layout, as `ansible/playbooks/wsus-aws.yml` does. This
-role consumes already-provisioned volumes through their drive letters.
+Disk selection and formatting belong to the repository's `aws_windows_disk_manager` role. Run
+that role first and feed both roles one shared layout, as `ansible/playbooks/wsus-aws.yml` does.
+This role consumes already-provisioned volumes through their drive letters.
 
 ## Configuration model
 
@@ -131,7 +131,7 @@ terminal-success bootstrap marker.
 
 - Windows Server 2025 reached over OpenSSH with `ansible_shell_type: cmd`; the administrator
   account is already elevated and the play must use `become: false`.
-- The pinned ansible-framework and its `windows_disk_manager` and artifact-delivery roles.
+- The pinned ansible-framework and its artifact-delivery role, plus this repository's `aws_windows_disk_manager` role.
 - Exact collection versions from `requirements-quality.yml`.
 - Explicit extra-vars `aws_account_id` and `aws_region` on the playbook invocation (the deploy
   workflow passes both from its own environment), plus controller environment values

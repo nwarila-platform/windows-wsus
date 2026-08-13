@@ -5,7 +5,7 @@
 # Lowest-precedence configuration for the wsus role, merged by the v3 loader into
 # 'wsus_running' (defaults -> vars/<os>[_<env>].yml overlays -> playbook 'wsus:' dict).
 #
-# Disk provisioning belongs to windows_disk_manager. This role uses the database and content
+# Disk provisioning belongs to aws_windows_disk_manager. This role uses the database and content
 # letters to build application paths; the IIS letter is only a drive-letter distinctness input,
 # while the IIS paths remain literal. Every key is documented in the role README.
 #
@@ -22,7 +22,7 @@ wsus_defaults:
   # DB drive lives in ONE place (data_disks.db.drive_letter) — no drift. Consumed by C06.
   db_subdir: 'WID\Data'
   data_disks:
-    # Application path targets only. The playbook's windows_disk_manager declaration owns disk
+    # Application path targets only. The playbook's aws_windows_disk_manager declaration owns disk
     # identity, provisioning, labels, and allocation units, and must assign these same letters.
     db:
       drive_letter: 'E'
@@ -93,5 +93,5 @@ wsus_defaults:
     # The IIS default web content root, relocated to the IIS disk (G:) for STIG "IIS on its own drive".
     # Literal drive-qualified path (a %SystemDrive% token is treated as drift). C12c.
     wwwroot: 'G:\inetpub\wwwroot'
-# Disk identity and volume-format conventions are declared for windows_disk_manager in the
+# Disk identity and volume-format conventions are declared for aws_windows_disk_manager in the
 # playbook; this file holds only wsus role defaults.

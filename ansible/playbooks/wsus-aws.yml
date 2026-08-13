@@ -8,11 +8,11 @@
 # checkout and executes this playbook against an exact JSON inventory built from Terraform
 # output and verified against live EC2 tags, reached by instance id over SSH-in-SSM — zero inbound.
 #
-#   * windows_disk_manager.platform is 'aws' (vendor assert: 'Amazon EC2'). Disk identities
-#     are declared by EBS `function` tag — volume ids only exist after terraform apply, so
-#     the role resolves each tag itself (one controller-side describe per host, Nitro
-#     serial == volume-id match). The Function tag values here must match the
-#     ebs_block_devices tags in terraform/aws.tfvars.
+#   * aws_windows_disk_manager is this repository's single-platform disk role (vendor
+#     assert: 'Amazon EC2'). Disk identities are declared by EBS `function` tag — volume ids
+#     only exist after terraform apply, so the role resolves each tag itself (one
+#     controller-side describe per host, Nitro serial == volume-id match). The Function tag
+#     values here must match the ebs_block_devices tags in terraform/aws.tfvars.
 #
 # =========================================================================================== #
 ---
@@ -173,14 +173,13 @@
   roles:
 
     #region ------ [ Roles: Windows Disk Manager ] -------------------------------------------- #
-    # Guest disk provisioning is delegated to the framework role. Drive letters must match
-    # wsus_defaults.data_disks because wsus consumes the volumes by letter; each `function`
-    # names the EBS volume's Function tag (declared in the terraform template) and the role
-    # resolves it to the attached disk itself — no injected identities.
-    - role: 'windows_disk_manager'
+    # Guest disk provisioning uses this repository's AWS-only disk role. Drive letters must
+    # match wsus_defaults.data_disks because wsus consumes the volumes by letter; each
+    # `function` names the EBS volume's Function tag (declared in the terraform template) and
+    # the role resolves it to the attached disk itself — no injected identities.
+    - role: 'aws_windows_disk_manager'
       vars:
-        windows_disk_manager:
-          platform: 'aws'
+        aws_windows_disk_manager:
           disks:
             - function: "{{ wsus_disk_layout.db.function }}"
               drive_letter: "{{ wsus_disk_layout.db.drive_letter }}"

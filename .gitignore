@@ -31,6 +31,10 @@
 # ansible/
 !/ansible/
 !/ansible/applications/
+!/ansible/applications/aws_windows_disk_manager/
+!/ansible/applications/aws_windows_disk_manager/defaults/
+!/ansible/applications/aws_windows_disk_manager/meta/
+!/ansible/applications/aws_windows_disk_manager/tasks/
 !/ansible/applications/wsus/
 !/ansible/applications/wsus/defaults/
 !/ansible/applications/wsus/meta/
@@ -39,6 +43,14 @@
 !/ansible/applications/wsus/vars/
 !/ansible/inventory/
 !/ansible/playbooks/
+!/ansible/applications/aws_windows_disk_manager/README.md
+!/ansible/applications/aws_windows_disk_manager/defaults/main.yml
+!/ansible/applications/aws_windows_disk_manager/meta/main.yml
+!/ansible/applications/aws_windows_disk_manager/tasks/clean_windows.yml
+!/ansible/applications/aws_windows_disk_manager/tasks/main.yml
+!/ansible/applications/aws_windows_disk_manager/tasks/present_windows.yml
+!/ansible/applications/aws_windows_disk_manager/tasks/resolve_aws.yml
+!/ansible/applications/aws_windows_disk_manager/tasks/validate.yml
 !/ansible/applications/wsus/README.md
 !/ansible/applications/wsus/defaults/main.yml
 !/ansible/applications/wsus/meta/main.yml

@@ -251,6 +251,7 @@ if [ -n "${QUALITY_ANSIBLE_FRAMEWORK:-}" ]; then
         # contracts; keep var-naming visible but non-blocking while safety rules still fail.
         ansible-lint --offline --format quiet --skip-list yaml --warn-list var-naming \
             "${ROOT}/ansible/playbooks/wsus-aws.yml" \
+            "${compose}/applications/aws_windows_disk_manager" \
             "${compose}/applications/wsus"
     )
 elif [ "${QUALITY_REQUIRE_COMPOSED:-0}" = '1' ]; then
