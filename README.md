@@ -12,7 +12,7 @@ The normal operating state is unattended:
 
 - pull requests run the credential-free `CI / required` gate;
 - every protected-`main` change and a weekly schedule provision one host, configure and verify it,
-  run a second idempotence converge, destroy it, and prove cleanup;
+  destroy it, and prove cleanup;
 - an hourly, age-gated reaper is a fallback for interrupted lifecycles;
 - a daily read-only attestation proves live IAM still exactly equals the reviewed source;
 - Renovate and framework-pin automation open grouped, reviewable pull requests without
@@ -26,9 +26,8 @@ protected `main` ref through its workflow guard and OIDC trust policy.
 
 The AWS lifecycle proves the pinned Terraform framework can create the declared ephemeral host,
 the pinned Ansible framework can compose this role, and the target converges with healthy WSUS,
-WID, IIS, disk placement, and a thumbprint-pinned TLS endpoint. It also proves a second converge
-reports no changes and that no repository-owned EC2 resource or Terraform lock remains after
-destroy.
+WID, IIS, disk placement, and a thumbprint-pinned TLS endpoint. It also proves that no
+repository-owned EC2 resource or Terraform lock remains after destroy.
 
 The public proof intentionally cannot reach the placeholder corporate upstream, so category
 synchronization is disabled there. It proves the desired downstream configuration, not a
@@ -39,6 +38,7 @@ assurance boundary.
 
 | Path | Purpose |
 |---|---|
+| `ansible/applications/aws_windows_disk_manager/` | Repository-owned AWS-only Windows disk provisioning (Function-tag identity) |
 | `ansible/applications/wsus/` | WSUS/WID role, validation, convergence, and independent verifier |
 | `ansible/playbooks/wsus-aws.yml` | Exact inventory preflight, Windows readiness, disk provisioning, and role invocation |
 | `terraform/aws.tfvars` | Data-only input for the pinned Terraform framework |

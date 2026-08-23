@@ -1,0 +1,22 @@
+# =========================================================================================== #
+# File: '{{ role_path }}/meta/main.yml'
+# =========================================================================================== #
+---
+galaxy_info:
+  role_name: 'aws_windows_disk_manager'
+  namespace: 'nwarila_platform'
+  author: 'nwarila-platform'
+  description: >-
+    Windows NTFS disk provisioning on Amazon EC2 only: EBS Function-tag identity resolved via
+    the Nitro serial==volume-id guarantee, idempotent skip of declared-label NTFS volumes,
+    fail-closed refusal of foreign observed layouts. Single-platform narrowing of the
+    framework's windows_disk_manager, forked at pin 24a8ec74.
+  license: 'MIT'
+  min_ansible_version: '2.17'
+  platforms:
+    - name: 'Windows'
+      versions:
+        - '2025'
+  galaxy_tags: ['windows', 'storage', 'disk', 'aws']
+
+dependencies: []

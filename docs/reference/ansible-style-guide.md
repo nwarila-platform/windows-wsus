@@ -64,7 +64,7 @@ most of them were learned from that failure rather than chosen in advance.
   application role. Its input contract is a machine handed to it as **OS + reachable
   SSH + attached-but-blank data disks** — exactly what a fresh Terraform-provisioned
   VM provides. Guest disk provisioning through drive-letter
-  assignment belongs to the shared `windows_disk_manager` role, which runs first; the
+  assignment belongs to the repository's `aws_windows_disk_manager` role, which runs first; the
   application role consumes the resulting volumes by drive letter and owns application
   features, installation, configuration, and verification.
 - **Boundary:** *hardware provisioning* (disk count/size/attachment, vCPU/RAM, NIC)
@@ -128,17 +128,16 @@ clobber, verified at the module source). These stay `quiet: true` with an action
   positively recognized unformatted states proceed; a foreign/occupied state refuses
   loudly with an actionable `fail_msg`. Recognizing the declared label lets an adopted
   or converged volume pass, which a blank-only guard would wrongly reject.
-- **named exception: pinned shared
-  `windows_disk_manager`.** The pinned shared role brings every declared disk online
-  and writable before classifying observed state and asserting that none is foreign.
-  It resets and accumulates `__resolved_disks__` with `set_fact`. Its attachment guard
-  resolves each declared platform identity to exactly one match; the later classifier repeats
-  that selection and uses `| first` to build its matched-disk input. This exception is
-  scoped only to that shared role. Its foreign-layout assert still precedes every
-  provisioning module (initialize, partition, and format). The application-role code
-  it replaced used the same online-before-guard ordering, so delegation did not
-  introduce that ordering. The general §4, §4b, and §4c requirements remain unchanged
-  for roles written in this repository.
+- **named exception: `aws_windows_disk_manager`.** The disk role (a narrowing fork of
+  the framework's shared `windows_disk_manager`; see TD-011) brings every declared disk
+  online and writable before classifying observed state and asserting that none is
+  foreign. It resets and accumulates `__resolved_disks__` with `set_fact`. Its
+  attachment guard resolves each declared Function identity to exactly one match; the
+  later classifier repeats that selection and uses `| first` to build its matched-disk
+  input. This exception is scoped only to that role and was inherited verbatim from the
+  fork point. Its foreign-layout assert still precedes every provisioning module
+  (initialize, partition, and format). The general §4, §4b, and §4c requirements remain
+  unchanged for every other role written in this repository.
 
 ## 5. Windows conventions
 
@@ -260,4 +259,7 @@ clobber, verified at the module source). These stay `quiet: true` with an action
   documentation of the `<role>:` dict shape.
 - Handler usage and service-restart conventions on Windows.
 - A Molecule (or equivalent) test story for Windows roles.
-- Secrets handling for Windows; this repository uses none.
+- A general Windows secrets convention. The one secret this repository handles — the CA-issued
+  PFX and its passphrase — is delivered controller-side from the pinned artifact prefix, enters
+  the play only under `no_log`, and never persists on the target beyond its staged, cleaned-up
+  lifetime; nothing broader is defined here.

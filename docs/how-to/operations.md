@@ -18,18 +18,17 @@ The AWS proof uses a dedicated state key and a singleton deploy concurrency grou
 the standing account key pair, whose public half Windows user_data installs by reading instance
 metadata; the private half is an organization secret and is written to the runner's temporary
 directory for the job only. Because that key is not unique to one run, key custody alone does not
-prevent adopting a stranded predecessor. Before each apply the workflow therefore destroys any
-interrupted predecessor state under the Terraform lock and proves the repository-owned inventory is
-empty, and every target is separately checked against the current run's exact identity tags and
-dependency graph.
+prevent adopting a stranded predecessor. The playbook's identity gate refuses any instance not
+tagged with the current run, the always-run destroy tears down whatever state the lifecycle
+touched, and the age-gated reaper removes what an interrupted run leaves behind.
 
-The proof inventory is generated from Terraform's `aws_instances` output and checked against live
-EC2 ownership and run tags. A broad `Function=wsus` discovery result is not accepted as proof.
-Before either Terraform destroy, before guest disk discovery, and before fallback reaper mutation,
-attached ENIs, EBS volumes, and both sides of every EIP association must carry the same exact
-repository, stack, environment, and run identity. The guest preflight additionally requires exactly
-one attached `WSUSDB`, `WSUSDATA`, and `WSUSIIS` volume. A cross-run, foreign, or ambiguous
-dependency makes the operation fail closed and leaves an incident for review.
+The proof inventory is the repository's dynamic `Function=wsus` discovery
+(`ansible/inventory/aws_ec2.yml`); the playbook's first play is the identity gate, refusing
+anything but exactly one running Windows instance that carries the current run's exact repository
+and run tags and a public address. Before fallback reaper mutation, attached ENIs, EBS volumes,
+and both sides of every EIP association must carry the same exact repository, stack, environment,
+and run identity; a cross-run, foreign, or ambiguous dependency makes the reaper fail closed and
+leave an incident for review.
 
 ## What the proof means
 

@@ -5,20 +5,22 @@
 # Provisions the declared Windows data disks on the EPHEMERAL EC2 instance, then deploys the
 # WSUS (WID-backed) role. Runs from the COMPOSED tree only — in CI,
 # .github/workflows/aws-deploy.yml overlays the role into the pinned ansible-framework
-# checkout and executes this playbook against an exact JSON inventory built from Terraform
-# output and verified against live EC2 tags, reached by instance id over SSH-in-SSM — zero inbound.
+# checkout and executes this playbook against the repository's dynamic aws_ec2 inventory
+# (ansible/inventory/aws_ec2.yml), reached by direct SSH at the auto-assigned public
+# address. Discovery is by Function tag, so the first play below is the identity gate: it
+# refuses anything but exactly one running instance carrying this run's immutable identity.
 #
-#   * windows_disk_manager.platform is 'aws' (vendor assert: 'Amazon EC2'). Disk identities
-#     are declared by EBS `function` tag — volume ids only exist after terraform apply, so
-#     the role resolves each tag itself (one controller-side describe per host, Nitro
-#     serial == volume-id match). The Function tag values here must match the
-#     ebs_block_devices tags in terraform/aws.tfvars.
+#   * aws_windows_disk_manager is this repository's single-platform disk role (vendor
+#     assert: 'Amazon EC2'). Disk identities are declared by EBS `function` tag — volume ids
+#     only exist after terraform apply, so the role resolves each tag itself (one
+#     controller-side describe per host, Nitro serial == volume-id match). The Function tag
+#     values here must match the ebs_block_devices tags in terraform/aws.tfvars.
 #
 # =========================================================================================== #
 ---
 # An inventory can contain zero hosts, which Ansible normally treats as a successful no-op. Make
 # cardinality and immutable deployment identity an explicit controller-side contract before any
-# SSH/SSM connection is attempted.
+# SSH connection is attempted.
 - name: 'PLAY | Validate The Ephemeral AWS Inventory Contract'
   hosts: 'localhost'
   gather_facts: false
@@ -71,6 +73,22 @@
           '{{ __expected_run_id__ }}'. tags={{ __selected_tags__ }}.
         quiet: true
 
+    # The inventory composes ansible_host from the auto-assigned public address. An instance
+    # without one (MapPublicIpOnLaunch turned off on the shared deploy subnet) is unreachable
+    # by construction — refuse it here with the cause named, rather than time out in the
+    # readiness wait below.
+    - name: 'INVENTORY | Assert The Instance Carries A Public Address'
+      ansible.builtin.assert:
+        that:
+          - >-
+            (hostvars[__wsus_inventory_host__].ansible_host | default(''))
+            is match('^[0-9]{1,3}(\.[0-9]{1,3}){3}$')
+        fail_msg: >-
+          {{ __wsus_inventory_host__ }} has no public IPv4, so direct SSH cannot reach it.
+          MapPublicIpOnLaunch is probably no longer set on the deploy subnet — see the
+          terraform/aws.tfvars header.
+        quiet: true
+
 #region ------ [ Play: Windows Readiness ] ---------------------------------------------------- #
 # Runs BEFORE any Windows module can work: wait for sshd (EC2Launch installs the launch key
 # minutes after boot) and for EC2Launch itself to finish provisioning. The OpenSSH
@@ -87,14 +105,17 @@
   vars:
     # The same connection the inventory composes, spelled out for the controller-side probe
     # below (an unreachable `raw` task is never retried by retries/until, so the WAIT must run
-    # on the controller, where a failing ssh is an ordinary command failure).
+    # on the controller, where a failing ssh is an ordinary command failure). The key flag is
+    # conditional so a human running with an SSH agent probes the same way CI does with the
+    # launch key extra-var.
     __ssh_probe__: >-
-      ssh {{ ansible_ssh_common_args }} -i {{ ansible_ssh_private_key_file }}
+      ssh {{ ansible_ssh_common_args }}
+      {{ ('-i ' ~ ansible_ssh_private_key_file) if ansible_ssh_private_key_file is defined else '' }}
       -o BatchMode=yes -o ConnectTimeout=10
       {{ ansible_user }}@{{ ansible_host }} exit
 
   tasks:
-    - name: 'READY | Wait for the SSM-SSH path (agent registered, sshd up, launch key installed)'
+    - name: 'READY | Wait for the SSH path (sshd up, launch key installed)'
       delegate_to: 'localhost'
       ansible.builtin.command:
         cmd: "{{ __ssh_probe__ }}"
@@ -173,14 +194,13 @@
   roles:
 
     #region ------ [ Roles: Windows Disk Manager ] -------------------------------------------- #
-    # Guest disk provisioning is delegated to the framework role. Drive letters must match
-    # wsus_defaults.data_disks because wsus consumes the volumes by letter; each `function`
-    # names the EBS volume's Function tag (declared in the terraform template) and the role
-    # resolves it to the attached disk itself — no injected identities.
-    - role: 'windows_disk_manager'
+    # Guest disk provisioning uses this repository's AWS-only disk role. Drive letters must
+    # match wsus_defaults.data_disks because wsus consumes the volumes by letter; each
+    # `function` names the EBS volume's Function tag (declared in the terraform template) and
+    # the role resolves it to the attached disk itself — no injected identities.
+    - role: 'aws_windows_disk_manager'
       vars:
-        windows_disk_manager:
-          platform: 'aws'
+        aws_windows_disk_manager:
           disks:
             - function: "{{ wsus_disk_layout.db.function }}"
               drive_letter: "{{ wsus_disk_layout.db.drive_letter }}"

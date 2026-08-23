@@ -6,14 +6,17 @@
 # end in aws_ec2.yml for plugin detection). Finds the running instance the terraform framework
 # tagged Function=wsus and places it in the 'wsus_servers' group the playbooks target.
 #
-# TRANSPORT IS SSH OVER SSM: the instance has a zero-ingress security group, so every
-# connection tunnels through an SSM session (AWS-StartSSHSession — the capability the deploy
-# IAM's tag-gated session grants exist for). That is why ansible_host is the INSTANCE ID, not
-# an IP address: it is the target of `aws ssm start-session` in the ProxyCommand below.
+# TRANSPORT IS DIRECT SSH: the deploy subnet auto-assigns each instance a public IPv4 at
+# launch, so ansible_host composes to that address. Ingress exists only while the framework's
+# runner_ip group admits the applying runner's /32, so a human using this inventory must have
+# passed -var "runner_ip=<their address>" at apply (or authorize their own address on the
+# instance's group) before anything answers.
 #
-# The protected lifecycle does not consume this file: it builds an exact inventory from
-# Terraform output and passes its runner-local ephemeral key explicitly. A human using this
-# broad discovery aid must supply the correct ephemeral/private key with `--private-key` or an
+# This file is the single inventory: the protected lifecycle consumes it too, passing the
+# launch key path as `-e ansible_ssh_private_key_file=…` (an extra-var, so the playbook's
+# readiness probe can template the same path). Discovery is deliberately broad — the
+# playbook's first play is the identity gate that refuses anything but exactly one running
+# instance tagged with the current run. A human must supply their own key the same way, or an
 # SSH agent; no long-lived repository key path is encoded here.
 #
 # =========================================================================================== #
@@ -26,9 +29,9 @@ filters:
   tag:Function: 'wsus'
   instance-state-name: 'running'
 
-# Instance ids are globally unique inside the account/region and are also the SSM target.  Using
-# Name here allowed two stale/current instances with the same Name tag to collapse into one
-# inventory host and made an apparently successful zero/one-host run ambiguous.
+# Instance ids are globally unique inside the account/region.  Using Name here allowed two
+# stale/current instances with the same Name tag to collapse into one inventory host and made
+# an apparently successful zero/one-host run ambiguous.
 hostnames:
   - 'instance-id'
 
@@ -41,8 +44,8 @@ groups:
 hostvars_prefix: 'ec2_'
 
 compose:
-  # The SSM session target — see the header.
-  ansible_host: 'ec2_instance_id'
+  # The auto-assigned public address — see the header.
+  ansible_host: 'ec2_public_ip_address'
   # Connection settings follow the DETECTED OS (EC2 reports platform 'windows' on Windows
   # instances), so this inventory serves any future mixed fleet unchanged.
   ansible_user: '"Administrator" if ec2_platform == "windows" else "ec2-user"'
@@ -50,7 +53,4 @@ compose:
   # bootstrap argv through verbatim, where a PowerShell login shell re-parses and breaks it.
   ansible_shell_type: '"cmd" if ec2_platform == "windows" else "sh"'
   ansible_connection: '"ssh"'
-  ansible_ssh_common_args: >-
-    '-o StrictHostKeyChecking=accept-new
-    -o ProxyCommand="aws ssm start-session --target %h --document-name AWS-StartSSHSession
-    --parameters portNumber=%p --region us-east-1"'
+  ansible_ssh_common_args: '"-o StrictHostKeyChecking=accept-new"'

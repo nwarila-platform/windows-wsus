@@ -14,29 +14,37 @@
 # (docs/reference/aws-iam/README.md): t3.medium/t3.large only, gp3 encrypted <= 64 GiB,
 # IMDSv2 with hop limit 1, the standing account key pair, and the pinned VPC/subnet.
 #
-# REACHABILITY — ZERO INBOUND, SSH OVER SSM: the security group allows NO ingress at all.
-# The runner reaches the instance through an SSM session (AWS-StartSSHSession, tag-gated in
-# the deploy IAM), which rides the SSM AGENT's own outbound 443. The deploy subnet sets
-# MapPublicIpOnLaunch, so the pre-created ENI is auto-assigned a public IPv4 at launch and the
-# agent egresses over it through the internet gateway. No Elastic IP is involved.
+# REACHABILITY — DIRECT SSH, RUN-SCOPED INGRESS: the runner dials sshd at the instance's
+# public IPv4, admitted by the framework's runner_ip ingress group — one SG sourced from the
+# runner's /32, attached to every ENI the framework creates, and destroyed with the run. The
+# address rides -var "runner_ip=…" at apply because it belongs to a single run, not to this
+# file; the interface below therefore declares NO rules of its own. The deploy subnet sets
+# MapPublicIpOnLaunch, so the pre-created ENI is auto-assigned a public IPv4 at launch through
+# the internet gateway. No Elastic IP is involved.
 #
 # An earlier version of this header claimed AWS never auto-assigns to a pre-created ENI and
 # that an EIP was therefore mandatory. That is false. Framework commit e40a792 measured the
-# behaviour, and secure-wazuh run 31319282728 launched into this same subnet through the same
-# path with associate_public_ip = false, received an auto-assigned address, and reached Online
-# in SSM. The account has no NAT and no VPC endpoints, so that address was the only possible
-# egress route: registration is the proof it carries traffic. Public IPv4 bills at the same
-# $0.005/h either way, so this is a quota decision, not a cost one.
+# behaviour, and secure-wazuh run 31319282728 launched through the same path with
+# associate_public_ip = false, received an auto-assigned address, and reached Online in SSM.
+# That proof ran in the retired wazuh-era subnet; the account's VPCs were rebuilt on
+# 2026-08-10. The us-east-1c subnet below is the rebuilt DEPLOY-account subnet
+# (nwarila-platform-use1c-01 in vpc-0724440de2891a1ee), confirmed MapPublicIpOnLaunch=true
+# by describe in that account, and its egress path is proven live: pdq-deploy-inventory
+# launches into this same subnet and its instances register Online in SSM. An earlier repin
+# attempt pinned a lookalike subnet from the wrong AWS account here - always describe against
+# the account the OIDC deploy role lives in. The auto-assigned address is now the address the
+# runner dials. Public IPv4 bills at the same $0.005/h either way, so no-EIP is a quota
+# decision, not a cost one.
 #
 # The dependency worth knowing: MapPublicIpOnLaunch is an attribute of a shared subnet no
 # repository owns. If it is ever turned off, an instance without an Elastic IP launches with no
-# address and no egress, and the failure appears minutes later as an SSM agent that never
-# registers rather than as an apply error.
+# public address; the playbook's inventory-contract play refuses an instance without one, so
+# the failure surfaces there with the cause named rather than as an apply error.
 #
-# readiness_gate is FALSE by design: the framework's gate dials the instance directly over
-# SSH, which a zero-ingress security group forbids. The playbook's first play waits for
-# readiness over SSM-SSH instead. The OpenSSH DefaultShell stays cmd — the boot default —
-# because a PowerShell login shell breaks ansible's module bootstrap (proven live).
+# readiness_gate is FALSE by design: the framework's gate dials the instance's PRIVATE ip,
+# unreachable from a hosted runner. The playbook's first play waits for readiness over the
+# same public-address SSH the converge uses. The OpenSSH DefaultShell stays cmd — the boot
+# default — because a PowerShell login shell breaks ansible's module bootstrap (proven live).
 #
 # =========================================================================================== #
 
@@ -48,8 +56,8 @@ all_systems = [
   {
     region            = "us_east_1"
     hostname          = "wsus-poc-01"
-    availability_zone = "us-east-1a"
-    subnet_id         = "subnet-0e1c8aae192deff26"
+    availability_zone = "us-east-1c"
+    subnet_id         = "subnet-03a855e712be7b399"
     # v3.0.0 CONSUMES key pairs and never creates them, so this names the standing account
     # key pair. user_data installs its public half by reading IMDS; the private half lives
     # only in the AWS_EC2_SSH_PRIVATE_KEY org secret and the runner's temporary directory.
@@ -64,14 +72,14 @@ all_systems = [
     # t3.large, not t3.medium: WSUS postinstall + SUSDB work on 4 GiB regularly pushes past the
     # CI stage budget. Both types are inside the launch policy's type lock.
     instance_type = "t3.large"
-    # "ssh-ssm" names what actually happens: SSH on the wire, reached through an SSM tunnel
-    # with no inbound path opened. The framework requires readiness_gate = false for this
-    # transport because its gate dials directly and cannot traverse the tunnel.
-    connection_type = "ssh-ssm"
+    # Direct SSH: the runner dials sshd at the auto-assigned public address, through the
+    # framework's runner_ip ingress group (see the header).
+    connection_type = "ssh"
     readiness_user  = null
     # The framework gate dials the instance's PRIVATE ip, unreachable from a hosted runner,
-    # so it stays off and the play performs readiness itself over SSH-in-SSM. The remaining
-    # readiness attributes are required by the type regardless of the gate being disabled.
+    # so it stays off and the play performs readiness itself over the public address. The
+    # remaining readiness attributes are required by the type regardless of the gate being
+    # disabled.
     readiness_gate             = false
     readiness_command          = null
     readiness_script_dir       = null
@@ -146,28 +154,19 @@ all_systems = [
         private_ip      = null
         security_groups = []
         # Non-null ingress + egress => the framework creates and attaches wsus-poc-01-eni-0-sg.
-        # Ingress [] = ZERO inbound: the runner's SSH rides the SSM agent's own outbound
-        # session, so nothing on the internet can dial this instance. Egress is HTTPS only —
-        # the SSM agent registering and streaming through the internet gateway.
+        # Both empty: the runner's tcp/22 comes from the framework's runner_ip group (see the
+        # header); this group exists so the ENI keeps a no-rule baseline even on a local run
+        # where runner_ip is null. Egress stays empty because the instance originates nothing —
+        # replies to inbound SSH are stateful, and the link-local services it consumes (IMDS,
+        # Amazon NTP, Windows activation) are not filtered by security groups.
         ingress = []
-        egress = [
-          {
-            description                  = "HTTPS out (SSM agent registration and sessions)"
-            ip_protocol                  = "tcp"
-            from_port                    = 443
-            to_port                      = 443
-            cidr_ipv4                    = "0.0.0.0/0"
-            prefix_list_id               = null
-            referenced_security_group_id = null
-          }
-        ]
-        tags = {}
+        egress  = []
+        tags    = {}
       }
     ]
 
-    # No Elastic IP: the subnet auto-assigns a public IPv4 at launch, which is all the SSM
-    # agent's outbound registration needs (see the header). This is zero-inbound either way -
-    # the security group allows no ingress - so the address is an egress route, not a door.
+    # No Elastic IP: the subnet auto-assigns a public IPv4 at launch (see the header), and
+    # that address is what the runner's SSH dials.
     associate_public_ip = false
   }
 ]

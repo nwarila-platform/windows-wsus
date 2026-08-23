@@ -198,28 +198,24 @@ polish; each one is a finding both auditors raised.
   measure ~2.6 KB and ~3.3 KB, and the role has ten managed-policy slots of which this uses four.
   Attach both; they are one boundary in two documents. Do not recombine them.
 
-## Elastic IP grants (added 2026-08-07)
+## Elastic IP grants (added 2026-08-07, removed 2026-08-09)
 
-The full ephemeral lifecycle runs from a GitHub-hosted runner. The terraform framework attaches
-pre-created ENIs, a launch path AWS never auto-assigns a public IP to — and the account has no
-NAT and no VPC endpoints — so without an EIP the instance is both unreachable and route-less.
-Four mutation actions and two read-only discovery actions were added for it, all inside the existing
-identity boundary:
+Kept as a closed record so the grants are not reintroduced on the old rationale. The lifecycle
+briefly held four EIP mutation actions (`AllocateAddress` tag-gated at create via
+`aws:RequestTag`, `AssociateAddress`/`ReleaseAddress` `ResourceTag`-gated,
+`DisassociateAddress` region-only) on the belief that a pre-created ENI never receives an
+auto-assigned public IP. That premise was false: the deploy subnet sets `MapPublicIpOnLaunch`,
+framework commit e40a792 measured the auto-assignment, and secure-wazuh run 31319282728 reached
+SSM Online through that address with `associate_public_ip = false`. PR #28 dropped the EIP and
+all four mutation actions with it. Two lessons stay recorded:
 
-- `ec2:AllocateAddress` (`-launch`, Sid `AllocateTaggedElasticIp`) requires the repo identity tag
-  **at create time** via `aws:RequestTag` — same shape as every other create in that policy. The
-  framework's provider `default_tags` supply the tag.
-- `ec2:AssociateAddress` / `ec2:ReleaseAddress` (`-lifecycle`) are `ec2:ResourceTag`-gated,
-  deliberately **not** `IfExists`. `ec2:DisassociateAddress` alone is region-only (see the
-  residual below): Terraform disassociates by association-id, a request form EC2 resolves to no
-  taggable resource, so a tag condition there fails closed and blocks every destroy.
-- `ec2:DescribeAddresses` / `ec2:DescribeAddressesAttribute` join the discovery describes (the
-  provider reads both; describe stays account-wide like every other describe).
-
-The EIP is pure EGRESS enablement: the shipped security group allows **zero ingress** — the
-runner's SSH rides the SSM agent's own outbound 443 session — and egress is HTTPS only, which
-is what lets the agent register through the internet gateway. Nothing on the internet can dial
-the instance; the EIP just gives its outbound packets a route home.
+- `ec2:DisassociateAddress` could never be tag-gated (proven live, run 31183916280): Terraform
+  disassociates by association-id, a request form EC2 resolves to no taggable resource, so a
+  `ResourceTag` condition fails closed and blocks every destroy. Any future re-grant inherits
+  that region-only exposure.
+- `ec2:DescribeAddresses` / `ec2:DescribeAddressesAttribute` remain in the discovery policy —
+  no longer for the provider, but because the cleanup asserts prove EIP **absence** after every
+  destroy and the reaper must see a stray allocation to report it.
 
 ## Values re-derived for this repository (never copied)
 
@@ -241,12 +237,11 @@ governs who may manage the groups. Treat the rule set as code-reviewed, not poli
   with no launch, state-write, SSM-session, or artifact-assume capability is the next Layer-0 IAM
   change. The fallback's GitHub run/age checks are deliberately not described as an atomic lock;
   replace them with an AWS-native lease and EventBridge janitor before relying on hard cleanup SLAs.
-- **Public IP association is not denied — and since 2026-08-07 the role holds tag-gated EIP
-  actions** (see [Elastic IP grants](#elastic-ip-grants-added-2026-08-07)): the hosted-runner
-  lifecycle needs a public address on a pre-created-ENI launch in an account with no NAT and no
-  VPC endpoints. SSM session transport already ships; the remaining structural
-  fix is a private subnet with VPC interface endpoints, which would retire the EIP statements. The role still holds
-  no internet-gateway or route-table actions.
+- **Public IP association is not denied.** The hosted-runner lifecycle needs a public address in
+  an account with no NAT and no VPC endpoints, and receives it through the subnet's
+  `MapPublicIpOnLaunch` auto-assignment — no EIP grants remain (see the closed record above).
+  The structural fix is a private subnet with VPC interface endpoints, which would remove even
+  the auto-assign dependency. The role holds no internet-gateway or route-table actions.
 - **`security-group-rule/*` is region-scoped.** Every rule action also authorizes against the parent
   `security-group/*` leg, which is tag- and VPC-pinned, so a foreign rule cannot be reached without
   its foreign parent. EC2 exposes VPC context on the parent group, not the rule resource — this is
@@ -260,11 +255,6 @@ governs who may manage the groups. Treat the rule set as code-reviewed, not poli
   Close this by changing the framework to create the interface in a request where the repository
   tag is bindable, or by feeding its exact ENI id into a per-run session policy. Prove that path
   live before making an exact resource-tag or id condition mandatory.
-- **`ec2:DisassociateAddress` is region-scoped only** (proven live, run 31183916280): Terraform
-  disassociates by association-id, and EC2 then resolves no taggable resource — the request
-  authorizes against `*/*`, so a `ResourceTag` condition fails closed and blocks every destroy.
-  The exposure is disruption-only (a sibling's EIP could be detached, not released or stolen);
-  Release/Associate stay tag-gated.
 - **SSM session teardown is region- and caller-session-scoped.** For an assumed role,
   `${aws:userid}` resolves to `<role-id>:<caller-specified-role-session-name>`. The AWS Session
   Manager [assumed-role pattern](https://docs.aws.amazon.com/systems-manager/latest/userguide/getting-started-restrict-access-examples.html)

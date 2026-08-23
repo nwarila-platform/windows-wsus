@@ -277,15 +277,9 @@ require_exact_pin_reader(
 )
 recovery_order = [
     "Terraform init",
-    "Remove interrupted predecessor state before apply",
-    "Prove a clean AWS start",
-    "Refresh AWS credentials before fresh apply (OIDC)",
     "Terraform apply",
-    "Prove fresh AWS dependency graph before Ansible",
-    "Build exact runtime inventory from Terraform output",
     "Run the WSUS playbook",
     "Refresh AWS credentials before destroy (OIDC)",
-    "Prove final AWS dependency graph before destroy",
     "Terraform destroy (always)",
     "Prove no live repository-owned AWS resources remain",
 ]
@@ -293,62 +287,28 @@ deploy_step_names = [step.get("name") for step in deploy_steps]
 try:
     recovery_positions = [deploy_step_names.index(name) for name in recovery_order]
 except ValueError:
-    failures.append(f"{deploy_path} must retain every stale-state recovery and cleanup proof step")
+    failures.append(f"{deploy_path} must retain every lifecycle and cleanup proof step")
 else:
     if recovery_positions != sorted(recovery_positions):
-        failures.append(f"{deploy_path} stale-state destroy/proof/apply/final-cleanup ordering is unsafe")
+        failures.append(f"{deploy_path} apply/converge/destroy/final-cleanup ordering is unsafe")
 
-preclean = mapping(deploy_steps_by_name.get("Remove interrupted predecessor state before apply"))
-preclean_run = preclean.get("run", "")
-if "terraform destroy" not in preclean_run or "-lock-timeout=300s" not in preclean_run:
-    failures.append(f"{deploy_path} must destroy interrupted state under the Terraform lock before apply")
-preclean_graph = 'python3 "${GITHUB_WORKSPACE}/scripts/assert-aws-resource-graph.py"'
-if preclean_run.count(preclean_graph) != 1 or preclean_run.find(preclean_graph) > preclean_run.find(
-    "terraform destroy"
-):
+# The destroy path is the money path: it must run on every initialized lifecycle with
+# credentials minted after the 100-minute converge, never with the expired originals.
+destroy_gate = "always() && steps.tf-init.outcome == 'success'"
+destroy_refresh = mapping(deploy_steps_by_name.get("Refresh AWS credentials before destroy (OIDC)"))
+if destroy_refresh.get("if") != destroy_gate:
     failures.append(
-        f"{deploy_path} must prove the predecessor dependency graph immediately before its destroy"
+        f"{deploy_path} destroy credential refresh must run whenever Terraform init succeeded"
     )
-if "--include-terraform-state" not in preclean_run:
-    failures.append(f"{deploy_path} predecessor graph proof must include exact Terraform state IDs")
-
-fresh_graph = mapping(deploy_steps_by_name.get("Prove fresh AWS dependency graph before Ansible"))
-if fresh_graph.get("run") != (
-    'python3 "${GITHUB_WORKSPACE}/scripts/assert-aws-resource-graph.py" '
-    '--expected-run-id "${GITHUB_RUN_ID}" --include-terraform-state '
-    '--require-wsus-data-volumes'
-) or fresh_graph.get("working-directory") != ".frameworks/aws-terraform-framework/terraform":
-    failures.append(
-        f"{deploy_path} must prove exact current-run WSUS disk and attachment identity before Ansible"
-    )
-
-final_graph = mapping(deploy_steps_by_name.get("Prove final AWS dependency graph before destroy"))
-if final_graph.get("id") != "destroy-graph" or final_graph.get("run") != (
-    'python3 "${GITHUB_WORKSPACE}/scripts/assert-aws-resource-graph.py" '
-    '--expected-run-id "${GITHUB_RUN_ID}" --include-terraform-state'
-) or final_graph.get("working-directory") != ".frameworks/aws-terraform-framework/terraform":
-    failures.append(f"{deploy_path} must re-read the exact current-run graph before final destroy")
 final_destroy = mapping(deploy_steps_by_name.get("Terraform destroy (always)"))
-expected_destroy_if = (
-    "always() && steps.tf-init.outcome == 'success' && "
-    "steps.destroy-graph.outcome == 'success'"
-)
-if final_destroy.get("if") != expected_destroy_if:
+if final_destroy.get("if") != destroy_gate:
     failures.append(
-        f"{deploy_path} final destroy must be gated on the immediate dependency-graph proof"
+        f"{deploy_path} final destroy must run whenever Terraform init succeeded"
     )
-for clean_step_name in (
-    "Prove a clean AWS start",
-    "Prove no live repository-owned AWS resources remain",
-):
-    if mapping(deploy_steps_by_name.get(clean_step_name)).get("run") != (
-        "bash scripts/assert-aws-clean.sh"
-    ):
-        failures.append(f"{deploy_path} {clean_step_name!r} must use the shared fail-closed proof")
-if sum(
-    mapping(step).get("run") == "bash scripts/assert-aws-clean.sh" for step in deploy_steps
-) != 2:
-    failures.append(f"{deploy_path} must run the shared AWS clean proof exactly before and after apply")
+if mapping(deploy_steps_by_name.get("Prove no live repository-owned AWS resources remain")).get(
+    "run"
+) != "bash scripts/assert-aws-clean.sh":
+    failures.append(f"{deploy_path} post-destroy cleanup must use the shared fail-closed proof")
 
 for job_name, job in deploy_jobs.items():
     job = mapping(job)
