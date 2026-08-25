@@ -289,6 +289,12 @@ jobs:
         run: |
           set -euo pipefail
           framework_dir="${GITHUB_WORKSPACE}/.frameworks/ansible-framework"
+          # The framework tracks only <Name>.ps1.stub markers for the scripts its roles execute,
+          # and materializes the reviewed sources from its own scripts/ at build time. Without
+          # this the roles' lookup('file', ...) fails on a name that exists only as a stub.
+          if [ -x "${framework_dir}/scripts/materialize-role-scripts.sh" ]; then
+            (cd "${framework_dir}" && ./scripts/materialize-role-scripts.sh)
+          fi
           shopt -s nullglob
           role_sources=("${GITHUB_WORKSPACE}"/ansible/applications/*)
           shopt -u nullglob
@@ -313,11 +319,13 @@ jobs:
           # run's instance, and a lookup('env') has no command-line equivalent.
           GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
           GITHUB_RUN_ID: ${{ github.run_id }}
+          AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
         run: |
           set -euo pipefail
           ansible-playbook "${GITHUB_WORKSPACE}/ansible/playbooks/wsus-aws.yml" \
             --inventory "${GITHUB_WORKSPACE}/ansible/inventory/aws_ec2.yml"    \
             --extra-vars env=test                                              \
+            --extra-vars aws_account_id="${AWS_ACCOUNT_ID}"                    \
             --extra-vars state=present
 
       # Idempotency gate: a settled host reports NO changes on a second converge. The same play is
@@ -331,11 +339,13 @@ jobs:
           ANSIBLE_CONFIG: ${{ github.workspace }}/.frameworks/ansible-framework/ansible.cfg
           GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
           GITHUB_RUN_ID: ${{ github.run_id }}
+          AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
         run: |
           set -euo pipefail
           recap="$(ansible-playbook "${GITHUB_WORKSPACE}/ansible/playbooks/wsus-aws.yml" \
             --inventory "${GITHUB_WORKSPACE}/ansible/inventory/aws_ec2.yml"    \
             --extra-vars env=test                                              \
+            --extra-vars aws_account_id="${AWS_ACCOUNT_ID}"                    \
             --extra-vars state=present 2>&1 | tee /dev/stderr)"
           if printf '%s\n' "${recap}" | grep -Eq ': +ok=[0-9]+ +changed=[1-9]'; then
             echo "::error::second converge reported changes -- the role is not idempotent" >&2

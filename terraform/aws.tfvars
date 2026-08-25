@@ -71,7 +71,7 @@ all_systems = [
     set_state                  = null
 
     tags = {
-      Function = "wsus"
+      Function = "Windows Server Update Services (WSUS)"
       Backup   = false
     }
 
@@ -159,8 +159,21 @@ all_systems = [
             referenced_security_group_id = null
           }
         ]
-        # Empty because the guest still originates nothing; replies to inbound SSH are stateful.
-        egress = []
+        # The VPN tunnel that carries this host onto the private network, and nothing else.
+        # Scoped by port rather than by address because the profile names its endpoint by DNS and
+        # that address changes. Every S3 fetch happens on the CONTROLLER, so the guest still needs
+        # no outbound HTTPS of its own; replies to inbound SSH are stateful.
+        egress = [
+          {
+            description                  = "OpenVPN tunnel out"
+            ip_protocol                  = "udp"
+            from_port                    = 1194
+            to_port                      = 1194
+            cidr_ipv4                    = "0.0.0.0/0"
+            prefix_list_id               = null
+            referenced_security_group_id = null
+          }
+        ]
         tags   = {}
       }
     ]

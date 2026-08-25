@@ -2,29 +2,29 @@
 # File: 'ansible/playbooks/wsus-aws.yml'
 # --- [ Description ] ----------------------------------------------------------------------- #
 #
-# Provisions the declared Windows data disks on the EPHEMERAL EC2 instance. The WSUS on SQL
-# Server roles follow, one action at a time. Runs from the COMPOSED tree only — in CI,
-# .github/workflows/aws-deploy.yml
-# overlays this repository's roles into the pinned ansible-framework checkout and executes this
-# playbook against a dynamic EC2 inventory filtered to this run by its framework-set EC2 tags,
-# reached by direct SSH to the instance's public IPv4.
+# Brings the EPHEMERAL EC2 instance from "the API says it exists" to a domain-joined host with
+# its data disks provisioned. The WSUS on SQL Server roles follow, one action at a time.
 #
-# Three plays, in a required order: confirm the filtered inventory is non-empty, wait for that
-# instance to become reachable, then configure it.
+# Runs from the COMPOSED tree only: the workflow overlays this repository onto the pinned
+# ansible-framework and runs this against a dynamic EC2 inventory filtered to one run.
+#
+# The role order in the second play is the design. Each one is a precondition for the next: the
+# host must answer before it can be repaired, be repaired before a module runs, be on the network
+# before it can resolve a realm, and be in the realm before it is a host worth provisioning.
+#
+# gather_facts and become are absent throughout because the framework's ansible.cfg makes
+# gathering explicit and escalation off. Both matter here: implicit gathering would run a module
+# over the shell os_bootstrap has not yet fixed.
 #
 # =========================================================================================== #
 ---
 
 #region ------ [ Play: Inventory Contract ] --------------------------------------------------- #
-# The dynamic EC2 inventory (aws_ec2.yml) already filters to this run's instance by its
-# framework-set tags, so the identity contract is not re-asserted here -- that would only re-check
-# what the aws-terraform-framework guarantees. This guards the one state the filter cannot cover:
-# an empty inventory, where the instance never launched or never tagged.
+# The inventory already filters to this run's instance by its framework-set tags. This guards the
+# one state that filter cannot cover: an empty result, where nothing launched or nothing tagged.
 
 - name: 'PLAY | Validate The Ephemeral AWS Inventory Contract'
   hosts: 'localhost'
-  gather_facts: false
-  become: false
   tasks:
     - name: 'INVENTORY | Require At Least One Filtered Host'
       ansible.builtin.assert:
@@ -37,100 +37,68 @@
 
 #endregion --- [ Play: Inventory Contract ] --------------------------------------------------- #
 
-#region ------ [ Play: Windows Readiness ] ---------------------------------------------------- #
-# The instance answers the EC2 API seconds after creation and accepts SSH minutes later: it must
-# finish sysprep and EC2Launch before sshd starts and the launch key is installed.
-#
-# Poll the TCP port without opening SSH sessions while sysprep and EC2Launch start sshd, then use
-# a bounded authenticated probe before running anything on the guest.
+#region ------ [ Play: Configure The Guest ] -------------------------------------------------- #
 
-- name: 'PLAY | Wait For Windows Readiness (direct SSH, EC2Launch)'
+- name: 'PLAY | Configure The Guest (ephemeral AWS)'
   hosts: 'wsus_servers'
-  gather_facts: false
-  become: false
   any_errors_fatal: true
-
-  tasks:
-    - name: 'READY | Wait For The Direct SSH Port'
-      delegate_to: 'localhost'
-
-      ansible.builtin.wait_for:
-        active_connection_states: [ 'ESTABLISHED', 'FIN_WAIT1', 'FIN_WAIT2', 'SYN_RECV', 'SYN_SENT', 'TIME_WAIT' ]
-        connect_timeout: 5
-        delay: 0
-        host: "{{ ansible_host }}"
-        port: 22
-        sleep: 15
-        state: 'started'
-        timeout: 900
-
-    - name: 'READY | Confirm The Direct SSH Path End To End'
-      changed_when: false
-      delay: 15
-      delegate_to: 'localhost'
-      failed_when: __ssh_ready__.rc != 0
-      register: '__ssh_ready__'
-      retries: 20
-      until: __ssh_ready__.rc == 0
-
-      ansible.builtin.command:
-        cmd: >-
-          ssh {{ ansible_ssh_common_args }} -i {{ ansible_ssh_private_key_file }}
-          -o BatchMode=yes -o ConnectTimeout=15
-          {{ ansible_user }}@{{ ansible_host }} exit
-        expand_argument_vars: true
-        stdin_add_newline: true
-        strip_empty_ends: true
-
-    - name: 'READY | Wait For EC2Launch Provisioning To Complete'
-      changed_when: false
-
-      ansible.builtin.raw: '"C:\Program Files\Amazon\EC2Launch\EC2Launch.exe" status -b'
-
-#endregion --- [ Play: Windows Readiness ] ---------------------------------------------------- #
-
-#region ------ [ Play: Guest Storage ] ------------------------------------------------------- #
-
-- name: 'PLAY | Guest Storage (ephemeral AWS)'
-  hosts: 'wsus_servers'
-  gather_facts: false
-  become: false
-  any_errors_fatal: true
-  vars:
-    ENV: "{{ env }}"
-    # One volume per concern, matching terraform/aws.tfvars by Function tag. The letters are the
-    # contract this play publishes to the roles that follow: SUSDB on E, the WSUS content store
-    # on F, and the IIS root on G.
-    wsus_disk_layout:
-      - function: 'WSUSDB'
-        drive_letter: 'E'
-        label: 'WSUSDB'
-        allocation_unit: 65536
-      - function: 'WSUSDATA'
-        drive_letter: 'F'
-        label: 'WSUSDATA'
-        allocation_unit: 4096
-      - function: 'WSUSIIS'
-        drive_letter: 'G'
-        label: 'WSUSIIS'
-        allocation_unit: 4096
 
   #region ------ [ Roles ] -------------------------------------------------------------------- #
   roles:
 
+    #region ------ [ Roles: Host Readiness ] -------------------------------------------------- #
+    # Waits for the connection itself, never a port: a TCP connect cannot speak for a connection
+    # reaching its target through a proxy or a tunnel, and this inventory can select those. It
+    # then waits out EC2Launch, detecting the platform itself rather than being told.
+    - role: 'host_readiness'
+    #endregion --- [ Roles: Host Readiness ] -------------------------------------------------- #
+
+    #region ------ [ Roles: OS Bootstrap ] ---------------------------------------------------- #
+    # Flips OpenSSH's DefaultShell to PowerShell and proves the session is elevated. Every module
+    # after it depends on that. Pass it NO vars: role params outrank the connection scoping it
+    # relies on, and a stray one silently re-breaks the pre-flip stage.
+    - role: 'os_bootstrap'
+    #endregion --- [ Roles: OS Bootstrap ] ---------------------------------------------------- #
+
+    #region ------ [ Roles: Remote Client ] --------------------------------------------------- #
+    # Site policy: the role defaults every value openvpn_client needs, so this play states none.
+    # 'aws_account_id' is an extra-var -- only the pipeline knows which account it deploys into.
+    - role: 'remote_client'
+    #endregion --- [ Roles: Remote Client ] --------------------------------------------------- #
+
+    #region ------ [ Roles: Domain Member ] --------------------------------------------------- #
+    # Wraps the platform's join mechanism and defaults the site's realm, account and secret. Only
+    # two things are this repository's to say: the account it deploys into, and where a WSUS
+    # server is filed -- its own OU, not the deployment servers'.
+    - role: 'domain_member'
+      vars:
+        domain_member:
+          password: { bucket: "{{ aws_account_id }}-ansible" }
+          computer_ou: 'OU=WSUS,OU=Domain Servers,DC=tcn,DC=trinitytechnicalservices,DC=com'
+    #endregion --- [ Roles: Domain Member ] --------------------------------------------------- #
+
     #region ------ [ Roles: Windows Disk Manager ] -------------------------------------------- #
-    # Guest disk provisioning is delegated to the composed framework role. `function` names
-    # each EBS volume's Function tag (declared in
-    # terraform/aws.tfvars) and the role resolves it to the attached disk itself, because a
-    # volume id only exists after apply. The layout is passed through whole: adding a volume is
-    # a change in two files, not three.
+    # `function` names each EBS volume's Function tag from terraform/aws.tfvars, and the role
+    # resolves it to the attached disk itself -- a volume id only exists after apply.
     - role: 'windows_disk_manager'
       vars:
         windows_disk_manager:
           platform: 'aws'
-          disks: "{{ wsus_disk_layout }}"
+          disks:
+          - function: 'WSUSDB'
+            drive_letter: 'E'
+            label: 'WSUSDB'
+            allocation_unit: 65536
+          - function: 'WSUSDATA'
+            drive_letter: 'F'
+            label: 'WSUSDATA'
+            allocation_unit: 4096
+          - function: 'WSUSIIS'
+            drive_letter: 'G'
+            label: 'WSUSIIS'
+            allocation_unit: 4096
     #endregion --- [ Roles: Windows Disk Manager ] -------------------------------------------- #
 
   #endregion --- [ Roles ] -------------------------------------------------------------------- #
 
-#endregion --- [ Play: Guest Storage ] ------------------------------------------------------- #
+#endregion --- [ Play: Configure The Guest ] -------------------------------------------------- #

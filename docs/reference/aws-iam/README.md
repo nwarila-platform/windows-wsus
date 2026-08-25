@@ -2,11 +2,13 @@
 
 The IAM this repository's ephemeral AWS lifecycle assumes. An operator provisions it with the
 `mgmt-admin` profile; Terraform does not manage it. Cloned on 2026-08-25 from the live roles of
-`pdq-deploy-inventory` with the repository name and immutable id substituted. Three grant sets
+`pdq-deploy-inventory` with the repository name and immutable id substituted. Four grant sets
 were dropped as unreachable from this lifecycle: that product's S3 installers, licences, and
-service-account secret; and the whole SSM policy, because the transport is direct SSH and the
-image is a literal `ami-` id, so the framework never resolves a catalog parameter. Grants are
-added here as this repository needs them, never copied ahead of need.
+service-account secret; its network and directory artifacts; and the whole SSM policy, because
+the transport is direct SSH and the image is a literal `ami-` id, so the framework never resolves
+a catalog parameter. Grants are added here as this repository needs them, never copied ahead of
+need — the network and directory artifacts returned ahead of the sequence that consumes them,
+because the objects they name moved and the grant had to follow.
 
 ## Substitution
 
@@ -57,9 +59,11 @@ The suffixes are policy domains, not services — `ebs`, `eni`, and `sg` all aut
   `kms:ListAliases`, `kms:DescribeKey`, and `iam:GetInstanceProfile` on the shared profile. No
   `ec2:Describe*` wildcard is granted.
 
-Outside EC2: S3 reaches this repository's two Terraform state keys and nothing else; KMS keys are
-usable only `ViaService` EC2 in the region; `iam:PassRole` passes only `nwarila-ec2-role`, only
-to EC2.
+Outside EC2: S3 reaches this repository's two Terraform state keys, and read-only the three
+host-preparation artifacts — the connection profile and the directory join password by exact
+key, and the OpenVPN installer by a key whose version segment is a wildcard, so any version of
+that one file name is readable — and nothing else; KMS keys are usable only `ViaService` EC2 in
+the region; `iam:PassRole` passes only `nwarila-ec2-role`, only to EC2.
 
 ## Applying
 
