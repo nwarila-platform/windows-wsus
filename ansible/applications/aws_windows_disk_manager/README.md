@@ -18,11 +18,14 @@ Both retired keys are refused by name at validation rather than silently ignored
 `unique_id` beside a `function` could target a different disk than the tag names.
 
 What is unchanged from the fork point: the shared v3.3.0 loader, byte-identical as every
-consuming role's must be; the observed-state classification, and the mutation-safety contract — an
-idempotent online/writable fixup, provisioning only from a positively recognized RAW/blank or
-GPT/unformatted state, an idempotent skip when an NTFS volume already carries the declared
-label, and fail-closed refusal of the entire declaration set when any one disk classifies as
-foreign.
+consuming role's must be; the observed-state classification, and the mutation-safety contract —
+provisioning only from a positively recognized RAW/blank or GPT/unformatted state, an idempotent
+skip when an NTFS volume already carries the declared label, and fail-closed refusal of the
+entire declaration set when any one disk classifies as foreign.
+
+The online/writable transition is the part that moved. `files/Set-DiskOnlineState.ps1` replaces
+the inline block: it fails closed on an id that resolves to no attached disk, verifies each
+transition took, and honours check mode, none of which the framework's version does.
 
 ## Configuration model
 

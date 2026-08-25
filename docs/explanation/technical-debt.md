@@ -54,6 +54,21 @@ workarounds are not accidentally restored.
   contracts the replacement owes are enumerated in [the migration
   contract](wsus-role-migration-contract.md).
 
+## TD-006 — cleanup depends on one workflow finishing
+
+- **Recorded:** 2026-08-07. Amended 2026-08-25, when the age-gated reaper was removed.
+- **What:** the lifecycle destroys its own stack on every path its job survives to reach. There
+  is no AWS-native lease, so a job that is cancelled or exhausts its budget strands paid
+  resources, and a public repository's scheduled runs can themselves be delayed or disabled.
+- **Consequence:** larger than when this was recorded. The hourly reaper that used to sweep
+  stranded resources went with the chassis rebuild, so nothing outside the run cleans up after it.
+- **Current containment:** the workflow destroys interrupted predecessor state before it applies,
+  and a singleton non-cancelling concurrency group keeps two runs from racing. Both live inside
+  the same workflow whose failure is the hazard.
+- **Exit criteria:** an AWS-native conditional lease with expiry and heartbeat, a janitor holding
+  its own least-privilege cleanup role, and external alarms for a stale proof, expired resources
+  and stale locks.
+
 ## TD-009 — the Windows image is a pinned vendor AMI, not a self-published one
 
 - **What:** `terraform/aws.tfvars` addresses the image by literal id (`ami-0ac1b4c911759cc2e`,
@@ -72,6 +87,28 @@ workarounds are not accidentally restored.
   and version currency becomes the publisher's monotonicity guarantee rather than a human
   noticing. A self-published image must still carry a licensed SQL Server, which is what the
   vendor image supplies today. Close this entry only when the selector is a catalog address.
+
+## TD-011 — aws_windows_disk_manager is an unreferenced narrowing fork
+
+- **Recorded:** 2026-08-13. Amended 2026-08-25 when the play moved back to the framework role.
+- **What:** the repository owns `ansible/applications/aws_windows_disk_manager/`, forked from
+  the framework's `windows_disk_manager` at ansible-framework pin
+  `24a8ec74a7965b3a6f9cc827455962d541ff6d73` and narrowed to one platform: the `platform` knob
+  and the literal `unique_id` identity mode were removed, and both retired keys are refused by
+  name at validation. The fork has since widened — the online/writable transition moved into
+  `files/Set-DiskOnlineState.ps1` with a Pester spec, which the framework role does not have.
+- **Consequence:** the play no longer invokes it. Mirroring `pdq-deploy-inventory` put guest
+  storage back on the framework role, so the fork ships, is overlaid into the composed tree by
+  both compose paths, and runs nothing. Upstream fixes still do not reach it, and now nothing
+  exercises it either.
+- **Current containment:** none that is worth the name. `defaults/main.yml`, `meta/main.yml` and
+  `tasks/resolve_aws.yml` name the fork-point pin in their headers and the PowerShell pair is
+  gated by `powershell.yml`, but the three remaining diverged task files carry no marker and no
+  live proof touches the role.
+- **Exit criteria:** the director decides between the two roles. If the fork wins, the play
+  invokes it again and this entry returns to a divergence-tracking entry; if the framework role
+  wins, the fork, its PowerShell pair, its allowlist entries and this entry are deleted
+  together.
 
 ## TD-012 — the lab runs Server 2025 while the production target is Server 2022
 

@@ -140,24 +140,24 @@ If ($DebugLevel.Substring(2, 1) -eq '0') {
 # Wait-Debugger/Exit are interactive-host machinery; under the Ansible
 # transport the trap logs and rethrows (Break) so the task fails honestly.
 Trap {
-  # Diagnostics are wrapped so a partially-populated error record can never
-  # replace the original failure with a StrictMode property error.
-  Try {
-    If ($PSItem.Exception.PSObject.Properties.Name -contains 'ErrorRecord') {
-      Write-Debug -Message:(
-        'Failed to execute command: {0}' -f [System.String]$PSItem.Exception.ErrorRecord.InvocationInfo.Line
-      )
-    }
-    Write-Warning -Message:(
-      '[{0:0000}] {1} [{2}]' -f @(
-        [System.Int64]$PSItem.InvocationInfo.ScriptLineNumber
-        [System.String]$PSItem.Exception.Message
-        [System.String]$PSItem.Exception.GetBaseException().GetType().FullName
-      )
-    )
-  } Catch {
-    Write-Debug -Message:'Trap diagnostics unavailable for this error record.'
+  # One diagnostic on one stream, because LogLevel can set any preference to Stop and a
+  # diagnostic that throws replaces the failure it exists to describe. The failing source line is
+  # appended rather than written separately: a bare `Throw '<string>'` leaves
+  # ErrorRecord.InvocationInfo null, so it is read only when it is actually there.
+  $Detail = ''
+  If (($PSItem.Exception.PSObject.Properties.Name -contains 'ErrorRecord') -and
+    ($Null -ne $PSItem.Exception.ErrorRecord) -and
+    ($Null -ne $PSItem.Exception.ErrorRecord.InvocationInfo)) {
+    $Detail = ' <- {0}' -f [System.String]$PSItem.Exception.ErrorRecord.InvocationInfo.Line.Trim()
   }
+  Write-Warning -WarningAction:'Continue' -Message:(
+    '[{0:0000}] {1} [{2}]{3}' -f @(
+      [System.Int64]$PSItem.InvocationInfo.ScriptLineNumber
+      [System.String]$PSItem.Exception.Message
+      [System.String]$PSItem.Exception.GetBaseException().GetType().FullName
+      $Detail
+    )
+  )
 
   Break
 }
@@ -196,7 +196,7 @@ $Attached = @(Get-Disk -ErrorAction:'Stop')
 $Changed = $False
 $Detail = [System.Collections.Generic.List[PSObject]]::new()
 
-ForEach ($Id in $Requested) {
+ForEach ($Id In $Requested) {
   $Matched = @($Attached | Where-Object { $_.UniqueId -eq $Id })
 
   # Fail closed on both directions. Zero means the role was told to manage a disk that is not

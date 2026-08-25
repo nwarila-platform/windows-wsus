@@ -16,8 +16,8 @@ runs unattended, and the human entry points are reviewing a change and inspectin
 
 - [AWS IAM](reference/aws-iam/README.md) — the reviewed trust boundary: every policy and role
   document, the placeholder substitution contract, and the residual risks each grant carries.
-- [Ansible style guide](reference/ansible-style-guide.md) — the authoring rules the WSUS role is
-  written to, and the reasoning behind the ones that are not obvious.
+- [Ansible style guide](reference/ansible-style-guide.md) — the authoring rules the WSUS role being
+  rebuilt will be written to, and the reasoning behind the ones that are not obvious.
 
 ## Decisions
 

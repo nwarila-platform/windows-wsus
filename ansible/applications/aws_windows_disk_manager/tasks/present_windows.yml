@@ -155,7 +155,6 @@
     # sentinel. Identity crosses as a typed array in parameters, never spliced into the
     # source, which is what keeps the injection surface at zero.
     - name: 'BEGIN | Bring Declared Disks Online And Writable'
-      register: '__aws_windows_disk_manager_disk_online__'
       when: (config.disks | length) > 0
 
       ansible.windows.win_powershell:
@@ -163,7 +162,6 @@
         error_action: 'stop'
         parameters:
           UniqueId: "{{ __declared_disks__ | default([]) | map(attribute='unique_id') | list }}"
-        remote_src: false
         script: "{{ lookup('ansible.builtin.file', 'Set-DiskOnlineState.ps1') }}"
 
     - name: 'BEGIN | Re-load Disk Facts After Online/Writable Fixup'

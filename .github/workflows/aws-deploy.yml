@@ -3,7 +3,7 @@
 # ------------------------------------------------------------------------------------------- #
 # Ephemeral lifecycle: terraform init/apply -> ansible -> terraform destroy on the normal path.
 # Terraform is DATA-ONLY here (a plain tfvars, no .tf files); resources live in the pinned
-# aws-terraform-framework, configuration in the pinned ansible-framework + this repo's role.
+# aws-terraform-framework, configuration in the pinned ansible-framework and this repo's plays.
 #
 #   * AWS credentials are issued only to this workflow at refs/heads/main, by both the workflow
 #     guard below and the OIDC trust; feature-branch workflow code never reaches AWS.
@@ -293,8 +293,9 @@ jobs:
             rsync -a --delete "${role_source}/" "${framework_dir}/applications/${role_name}/"
           done
 
-      # Readiness, configuration and the WSUS proof all live in the playbook. The EC2 inventory
-      # plugin filters live AWS instances to this repository and run before exposing one target.
+      # Readiness and guest storage both live in the playbook; WSUS itself is not configured yet.
+      # The EC2 inventory plugin filters live instances to this repository and run before exposing
+      # one target.
       - name: Run the WSUS playbook
         timeout-minutes: 30
         working-directory: .frameworks/ansible-framework

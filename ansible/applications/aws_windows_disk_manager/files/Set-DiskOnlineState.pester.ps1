@@ -86,6 +86,11 @@ BeforeAll {
     $global:SetCalls += 1
     If ($global:FakeWriteIgnored) { Return }
     $Target = $global:FakeDisks | Where-Object { $_.Number -eq $Number }
+    # Windows refuses to bring a read-only disk online, so the fake refuses too. Without this
+    # the ordering test passes whichever order the script writes in.
+    If ($Null -ne $IsOffline -and -not [System.Boolean]$IsOffline -and $Target.IsReadOnly) {
+      Throw 'cannot bring a read-only disk online'
+    }
     If ($Null -ne $IsOffline) { $Target.IsOffline = [System.Boolean]$IsOffline }
     If ($Null -ne $IsReadOnly) { $Target.IsReadOnly = [System.Boolean]$IsReadOnly }
   }
@@ -174,6 +179,18 @@ Describe 'Set-DiskOnlineState' {
     It 'refuses a declared id that matches no attached disk' {
       { & $script:ScriptPath -UniqueId @('vol0aaa', 'vol0missing') } |
         Should -Throw -ExpectedMessage '*found 0*'
+    }
+
+    # LogLevel can set WarningPreference to Stop. The trap's own Write-Warning then throws and
+    # the operator gets an ActionPreferenceStopException instead of the failure it describes.
+    It 'reports the original failure even when warnings are configured to stop' {
+      $Caught = $Null
+      Try { & $script:ScriptPath -UniqueId @('vol0missing') -LogLevel '222120' } Catch { $Caught = $PSItem }
+      $Caught | Should -Not -BeNullOrEmpty
+      # The wrapper's message quotes the original, so only the type distinguishes them.
+      $Caught.Exception.GetType().FullName |
+        Should -Not -Be 'System.Management.Automation.ActionPreferenceStopException'
+      $Caught.Exception.Message | Should -BeLike '*found 0*'
     }
 
     It 'refuses an id that matches more than one attached disk' {

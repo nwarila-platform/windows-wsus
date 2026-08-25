@@ -1,7 +1,7 @@
 # nwarila-platform — Ansible style & design guide
 
-The authoring rules the WSUS role is written to. Each rule states the failure it prevents, because
-most of them were learned from that failure rather than chosen in advance.
+The authoring rules the WSUS role being rebuilt will be written to. Each rule states the failure it
+prevents, because most of them were learned from that failure rather than chosen in advance.
 
 ## 1. Repo & composition model
 
@@ -64,7 +64,7 @@ most of them were learned from that failure rather than chosen in advance.
   application role. Its input contract is a machine handed to it as **OS + reachable
   SSH + attached-but-blank data disks** — exactly what a fresh Terraform-provisioned
   VM provides. Guest disk provisioning through drive-letter
-  assignment belongs to the shared `windows_disk_manager` role, which runs first; the
+  assignment belongs to a disk-manager role, which runs first; the
   application role consumes the resulting volumes by drive letter and owns application
   features, installation, configuration, and verification.
 - **Boundary:** *hardware provisioning* (disk count/size/attachment, vCPU/RAM, NIC)
@@ -112,8 +112,7 @@ clobber, verified at the module source). These stay `quiet: true` with an action
   distinguishable (e.g. distinct identifiers).
 - The declared CONFIG contract (post-merge `config.*`) is validated in ONE place where `config` is
   in scope — the role's `tasks/validate.yml`, run by the loader's
-  `INIT | Validating Merged Configuration` hook (local WSUS and shared framework v3.3.0)
-  — **never** `meta/argument_specs.yml` (structurally blind to the merged
+  `INIT | Validating Merged Configuration` hook — **never** `meta/argument_specs.yml` (structurally blind to the merged
   `config`; see §8).
 - Guard pieces carry a negative proof (deliberately-wrong input fails on the intended assert;
   sibling specs still pass)..
@@ -128,17 +127,16 @@ clobber, verified at the module source). These stay `quiet: true` with an action
   positively recognized unformatted states proceed; a foreign/occupied state refuses
   loudly with an actionable `fail_msg`. Recognizing the declared label lets an adopted
   or converged volume pass, which a blank-only guard would wrongly reject.
-- **named exception: pinned shared
-  `windows_disk_manager`.** The pinned shared role brings every declared disk online
-  and writable before classifying observed state and asserting that none is foreign.
-  It resets and accumulates `__resolved_disks__` with `set_fact`. Its attachment guard
-  resolves each declared platform identity to exactly one match; the later classifier repeats
-  that selection and uses `| first` to build its matched-disk input. This exception is
-  scoped only to that shared role. Its foreign-layout assert still precedes every
-  provisioning module (initialize, partition, and format). The application-role code
-  it replaced used the same online-before-guard ordering, so delegation did not
-  introduce that ordering. The general §4, §4b, and §4c requirements remain unchanged
-  for roles written in this repository.
+- **named exception: the two disk-manager roles.** Both the pinned shared
+  `windows_disk_manager`, which the play delegates to, and this repository's unreferenced
+  `aws_windows_disk_manager` fork of it (TD-011) bring every declared disk online and writable
+  before classifying observed state and asserting that none is foreign. Both reset and
+  accumulate `__resolved_disks__` with `set_fact`, and both resolve each declared identity to
+  exactly one match in an attachment guard that the later classifier repeats with `| first`.
+  The exception is scoped to those two and was inherited verbatim from the fork point in the
+  second. In both, the foreign-layout assert still precedes every provisioning module
+  (initialize, partition, and format). The general §4, §4b, and §4c requirements remain
+  unchanged for every other role written in this repository.
 
 ## 5. Windows conventions
 
@@ -192,23 +190,21 @@ clobber, verified at the module source). These stay `quiet: true` with an action
   opening brace on the statement line; cuddled `} elseif (...) {` / `} else {`; multi-statement
   bodies on their own indented lines (4-space); NO semicolon statement-chaining; blank lines
   between logical sections. Idiomatic one-line pipeline filter blocks
-  (`Where-Object { ... }`) stay inline — OTBS governs control statements. First applied:
-  the C06c relocation probe; binding on all later embedded scripts (C06e/C06g+).
+  (`Where-Object { ... }`) stay inline — OTBS governs control statements.
 - **the native-module template for `win_shell` §8 escape hatches.**
   Every mutating `win_shell` block that stands in for a missing native module MUST act like one:
   1. `$ErrorActionPreference = 'Stop'` is the FIRST statement (a mid-script non-terminating error
      must not pass silently).
   2. Inputs arrive via `environment:` (env-passing), NEVER Jinja-interpolated into the PowerShell
      source (`'{{ x }}'`) — env-passing removes an injection + `split_args` surface. Architectural
-     constants (e.g. the WID pipe connection string `__wid_conn_master__`) are defined ONCE in the
-     task file's `vars:` block and env-passed, not duplicated per block.
+     constants (a database connection string, say) are defined ONCE in the task file's `vars:`
+     block and env-passed, not duplicated per block.
   3. Any external resource (a `SqlConnection`) is opened inside `try { } finally { <close-only> }`
      — the `finally` closes and does nothing else (no `catch`, no swallow); intentional
      fail-closed `throw`s (e.g. Attach's DROP-on-unhealthy) stay inside `try` before the finally.
   4. Idempotency by a normalized compare → mutate-on-diff → **re-acquire-and-verify** → deterministic
      `changed`/`nochange` (or a read-only probe with `changed_when: false`), never blind mutation.
-  5. Embedded PowerShell follows OTBS (above). First applied wholesale across the C06 SqlClient
-     blocks; the C09b Grant-SYSTEM block is the reference implementation.
+  5. Embedded PowerShell follows OTBS (above).
 - **never put a backslash immediately before a closing quote
   (`\'` / `\"`) in `win_shell`/`win_command` free-form.** Ansible parses
   the free-form module arg with `split_args`, which honors `\` as an escape **even inside single
@@ -230,7 +226,7 @@ clobber, verified at the module source). These stay `quiet: true` with an action
   onto the ACL — stale/orphaned SIDs after they depart. Explicit, never inherited-by-luck
   (format-default root ACLs evaporate under hardening). EXCLUDED BY DEFAULT: secrets,
   private service data, product-managed ACL boundaries (e.g. WSUSContent — postinstall
-  owns it). `E:\WID\Data` is a deliberate exception in this role.
+  owns it).
 
 ## 6. Controller & toolchain
 

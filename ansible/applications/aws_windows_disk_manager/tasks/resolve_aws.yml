@@ -82,7 +82,7 @@
 # The zero-match case normally terminates at the describe task's retry gate; this assert
 # prevents a multiple match from silently resolving to the WRONG disk and remains defense in
 # depth for zero matches. A volume-id/Function-tag pairing is ordinary infrastructure
-# metadata, so this assert can enumerate it outside the no_log describe task.
+# metadata, so this assert may enumerate it.
 - name: 'BEGIN | Assert Exactly One Attached Volume Per Declared Function'
   loop: "{{ config.disks }}"
   loop_control:
