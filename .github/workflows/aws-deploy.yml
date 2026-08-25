@@ -281,17 +281,25 @@ jobs:
 
       # This repo's roles overlay onto the pinned framework tree. A framework-TRACKED role
       # path is refused so an overlay can never replace framework-owned code.
+      #
+      # nullglob, because the overlay set may legitimately be empty — the framework owns the roles
+      # this play uses. An unmatched glob would otherwise reach the loop as its own literal path
+      # and fail there, on a name no operator ever wrote.
       - name: Compose the Ansible tree
         run: |
           set -euo pipefail
           framework_dir="${GITHUB_WORKSPACE}/.frameworks/ansible-framework"
-          for role_source in "${GITHUB_WORKSPACE}"/ansible/applications/*; do
+          shopt -s nullglob
+          role_sources=("${GITHUB_WORKSPACE}"/ansible/applications/*)
+          shopt -u nullglob
+          for role_source in "${role_sources[@]}"; do
             role_name="$(basename "${role_source}")"
             [ -f "${role_source}/tasks/main.yml" ] || { echo "!! missing tasks/main.yml in ${role_source}" >&2; exit 1; }
             [ -z "$(git -C "${framework_dir}" ls-files -- "applications/${role_name}/")" ] \
               || { echo "!! refusing framework-tracked role path applications/${role_name}" >&2; exit 1; }
             rsync -a --delete "${role_source}/" "${framework_dir}/applications/${role_name}/"
           done
+          echo "overlaid ${#role_sources[@]} repository role(s)"
 
       # Readiness and guest storage both live in the playbook; WSUS itself is not configured yet.
       # The EC2 inventory plugin filters live instances to this repository and run before exposing
