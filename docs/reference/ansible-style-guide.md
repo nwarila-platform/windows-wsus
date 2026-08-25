@@ -127,16 +127,15 @@ clobber, verified at the module source). These stay `quiet: true` with an action
   positively recognized unformatted states proceed; a foreign/occupied state refuses
   loudly with an actionable `fail_msg`. Recognizing the declared label lets an adopted
   or converged volume pass, which a blank-only guard would wrongly reject.
-- **named exception: the two disk-manager roles.** Both the pinned shared
-  `windows_disk_manager`, which the play delegates to, and this repository's unreferenced
-  `aws_windows_disk_manager` fork of it (TD-011) bring every declared disk online and writable
-  before classifying observed state and asserting that none is foreign. Both reset and
-  accumulate `__resolved_disks__` with `set_fact`, and both resolve each declared identity to
-  exactly one match in an attachment guard that the later classifier repeats with `| first`.
-  The exception is scoped to those two and was inherited verbatim from the fork point in the
-  second. In both, the foreign-layout assert still precedes every provisioning module
-  (initialize, partition, and format). The general §4, §4b, and §4c requirements remain
-  unchanged for every other role written in this repository.
+- **named exception: the shared disk-manager role.** The pinned `windows_disk_manager`, which
+  the play delegates to, brings every declared disk online and writable before classifying
+  observed state and asserting that none is foreign. It resets and accumulates
+  `__resolved_disks__` with `set_fact`, and resolves each declared identity to exactly one
+  match in an attachment guard that the later classifier repeats with `| first`. The exception
+  is scoped to that role because this repository consumes it rather than authors it. The
+  foreign-layout assert still precedes every provisioning module (initialize, partition, and
+  format). The general §4, §4b, and §4c requirements remain unchanged for every role written
+  in this repository.
 
 ## 5. Windows conventions
 
@@ -155,7 +154,7 @@ clobber, verified at the module source). These stay `quiet: true` with an action
 - **required per-target
   inputs live in the `<role>:` override dict, consumed via `config`.** Environment-
   specific inputs the role cannot default (for example, `upstream_server` for `wsus`
-  or `disks[].function` for the AWS disk manager) are declared inside the
+  or `disks[].function` for `windows_disk_manager` on AWS) are declared inside the
   corresponding `<role>:` override dict (playbook / group_vars / host_vars) and read
   from that role's `config`, matching the framework/wazuh idiom and the loader's
   `defaults -> overlays -> <role> override -> config` merge.

@@ -88,28 +88,6 @@ workarounds are not accidentally restored.
   noticing. A self-published image must still carry a licensed SQL Server, which is what the
   vendor image supplies today. Close this entry only when the selector is a catalog address.
 
-## TD-011 — aws_windows_disk_manager is an unreferenced narrowing fork
-
-- **Recorded:** 2026-08-13. Amended 2026-08-25 when the play moved back to the framework role.
-- **What:** the repository owns `ansible/applications/aws_windows_disk_manager/`, forked from
-  the framework's `windows_disk_manager` at ansible-framework pin
-  `24a8ec74a7965b3a6f9cc827455962d541ff6d73` and narrowed to one platform: the `platform` knob
-  and the literal `unique_id` identity mode were removed, and both retired keys are refused by
-  name at validation. The fork has since widened — the online/writable transition moved into
-  `files/Set-DiskOnlineState.ps1` with a Pester spec, which the framework role does not have.
-- **Consequence:** the play no longer invokes it. Mirroring `pdq-deploy-inventory` put guest
-  storage back on the framework role, so the fork ships, is overlaid into the composed tree by
-  both compose paths, and runs nothing. Upstream fixes still do not reach it, and now nothing
-  exercises it either.
-- **Current containment:** none that is worth the name. `defaults/main.yml`, `meta/main.yml` and
-  `tasks/resolve_aws.yml` name the fork-point pin in their headers and the PowerShell pair is
-  gated by `powershell.yml`, but the three remaining diverged task files carry no marker and no
-  live proof touches the role.
-- **Exit criteria:** the director decides between the two roles. If the fork wins, the play
-  invokes it again and this entry returns to a divergence-tracking entry; if the framework role
-  wins, the fork, its PowerShell pair, its allowlist entries and this entry are deleted
-  together.
-
 ## TD-012 — the lab runs Server 2025 while the production target is Server 2022
 
 - **Recorded:** 2026-08-23 as a Server 2025 pin, closed 2026-08-24 by repinning to Server 2022,
@@ -132,3 +110,24 @@ workarounds are not accidentally restored.
   the OpenSSH capability, which is the same image work TD-009 requires; or a framework
   user_data that installs the capability, which needs guest egress this deployment does not
   grant.
+
+## TD-013 — no PowerShell gate, and the org template it will return to is defective
+
+- **Recorded:** 2026-08-25, when `aws_windows_disk_manager` and its `Set-DiskOnlineState` pair
+  were deleted and `.github/workflows/powershell.yml` went with them.
+- **What:** the repository ships no PowerShell and therefore no gate over it. The caller was
+  deleted rather than repointed because the org template refuses to pass on nothing: at pin
+  `758b3313d34269f10dcf1a1b07837c0b887bdc87`, `pester-matrix.yaml` exits non-zero both when
+  `scan-path` is not a directory and when discovery finds zero pairs, on the stated ground that
+  an empty matrix passing would hide a broken path.
+- **Consequence:** the first WSUS chunk that adds a `<Name>.ps1` + `<Name>.pester.ps1` pair
+  reintroduces the gate from scratch, and will meet a template defect this repository already
+  paid for once. `pester-matrix.yaml` names the SARIF from the pair's path RELATIVE to
+  `scan-path`, while `harness/Invoke-PairTests.ps1` writes it from the bare filename. The upload
+  step then reads a path that does not exist. The two agree only when pairs sit directly in
+  `scan-path`, which is why `pdq-deploy-inventory` never hits it.
+- **Current containment:** this entry. Nothing executable catches the defect; the next caller
+  has to be written around it.
+- **Exit criteria:** the first PowerShell pair lands with a caller pointed at the pair's own
+  directory, which is what makes the two names agree. Close this entry when the template is
+  fixed upstream — one line on either side — and the caller can name the role tree instead.

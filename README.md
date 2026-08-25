@@ -41,7 +41,6 @@ only `refs/heads/main`.
 | Path | Purpose |
 |---|---|
 | `ansible/playbooks/wsus-aws.yml` | Composed play: inventory contract, host readiness, then guest storage |
-| `ansible/applications/aws_windows_disk_manager/` | AWS-only disk role from the previous build; unreferenced while the play uses the framework's `windows_disk_manager` |
 | `ansible/inventory/aws_ec2.yml` | Dynamic EC2 inventory filtered to one run |
 | `terraform/aws.tfvars` | Data-only input for the pinned Terraform framework |
 | `scripts/compose-and-run.sh` | Local composition and execution |

@@ -115,21 +115,33 @@ if [ ! -d "${FRAMEWORK_DIR}/.git" ]; then
     git clone --quiet "${FRAMEWORK_REMOTE}" "${FRAMEWORK_DIR}"
 fi
 git -C "${FRAMEWORK_DIR}" fetch --quiet origin
-git -C "${FRAMEWORK_DIR}" checkout --quiet --detach "${PIN}"
+# The checkout is persistent across runs, so the composed tree is only trustworthy if both halves
+# are forced back to source. --force discards edits to tracked framework files, which a plain
+# checkout keeps when HEAD is already at the pin — leaving the banner below printing a pin the
+# tree no longer matches.
+git -C "${FRAMEWORK_DIR}" checkout --quiet --force --detach "${PIN}"
 echo ">> Framework pinned at $(git -C "${FRAMEWORK_DIR}" rev-parse --short HEAD)"
+
+# The other half: a role this repository has since renamed or deleted survives in applications/
+# from an earlier run and stays resolvable by roles_path. -x is required, not optional — the
+# framework repository is deny-all too, so an overlaid role is IGNORED rather than merely
+# untracked and a plain clean walks straight past it. The second -f reaches an overlay carrying
+# nested Git metadata, which a single -f preserves. Framework-owned roles are tracked, and clean
+# never touches those.
+git -C "${FRAMEWORK_DIR}" clean --quiet -ffdx -- applications/
 
 # --- 2. Overlay roles into the framework namespace ------------------------------------------ #
 shopt -s nullglob
 role_sources=("${REPO_ROOT}"/ansible/applications/*)
 shopt -u nullglob
 
+# An empty overlay set is legitimate, not a broken path — this repository overlays only the roles
+# it owns, and the framework owns the roles the play uses.
 if [ "${#role_sources[@]}" -eq 0 ]; then
-    echo "!! no role sources found under ${REPO_ROOT}/ansible/applications" >&2
-    exit 1
+    echo ">> No repository roles to overlay; the play runs on framework roles alone"
+else
+    mapfile -t role_sources < <(printf '%s\n' "${role_sources[@]}" | LC_ALL=C sort)
 fi
-
-mapfile -t role_sources < <(printf '%s\n' "${role_sources[@]}" | LC_ALL=C sort)
-overlaid_roles=0
 validated_roles=()
 
 # Pass 1 — VALIDATE EVERY candidate before mutating anything. Deliberately separate from the
@@ -180,13 +192,7 @@ for role_name in "${validated_roles[@]}"; do
         "${REPO_ROOT}/ansible/applications/${role_name}/" \
         "${FRAMEWORK_DIR}/applications/${role_name}/"
     echo ">> Overlaid role '${role_name}' into framework applications/"
-    overlaid_roles=$((overlaid_roles + 1))
 done
-
-if [ "${overlaid_roles}" -eq 0 ]; then
-    echo "!! no roles overlaid into framework applications/" >&2
-    exit 1
-fi
 
 # --- 3. Execute with the framework chassis --------------------------------------------------- #
 cd "${FRAMEWORK_DIR}"
