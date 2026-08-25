@@ -47,7 +47,11 @@ jobs:
       security-events: 'write' # test legs: SARIF upload to code scanning
     uses: 'NWarila/powershell-template/.github/workflows/pester-matrix.yaml@758b3313d34269f10dcf1a1b07837c0b887bdc87' # main (#31)
     with:
-      scan-path: 'ansible/applications'
+      # The pair's own directory, not the role tree: the reusable workflow names the SARIF from
+      # the path RELATIVE to scan-path, while the harness writes it from the bare filename, so
+      # the upload looks for a file that does not exist whenever a pair sits more than one level
+      # down. Pointing at the directory that holds the pair makes the two names agree.
+      scan-path: 'ansible/applications/aws_windows_disk_manager/files'
       # Must match the `uses:` ref: the ref selects the workflow file, while template-ref
       # is what the workflow checks out for the harness and analyzer settings.
       template-ref: '758b3313d34269f10dcf1a1b07837c0b887bdc87' # main (#31)
