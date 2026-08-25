@@ -8,6 +8,7 @@
 # STATE SCOPE: the loader runs this file for every state. Every guard is deliberately scoped
 # to state=present so state=clean remains a supported no-op with the default empty disk list.
 # =========================================================================================== #
+---
 
 #region ------ [ Retired-contract guards ] ---------------------------------------------------- #
 

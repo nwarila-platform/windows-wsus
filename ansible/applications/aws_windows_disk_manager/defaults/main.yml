@@ -11,16 +11,14 @@
 #   24a8ec74a7965b3a6f9cc827455962d541ff6d73): Windows on Amazon EC2, nothing else. The
 #   platform knob and the literal unique_id identity mode are gone — every declared disk is
 #   identified by its EBS Function tag and resolved through the Nitro serial==volume-id
-#   guarantee. The classification and mutation-safety contract is unchanged: an idempotent
-#   online/writable fixup, provisioning only from a recognized blank or unformatted state,
-#   skip on a matching NTFS label, and fail-closed refusal of any foreign layout.
+#   guarantee. The classification and mutation-safety contract is unchanged: provisioning only
+#   from a recognized blank or unformatted state, skip on a matching NTFS label, and fail-closed
+#   refusal of any foreign layout. The online/writable transition is the part that moved, into
+#   files/Set-DiskOnlineState.ps1.
 #
 # =========================================================================================== #
+---
 aws_windows_disk_manager_defaults:
-
-  #region ------ [ Lifecycle ] ------------------------------------------------------------------ #
-  state: 'present'
-  #endregion --- [ Lifecycle ] ------------------------------------------------------------------ #
 
   #region ------ [ Managed disks ] -------------------------------------------------------------- #
   # Declared disks to manage. Empty by default. Each entry declares:

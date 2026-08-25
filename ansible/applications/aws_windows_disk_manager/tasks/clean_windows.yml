@@ -4,6 +4,7 @@
 # Windows / state=clean - no-op. This role owns no cache/staging artifacts. Disk state is
 # NEVER torn down here — a 'clean' must never remove a data volume.
 # =========================================================================================== #
+---
 
 - name: 'INFO | Entering OS Tasks (clean_windows - aws_windows_disk_manager)'
   ansible.builtin.debug:

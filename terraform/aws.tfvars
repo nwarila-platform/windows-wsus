@@ -3,81 +3,66 @@
 # --- [ Description ] ----------------------------------------------------------------------- #
 #
 # Variable input for the pinned aws-terraform-framework (SHA in .github/terraform-framework-pin).
-# Plain tfvars — the workflow passes this file to terraform verbatim.
+# Plain tfvars — the workflow passes this file to terraform verbatim. This repository declares
+# NO .tf files of its own: resources live in the pinned framework, configuration in the pinned
+# ansible-framework plus this repository's roles.
 #
-# This file is the single source of truth for the deploy subnet: bootstrap-iam.sh parses
-# subnet_id out of it to materialize the IAM subnet pin, so the tfvars and the launch policy
-# can never disagree. (The literals gate bans environment ids only under
-# docs/reference/aws-iam/ — committing the subnet here is deliberate.)
-#
-# Every value here must stay inside the deploy role's launch boundary
-# (docs/reference/aws-iam/README.md): t3.medium/t3.large only, gp3 encrypted <= 64 GiB,
-# IMDSv2 with hop limit 1, the standing account key pair, and the pinned VPC/subnet.
-#
-# REACHABILITY — ZERO INBOUND, SSH OVER SSM: the security group allows NO ingress at all.
-# The runner reaches the instance through an SSM session (AWS-StartSSHSession, tag-gated in
-# the deploy IAM), which rides the SSM AGENT's own outbound 443. The deploy subnet sets
-# MapPublicIpOnLaunch, so the pre-created ENI is auto-assigned a public IPv4 at launch and the
-# agent egresses over it through the internet gateway. No Elastic IP is involved.
-#
-# An earlier version of this header claimed AWS never auto-assigns to a pre-created ENI and
-# that an EIP was therefore mandatory. That is false. Framework commit e40a792 measured the
-# behaviour, and secure-wazuh run 31319282728 launched through the same path with
-# associate_public_ip = false, received an auto-assigned address, and reached Online in SSM.
-# That proof ran in the retired wazuh-era subnet; the account's VPCs were rebuilt on
-# 2026-08-10. The us-east-1c subnet below is the rebuilt DEPLOY-account subnet
-# (nwarila-platform-use1c-01 in vpc-0724440de2891a1ee), confirmed MapPublicIpOnLaunch=true
-# by describe in that account, and its egress path is proven live: pdq-deploy-inventory
-# launches into this same subnet and its instances register Online in SSM. An earlier repin
-# attempt pinned a lookalike subnet from the wrong AWS account here - always describe against
-# the account the OIDC deploy role lives in. The account has no NAT and no VPC endpoints, so
-# the auto-assigned address is the only possible egress route. Public IPv4 bills at the same
-# $0.005/h either way, so this is a quota decision, not a cost one.
+# REACHABILITY — DIRECT SSH OVER A PUBLIC IPv4, ADMITTED BY TWO GROUPS. The workflow discovers
+# the runner's public IPv4 and passes it as the framework's runtime-only runner_ip variable; the
+# framework attaches one group scoped to that address to every interface. The interface below
+# carries a second group whose temporary development-cycle rules open tcp/22 to the whole IPv4
+# space, so an operator can reach a held guest. The instance receives a public IPv4 at launch;
+# no Elastic IP is involved. The account has no NAT and no VPC endpoints.
 #
 # The dependency worth knowing: MapPublicIpOnLaunch is an attribute of a shared subnet no
-# repository owns. If it is ever turned off, an instance without an Elastic IP launches with no
-# address and no egress, and the failure appears minutes later as an SSM agent that never
-# registers rather than as an apply error.
+# repository owns. Direct SSH requires the instance's launch-time public address as well as the
+# runner-scoped security group.
 #
-# readiness_gate is FALSE by design: the framework's gate dials the instance directly over
-# SSH, which a zero-ingress security group forbids. The playbook's first play waits for
-# readiness over SSM-SSH instead. The OpenSSH DefaultShell stays cmd — the boot default —
-# because a PowerShell login shell breaks ansible's module bootstrap (proven live).
+# readiness_gate is FALSE by design: the playbook owns the bounded direct-SSH readiness check.
+# The OpenSSH DefaultShell stays cmd — the boot default — because a PowerShell login shell breaks
+# ansible's module bootstrap.
 #
 # =========================================================================================== #
 
-# environment and resource_metadata are deliberately NOT in this file: the workflow passes
-# both with -var, the highest-precedence source, so the environment name and the deployment
-# identity that drives the provider's tags cannot be overridden here.
+# environment and the deployment identity (repository, repository_id, commit_sha, run_id) are
+# deliberately NOT in this file: the workflow passes them with -var, the highest-precedence
+# source, so the identity that drives the provider's tags cannot be overridden here.
 
 all_systems = [
   {
-    region            = "us_east_1"
-    hostname          = "wsus-poc-01"
+    region   = "us_east_1"
+    hostname = "wsus-poc-01"
+    # The ratified availability-zone spec lock, and a subnet in this account's only VPC.
     availability_zone = "us-east-1c"
     subnet_id         = "subnet-03a855e712be7b399"
-    # v3.0.0 CONSUMES key pairs and never creates them, so this names the standing account
-    # key pair. user_data installs its public half by reading IMDS; the private half lives
-    # only in the AWS_EC2_SSH_PRIVATE_KEY org secret and the runner's temporary directory.
-    key_name             = "nwarila-ec2-key"
-    iam_instance_profile = "windows-wsus-poc-profile"
+    # The framework CONSUMES key pairs and never creates them, so this names the standing
+    # account key pair. user_data installs its public half by reading IMDS; the private half
+    # lives only in the AWS_EC2_SSH_PRIVATE_KEY organization secret and the runner's
+    # temporary directory.
+    key_name = "nwarila-ec2-key"
+    # Ratified 2026-08-12: the EC2 instance REUSES the org-owned profile as-is. This
+    # repository never creates or modifies it; the runner role only reads and passes it.
+    iam_instance_profile = "nwarila-ec2-profile"
     aws_kms_alias        = "aws/ebs"
-    # Windows_Server-2025-English-STIG-Full-2026.07.15, owner 801119661308. A literal id is
-    # accepted from the framework's vendor allowlist; catalog selectors stay locked to
-    # self-published images. Both sides are transitional — see TD-009.
-    ami     = "ami-04807a1de3f592cc5"
+    # Windows_Server-2025-English-Full-SQL_2022_Standard-2026.08.12, owner 801119661308 —
+    # accepted from the framework's vendor allowlist, which is keyed by owner. SQL Server 2022
+    # arrives licensed by AWS and installed by the image, so nothing here installs or licenses a
+    # database engine. Standard, not Express or Web: SUSDB outgrows Express's 10 GiB ceiling, and
+    # Web is licensed only for publicly accessible workloads. No STIG-hardened image carries SQL
+    # Server, so this base is not the STIG one. Server 2025 rather than the target's 2022 because
+    # OpenSSH Server ships installed only from 2025, and the framework's user_data starts sshd
+    # rather than installing it; on 2022 that bootstrap aborts and nothing can reach the guest.
+    ami     = "ami-0ac1b4c911759cc2e"
     refresh = false
-    # t3.large, not t3.medium: WSUS postinstall + SUSDB work on 4 GiB regularly pushes past the
-    # CI stage budget. Both types are inside the launch policy's type lock.
-    instance_type = "t3.large"
-    # "ssh-ssm" names what actually happens: SSH on the wire, reached through an SSM tunnel
-    # with no inbound path opened. The framework requires readiness_gate = false for this
-    # transport because its gate dials directly and cannot traverse the tunnel.
-    connection_type = "ssh-ssm"
+    # t3.xlarge because AWS publishes no license-included SQL Server Standard rate for any
+    # 2-vCPU burstable type: t3.large has no SQL Std SKU at all, so RunInstances rejects the
+    # pair after the network interface and volumes already exist. Four vCPUs is also the
+    # minimum AWS bills that licence at, so a smaller type would pay for cores it cannot use.
+    instance_type = "t3.xlarge"
+    # Direct SSH reaches the launch-time public IPv4 through the runner-scoped framework SG.
+    connection_type = "ssh"
     readiness_user  = null
-    # The framework gate dials the instance's PRIVATE ip, unreachable from a hosted runner,
-    # so it stays off and the play performs readiness itself over SSH-in-SSM. The remaining
-    # readiness attributes are required by the type regardless of the gate being disabled.
+
     readiness_gate             = false
     readiness_command          = null
     readiness_script_dir       = null
@@ -96,14 +81,17 @@ all_systems = [
       tags                  = {}
       throughput            = null
       volume_type           = "gp3"
-      # The AMI's native size — application data lives on the E:/F:/G: volumes, so padding
-      # the ephemeral root is pure cost.
-      volume_size = "30"
+      # The AMI's native size, which its SQL Server installation sets — SUSDB, content, and the
+      # IIS root live on their own volumes, so padding the ephemeral root is pure cost.
+      volume_size = "75"
     }
 
-    # Three RAW data disks: the deploy layer owns the hardware, the composed play's
-    # windows_disk_manager formats it. The Function tags are the identities the role
-    # resolves each disk by (resolve_aws.yml).
+    # Three RAW data disks, one per concern, so each can be sized, backed up and permissioned
+    # on its own: SUSDB on SQL Server, the WSUS content store, and the IIS root. The deploy
+    # layer owns the hardware; the composed play's windows_disk_manager
+    # formats each and assigns its drive letter. The Function tag is the identity the disk role
+    # resolves a volume by (resolve_aws.yml), because a volume id only exists after apply, so
+    # each tag here must be unique and must match the play's disk layout.
     ebs_block_devices = [
       {
         resource_key = "wsusdb"
@@ -140,9 +128,6 @@ all_systems = [
       }
     ]
 
-    # Windows_Server-2025-English-STIG-Full declares exactly one EBS mapping — its own root,
-    # already covered by root_block_device above — plus 26 instance-store devices the
-    # framework exempts. Nothing else to override.
     ami_block_device_overrides = []
 
     network_interfaces = [
@@ -151,37 +136,39 @@ all_systems = [
         interface_type  = null
         private_ip      = null
         security_groups = []
-        # Non-null ingress + egress => the framework creates and attaches wsus-poc-01-eni-0-sg.
-        # Ingress [] = ZERO inbound: the runner's SSH rides the SSM agent's own outbound
-        # session, so nothing on the internet can dial this instance. Egress is HTTPS only —
-        # the SSM agent registering and streaming through the internet gateway.
-        ingress = []
-        egress = [
+        # Deliberate temporary development-cycle allowance: SSH from the whole IPv4 space, split
+        # into two halves because the framework refuses a zero-length prefix; remove when the
+        # cycle ends.
+        ingress = [
           {
-            description                  = "HTTPS out (SSM agent registration and sessions)"
+            description                  = "SSH from first half of IPv4"
             ip_protocol                  = "tcp"
-            from_port                    = 443
-            to_port                      = 443
-            cidr_ipv4                    = "0.0.0.0/0"
+            from_port                    = 22
+            to_port                      = 22
+            cidr_ipv4                    = "0.0.0.0/1"
+            prefix_list_id               = null
+            referenced_security_group_id = null
+          },
+          {
+            description                  = "SSH from second half of IPv4"
+            ip_protocol                  = "tcp"
+            from_port                    = 22
+            to_port                      = 22
+            cidr_ipv4                    = "128.0.0.0/1"
             prefix_list_id               = null
             referenced_security_group_id = null
           }
         ]
-        tags = {}
+        # Empty because the guest still originates nothing; replies to inbound SSH are stateful.
+        egress = []
+        tags   = {}
       }
     ]
 
-    # No Elastic IP: the subnet auto-assigns a public IPv4 at launch, which is all the SSM
-    # agent's outbound registration needs (see the header). This is zero-inbound either way -
-    # the security group allows no ingress - so the address is an egress route, not a door.
+    # No Elastic IP: the subnet auto-assigns the launch-time public IPv4 used for direct SSH.
     associate_public_ip = false
   }
 ]
 
 all_databases      = []
 all_load_balancers = []
-
-# The deployment-identity variables (environment, repository, repository_id, commit_sha,
-# run_id) are passed by the workflow as individual -var flags, which outrank every tfvars
-# source. They stamp the RepositoryId/RunId/Environment/CommitSha/Repository tags that satisfy
-# the create-time conditions in the deploy policies. Never hardcode them here.

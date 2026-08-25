@@ -1,14 +1,14 @@
 # nwarila-platform — Ansible style & design guide
 
-The authoring rules the WSUS role is written to. Each rule states the failure it prevents, because
-most of them were learned from that failure rather than chosen in advance.
+The authoring rules the WSUS role being rebuilt will be written to. Each rule states the failure it
+prevents, because most of them were learned from that failure rather than chosen in advance.
 
 ## 1. Repo & composition model
 
 - One single-purpose role per application repo; the repo composes into a
   version-pinned `ansible-framework` checkout at execution time (`.github/ansible-framework-pin`,
-  the compose steps in `.github/workflows/quality.yml` and
-  `.github/workflows/aws-deploy.yml`). Roles must be drop-in compatible with the framework's
+  the compose step in `.github/workflows/aws-deploy.yml` and `scripts/compose-and-run.sh`). Roles
+  must be drop-in compatible with the framework's
   `applications/` namespace (`roles_path` resolution by bare name).
 - The framework is the chassis: `ansible.cfg`, lint configs, loader contract, CI
   conventions all originate upstream. Application repos copy `.yamllint.yml` /
@@ -28,8 +28,8 @@ most of them were learned from that failure rather than chosen in advance.
 - Every role must ship the framework's generic loader as `tasks/main.yml`,
   **byte-identical, never edited per-role**. Loader changes are governance-surface →
   upstream framework PR only.
-- The local WSUS loader is byte-identical to the loader at the current framework pin. A
-  divergence is a release-blocking composition failure, not accepted application debt.
+- Every local loader is byte-identical to the loader at the current framework pin. A divergence
+  is a release-blocking composition failure, not accepted application debt.
 - Changes to the loader are upstream changes. It is shared by every consuming role, so a change
   that suits this one and not the others breaks the hash-match invariant that makes it shareable.
   The default answer to "should the loader change for us" is no.
@@ -64,7 +64,7 @@ most of them were learned from that failure rather than chosen in advance.
   application role. Its input contract is a machine handed to it as **OS + reachable
   SSH + attached-but-blank data disks** — exactly what a fresh Terraform-provisioned
   VM provides. Guest disk provisioning through drive-letter
-  assignment belongs to the repository's `aws_windows_disk_manager` role, which runs first; the
+  assignment belongs to a disk-manager role, which runs first; the
   application role consumes the resulting volumes by drive letter and owns application
   features, installation, configuration, and verification.
 - **Boundary:** *hardware provisioning* (disk count/size/attachment, vCPU/RAM, NIC)
@@ -112,8 +112,7 @@ clobber, verified at the module source). These stay `quiet: true` with an action
   distinguishable (e.g. distinct identifiers).
 - The declared CONFIG contract (post-merge `config.*`) is validated in ONE place where `config` is
   in scope — the role's `tasks/validate.yml`, run by the loader's
-  `INIT | Validating Merged Configuration` hook (local WSUS and shared framework v3.3.0)
-  — **never** `meta/argument_specs.yml` (structurally blind to the merged
+  `INIT | Validating Merged Configuration` hook — **never** `meta/argument_specs.yml` (structurally blind to the merged
   `config`; see §8).
 - Guard pieces carry a negative proof (deliberately-wrong input fails on the intended assert;
   sibling specs still pass)..
@@ -128,21 +127,23 @@ clobber, verified at the module source). These stay `quiet: true` with an action
   positively recognized unformatted states proceed; a foreign/occupied state refuses
   loudly with an actionable `fail_msg`. Recognizing the declared label lets an adopted
   or converged volume pass, which a blank-only guard would wrongly reject.
-- **named exception: `aws_windows_disk_manager`.** The disk role (a narrowing fork of
-  the framework's shared `windows_disk_manager`; see TD-011) brings every declared disk
-  online and writable before classifying observed state and asserting that none is
-  foreign. It resets and accumulates `__resolved_disks__` with `set_fact`. Its
-  attachment guard resolves each declared Function identity to exactly one match; the
-  later classifier repeats that selection and uses `| first` to build its matched-disk
-  input. This exception is scoped only to that role and was inherited verbatim from the
-  fork point. Its foreign-layout assert still precedes every provisioning module
+- **named exception: the two disk-manager roles.** Both the pinned shared
+  `windows_disk_manager`, which the play delegates to, and this repository's unreferenced
+  `aws_windows_disk_manager` fork of it (TD-011) bring every declared disk online and writable
+  before classifying observed state and asserting that none is foreign. Both reset and
+  accumulate `__resolved_disks__` with `set_fact`, and both resolve each declared identity to
+  exactly one match in an attachment guard that the later classifier repeats with `| first`.
+  The exception is scoped to those two and was inherited verbatim from the fork point in the
+  second. In both, the foreign-layout assert still precedes every provisioning module
   (initialize, partition, and format). The general §4, §4b, and §4c requirements remain
   unchanged for every other role written in this repository.
 
 ## 5. Windows conventions
 
 - Transport: **SSH** (org standard; key auth, one transport story across the fleet).
-  `ansible_shell_type: cmd`; the target's OpenSSH `DefaultShell` stays cmd (the boot default) — a PowerShell login shell re-parses ansible's module-bootstrap argv and breaks `-EncodedCommand` (proven live); `win_*` modules run inside their own PowerShell wrapper regardless.
+  `ansible_shell_type: cmd`; the target's OpenSSH `DefaultShell` stays cmd (the boot default) — a
+  PowerShell login shell re-parses ansible's module-bootstrap argv and breaks `-EncodedCommand`
+  (proven live); `win_*` modules run inside their own PowerShell wrapper regardless.
 - `become: false` at play level (framework chassis `become=sudo` is POSIX-only;
   built-in administrator over SSH is already elevated). Revisit for least-privilege
   runs (runas) when a non-admin service account is introduced — TBD.
@@ -189,36 +190,33 @@ clobber, verified at the module source). These stay `quiet: true` with an action
   opening brace on the statement line; cuddled `} elseif (...) {` / `} else {`; multi-statement
   bodies on their own indented lines (4-space); NO semicolon statement-chaining; blank lines
   between logical sections. Idiomatic one-line pipeline filter blocks
-  (`Where-Object { ... }`) stay inline — OTBS governs control statements. First applied:
-  the C06c relocation probe; binding on all later embedded scripts (C06e/C06g+).
+  (`Where-Object { ... }`) stay inline — OTBS governs control statements.
 - **the native-module template for `win_shell` §8 escape hatches.**
   Every mutating `win_shell` block that stands in for a missing native module MUST act like one:
   1. `$ErrorActionPreference = 'Stop'` is the FIRST statement (a mid-script non-terminating error
      must not pass silently).
   2. Inputs arrive via `environment:` (env-passing), NEVER Jinja-interpolated into the PowerShell
      source (`'{{ x }}'`) — env-passing removes an injection + `split_args` surface. Architectural
-     constants (e.g. the WID pipe connection string `__wid_conn_master__`) are defined ONCE in the
-     task file's `vars:` block and env-passed, not duplicated per block.
+     constants (a database connection string, say) are defined ONCE in the task file's `vars:`
+     block and env-passed, not duplicated per block.
   3. Any external resource (a `SqlConnection`) is opened inside `try { } finally { <close-only> }`
      — the `finally` closes and does nothing else (no `catch`, no swallow); intentional
      fail-closed `throw`s (e.g. Attach's DROP-on-unhealthy) stay inside `try` before the finally.
   4. Idempotency by a normalized compare → mutate-on-diff → **re-acquire-and-verify** → deterministic
      `changed`/`nochange` (or a read-only probe with `changed_when: false`), never blind mutation.
-  5. Embedded PowerShell follows OTBS (above). First applied wholesale across the C06 SqlClient
-     blocks; the C09b Grant-SYSTEM block is the reference implementation.
+  5. Embedded PowerShell follows OTBS (above).
 - **never put a backslash immediately before a closing quote
-  (`\'` / `\"`) in `win_shell`/`win_command` free-form; enforced by an automated gate.** Ansible parses
-  the free-form module arg with `split_args`, which honors `\` as an escape **even inside single quotes**.
+  (`\'` / `\"`) in `win_shell`/`win_command` free-form.** Ansible parses
+  the free-form module arg with `split_args`, which honors `\` as an escape **even inside single
+  quotes**.
   A literal backslash right before a closing quote — `Replace('/','\')`, `'IIS:\Sites\'`, `'C:\'` —
   escapes the quote, unbalances the parser, and fails the task at **LOAD time**
   (`failed at splitting arguments…`). Interior backslashes are fine (`'IIS:\Sites\Default Web Site'`);
   only backslash-adjacent-to-a-closing-quote breaks. **RULE:** build such strings with `[char]92`
-  (`$dir.TrimEnd([char]92) + [char]92`) and never end a quoted literal with `\`. **GATE:**
-  `scripts/check-winshell-splitargs.py` (run with the ansible-core venv python) fails on any
-  `split_args` error OR any backslash-before-quote across every `win_shell`/`win_command` block — this
-  is the ONLY static check that catches the class: yamllint, ansible-lint, AND
-  `ansible-playbook --syntax-check` all pass an unbalanced-`\'` regression (proven M, 2026-07-17; it is
-  exactly how the C12c bug shipped). Part of the standard gate now.
+  (`$dir.TrimEnd([char]92) + [char]92`) and never end a quoted literal with `\`. Nothing catches
+  this statically: yamllint, ansible-lint, and `ansible-playbook --syntax-check` all pass an
+  unbalanced-`\'` regression (proven 2026-07-17; it is exactly how the C12c bug shipped), which
+  is why the rule is absolute rather than advisory.
 - **Users browse-access ACL
   hygiene.** Role-created directories INTENDED FOR INTERACTIVE ADMINISTRATION/BROWSING,
   under an explicitly documented trust model ("all interactive users are admins"), get an
@@ -228,7 +226,7 @@ clobber, verified at the module source). These stay `quiet: true` with an action
   onto the ACL — stale/orphaned SIDs after they depart. Explicit, never inherited-by-luck
   (format-default root ACLs evaporate under hardening). EXCLUDED BY DEFAULT: secrets,
   private service data, product-managed ACL boundaries (e.g. WSUSContent — postinstall
-  owns it). `E:\WID\Data` is a deliberate exception in this role.
+  owns it).
 
 ## 6. Controller & toolchain
 
@@ -237,11 +235,10 @@ clobber, verified at the module source). These stay `quiet: true` with an action
   `requirements-quality.yml`: `ansible.windows`, `community.windows`, and `amazon.aws`.
 - Windows targets are never long-lived development state: every proof creates a fresh ephemeral
   instance with Terraform; the lab-era snapshot-revert workflow is retired.
-- **Lint from the composed tree**: the playbook's role
-  resolves only inside the composed framework checkout, so `ansible-lint` runs from
-  the quality job's pinned framework copy (which also supplies the chassis `.ansible-lint`
-  profile). Repo-side `ansible-lint <playbook>` fails `syntax-check` by design — do
-  not "fix" that by vendoring a roles_path shim without a ratified rule.
+- **Lint from the composed tree**: the playbook's roles resolve only inside the composed
+  framework checkout, which also supplies the chassis `.ansible-lint` profile. Repo-side
+  `ansible-lint <playbook>` fails `syntax-check` by design — do not "fix" that by vendoring a
+  roles_path shim without a ratified rule.
 - SSH connection state is isolated in each disposable runner. Stale local ControlMaster sockets
   must be removed before any manually operated proof.
 

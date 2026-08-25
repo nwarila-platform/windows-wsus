@@ -1,0 +1,38 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ReadWriteTheStateObject",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject"
+      ],
+      "Resource": "arn:aws:s3:::<account-id>-terraform/nwarila-platform/windows-wsus/aws-poc.tfstate"
+    },
+    {
+      "Sid": "ReadWriteDeleteTheLockObject",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:DeleteObject"
+      ],
+      "Resource": "arn:aws:s3:::<account-id>-terraform/nwarila-platform/windows-wsus/aws-poc.tfstate.tflock"
+    },
+    {
+      "Sid": "ListOnlyThoseTwoKeys",
+      "Effect": "Allow",
+      "Action": "s3:ListBucket",
+      "Resource": "arn:aws:s3:::<account-id>-terraform",
+      "Condition": {
+        "StringEquals": {
+          "s3:prefix": [
+            "nwarila-platform/windows-wsus/aws-poc.tfstate",
+            "nwarila-platform/windows-wsus/aws-poc.tfstate.tflock"
+          ]
+        }
+      }
+    }
+  ]
+}

@@ -8,6 +8,7 @@
 # validate.yml has already enforced the function-only identity contract at loader INIT, so
 # every loop below runs over config.disks without re-checking identity shape.
 # =========================================================================================== #
+---
 
 #region ------ [ Script ] -------------------------------------------------------------------- #
 
@@ -144,33 +145,24 @@
           {% endfor %}
         quiet: true
 
-    # An offline disk may expose no partitions. Clear read-only first, then offline, and emit
-    # the changed sentinel only after every requested transition has completed successfully.
+    # An offline disk exposes no partitions, so every classification step below would read
+    # nothing and conclude the disk is blank. The transitions therefore happen before any
+    # observation this role trusts.
+    #
+    # A first-class PowerShell script rather than an inline block: the guest-side logic is
+    # developed and Pester-tested once beside the role, and win_powershell reports the change
+    # through the script's own $Ansible.Changed, so no changed_when parses stdout for a
+    # sentinel. Identity crosses as a typed array in parameters, never spliced into the
+    # source, which is what keeps the injection surface at zero.
     - name: 'BEGIN | Bring Declared Disks Online And Writable'
       when: (config.disks | length) > 0
-      ansible.windows.win_shell: |
-        $ErrorActionPreference = 'Stop'
-        $changed = $false
-        foreach ($id in ($env:DISK_IDS -split ';' | Where-Object { $_ })) {
-            $disk = Get-Disk -ErrorAction Stop | Where-Object { $_.UniqueId -eq $id }
-            if ($disk.IsReadOnly) {
-                Set-Disk -Number $disk.Number -IsReadOnly $false -ErrorAction Stop
-                $changed = $true
-            }
-            if ($disk.IsOffline) {
-                Set-Disk -Number $disk.Number -IsOffline $false -ErrorAction Stop
-                $changed = $true
-            }
-        }
-        if ($changed) {
-            Write-Output 'changed'
-        } else {
-            Write-Output 'nochange'
-        }
-      environment:
-        DISK_IDS: "{{ __declared_disks__ | default([]) | map(attribute='unique_id') | join(';') }}"
-      register: '__disk_online__'
-      changed_when: (__disk_online__.stdout | trim) == 'changed'
+
+      ansible.windows.win_powershell:
+        depth: 3
+        error_action: 'stop'
+        parameters:
+          UniqueId: "{{ __declared_disks__ | default([]) | map(attribute='unique_id') | list }}"
+        script: "{{ lookup('ansible.builtin.file', 'Set-DiskOnlineState.ps1') }}"
 
     - name: 'BEGIN | Re-load Disk Facts After Online/Writable Fixup'
       when: (config.disks | length) > 0

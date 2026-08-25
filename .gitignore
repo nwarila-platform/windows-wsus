@@ -1,129 +1,114 @@
-# Deny-all .gitignore strategy per org ADR-0003: everything is ignored, and every tracked
-# path is allowlisted explicitly below. The leading `**` is the only wildcard permitted;
-# each entry names one directory or one file, so nothing can enter the repository silently.
+# =========================================================================================== #
+# File: '.gitignore'
+# --- [ Description ] ----------------------------------------------------------------------- #
+#
+# DEFAULT-DENY, EXPLICIT INCLUDES ONLY. Nothing in this working tree is tracked unless it is
+# explicitly allowed below, by name — no wildcard allowances. Adding a new file therefore
+# requires allowing it here first — that is deliberate: it makes publishing a file an
+# explicit act rather than an accident.
+#
+# =========================================================================================== #
+
+# Ignore everything ...
 **
 
-# Root
-!/.editorconfig
-!/.gitignore
-!/.shellcheckrc
-!/.yamllint.yml
-!/LICENSE
-!/README.md
-!/SECURITY.md
-!/quality-tools.env
-!/requirements-quality.txt
-!/requirements-quality.yml
-
-# .github/
+# --- [ directory spine ] ------------------------------------------------------------------- #
+# Git does not descend into an excluded directory, so every directory on the path to an
+# allowed file is re-included by name. This publishes no files by itself: files inside these
+# directories stay ignored until named in a section below.
 !/.github/
 !/.github/workflows/
-!/.github/CODEOWNERS
-!/.github/ansible-framework-pin
-!/.github/renovate.json5
-!/.github/terraform-framework-pin
-!/.github/workflows/aws-deploy.yml
-!/.github/workflows/aws-reaper.yml
-!/.github/workflows/iam-drift.yml
-!/.github/workflows/pin-bump.yml
-!/.github/workflows/quality.yml
-
-# ansible/
 !/ansible/
 !/ansible/applications/
 !/ansible/applications/aws_windows_disk_manager/
 !/ansible/applications/aws_windows_disk_manager/defaults/
+!/ansible/applications/aws_windows_disk_manager/files/
 !/ansible/applications/aws_windows_disk_manager/meta/
 !/ansible/applications/aws_windows_disk_manager/tasks/
-!/ansible/applications/wsus/
-!/ansible/applications/wsus/defaults/
-!/ansible/applications/wsus/meta/
-!/ansible/applications/wsus/tasks/
-!/ansible/applications/wsus/tests/
-!/ansible/applications/wsus/vars/
 !/ansible/inventory/
 !/ansible/playbooks/
+!/docs/
+!/docs/decision-records/
+!/docs/decision-records/org/
+!/docs/decision-records/repo/
+!/docs/decision-records/template/
+!/docs/explanation/
+!/docs/reference/
+!/docs/reference/aws-iam/
+!/docs/reference/aws-iam/policies/
+!/docs/reference/aws-iam/roles/
+!/scripts/
+!/terraform/
+
+# --- [ allowed: repository configuration ] ------------------------------------------------- #
+!/.editorconfig
+!/.gitignore
+!/.yamllint.yml
+!/requirements-quality.txt
+!/requirements-quality.yml
+
+# --- [ allowed: top-level documents ] ------------------------------------------------------ #
+!/LICENSE
+!/README.md
+!/SECURITY.md
+
+# --- [ allowed: GitHub configuration ] ----------------------------------------------------- #
+!/.github/CODEOWNERS
+!/.github/ansible-framework-pin
+!/.github/terraform-framework-pin
+!/.github/workflows/aws-deploy.yml
+!/.github/workflows/powershell.yml
+
+# --- [ allowed: the ansible tree ] --------------------------------------------------------- #
 !/ansible/applications/aws_windows_disk_manager/README.md
 !/ansible/applications/aws_windows_disk_manager/defaults/main.yml
+!/ansible/applications/aws_windows_disk_manager/files/Set-DiskOnlineState.pester.ps1
+!/ansible/applications/aws_windows_disk_manager/files/Set-DiskOnlineState.ps1
 !/ansible/applications/aws_windows_disk_manager/meta/main.yml
 !/ansible/applications/aws_windows_disk_manager/tasks/clean_windows.yml
 !/ansible/applications/aws_windows_disk_manager/tasks/main.yml
 !/ansible/applications/aws_windows_disk_manager/tasks/present_windows.yml
 !/ansible/applications/aws_windows_disk_manager/tasks/resolve_aws.yml
 !/ansible/applications/aws_windows_disk_manager/tasks/validate.yml
-!/ansible/applications/wsus/README.md
-!/ansible/applications/wsus/defaults/main.yml
-!/ansible/applications/wsus/meta/main.yml
-!/ansible/applications/wsus/tasks/clean_windows.yml
-!/ansible/applications/wsus/tasks/main.yml
-!/ansible/applications/wsus/tasks/present_windows.yml
-!/ansible/applications/wsus/tasks/validate.yml
-!/ansible/applications/wsus/tests/test_susdb_state_table.py
-!/ansible/applications/wsus/vars/windows.yml
 !/ansible/inventory/aws_ec2.yml
 !/ansible/playbooks/wsus-aws.yml
 
-# docs/
-!/docs/
-!/docs/reference/
-!/docs/reference/aws-iam/
-!/docs/reference/aws-iam/policies/
-!/docs/reference/aws-iam/roles/
-!/docs/reference/aws-iam/README.md
-!/docs/reference/aws-iam/policies/github_nwarila-platform_windows-wsus.json
-!/docs/reference/aws-iam/policies/github_nwarila-platform_windows-wsus_iam-audit.json
-!/docs/reference/aws-iam/policies/windows-wsus_artifact-assume.json
-!/docs/reference/aws-iam/policies/windows-wsus_artifact-folder.json
-!/docs/reference/aws-iam/policies/windows-wsus_artifact-read.json
-!/docs/reference/aws-iam/policies/windows-wsus_deploy-discovery-iam.json
-!/docs/reference/aws-iam/policies/windows-wsus_deploy-ec2-launch.json
-!/docs/reference/aws-iam/policies/windows-wsus_deploy-ec2-lifecycle.json
-!/docs/reference/aws-iam/policies/windows-wsus_deploy-sg-ssm-kms.json
-!/docs/reference/aws-iam/roles/github_nwarila-platform_windows-wsus-admin.trust.json
-!/docs/reference/aws-iam/roles/github_nwarila-platform_windows-wsus-iam-audit.trust.json
-!/docs/reference/aws-iam/roles/github_nwarila-platform_windows-wsus.trust.json
-!/docs/reference/aws-iam/roles/windows-wsus-artifact-reader.trust.json
-!/docs/reference/aws-iam/roles/windows-wsus-poc-role.trust.json
-!/docs/explanation/
-!/docs/how-to/
+# --- [ allowed: published documentation ] -------------------------------------------------- #
 !/docs/README.md
-!/docs/explanation/technical-debt.md
-!/docs/how-to/operations.md
-!/docs/reference/ansible-style-guide.md
-!/docs/decision-records/
-!/docs/decision-records/org/
-!/docs/decision-records/template/
-!/docs/decision-records/repo/
 !/docs/decision-records/README.md
-!/docs/decision-records/repo/.gitkeep
 !/docs/decision-records/org/0001-use-architecture-decision-records.md
 !/docs/decision-records/org/0002-adopt-diataxis-documentation-framework.md
 !/docs/decision-records/org/0003-use-deny-all-gitignore-strategy.md
 !/docs/decision-records/org/0004-use-renovate-for-dependency-updates.md
 !/docs/decision-records/org/0005-keep-github-control-planes-namespace-local.md
+!/docs/decision-records/repo/.gitkeep
 !/docs/decision-records/template/0001-pin-terraform-and-provider-versions-exactly.md
 !/docs/decision-records/template/0002-mandate-s3-state-backend.md
 !/docs/decision-records/template/0004-isolate-pull-request-target-triggers.md
 !/docs/decision-records/template/0005-enforce-thin-runner-deployer-shape.md
+!/docs/explanation/technical-debt.md
+!/docs/explanation/wsus-role-migration-contract.md
+!/docs/reference/ansible-style-guide.md
+!/docs/reference/aws-iam/README.md
+!/docs/reference/aws-iam/policies/nwarila-platform_windows-wsus_runner_ebs.json
+!/docs/reference/aws-iam/policies/nwarila-platform_windows-wsus_runner_ec2.json
+!/docs/reference/aws-iam/policies/nwarila-platform_windows-wsus_runner_eni.json
+!/docs/reference/aws-iam/policies/nwarila-platform_windows-wsus_runner_iam.json
+!/docs/reference/aws-iam/policies/nwarila-platform_windows-wsus_runner_kms.json
+!/docs/reference/aws-iam/policies/nwarila-platform_windows-wsus_runner_s3.json
+!/docs/reference/aws-iam/policies/nwarila-platform_windows-wsus_runner_sg.json
+!/docs/reference/aws-iam/roles/nwarila-ec2-role.trust.json
+!/docs/reference/aws-iam/roles/nwarila-platform_windows-wsus_admin.trust.json
+!/docs/reference/aws-iam/roles/nwarila-platform_windows-wsus_runner.trust.json
 
-# scripts/
-!/scripts/
-!/scripts/assert-aws-clean.sh
-!/scripts/assert-aws-resource-graph.py
-!/scripts/bootstrap-iam.sh
-!/scripts/check-action-pins.py
-!/scripts/check-iam-literals.sh
-!/scripts/check-renovate-config.py
-!/scripts/check-winshell-splitargs.py
-!/scripts/check-workflow-trigger.sh
-!/scripts/terraform-consumer.tftest.hcl
-!/scripts/test-aws-clean.sh
-!/scripts/test-aws-resource-graph.py
-!/scripts/test-iam-drift-structure.py
-!/scripts/test-iam-structure.py
-!/scripts/verify.sh
+# --- [ allowed: scripts ] ------------------------------------------------------------------ #
+!/scripts/compose-and-run.sh
 
-# terraform/
-!/terraform/
+# --- [ allowed: terraform (data-only; resources live in the pinned framework) ] ------------ #
 !/terraform/README.md
 !/terraform/aws.tfvars
+
+# --- [ never tracked, even by a future allowance ] ----------------------------------------- #
+# Composition build tree (framework checkout + overlaid roles) and build worktrees.
+/.compose/
+/.worktrees/

@@ -5,25 +5,19 @@ Documentation for this repository follows the [Diátaxis framework](https://diat
 
 | Quadrant  | Path         | Purpose                                                        |
 | --------- | ------------ | -------------------------------------------------------------- |
-| How-to    | `how-to/`     | Task-oriented procedures for running and repairing the system   |
 | Reference | `reference/`  | Authoritative source of record: IAM documents, authoring rules  |
 | Explanation | `explanation/` | Why the system is shaped this way, and what it does not cover |
 | Decisions | `decision-records/` | ADR index: org-mirrored, template-mirrored, and repository-specific |
 
-Tutorials are deliberately absent. Nothing here is learning-oriented: the lifecycle runs
-unattended, and the only human entry points are responding to an incident and reviewing a change.
-
-## How-to guides
-
-- [Operations](how-to/operations.md) — the assurance contract, what a green proof does and does
-  not establish, responding to an incident, IAM changes and drift, and decommissioning.
+Tutorials and how-to guides are deliberately absent while the roles are rebuilt: the lifecycle
+runs unattended, and the human entry points are reviewing a change and inspecting a held guest.
 
 ## Reference
 
 - [AWS IAM](reference/aws-iam/README.md) — the reviewed trust boundary: every policy and role
   document, the placeholder substitution contract, and the residual risks each grant carries.
-- [Ansible style guide](reference/ansible-style-guide.md) — the authoring rules the WSUS role is
-  written to, and the reasoning behind the ones that are not obvious.
+- [Ansible style guide](reference/ansible-style-guide.md) — the authoring rules the WSUS role being
+  rebuilt will be written to, and the reasoning behind the ones that are not obvious.
 
 ## Decisions
 
@@ -35,3 +29,5 @@ unattended, and the only human entry points are responding to an incident and re
 - [Technical debt](explanation/technical-debt.md) — every known gap with its containment and its
   exit criteria. Entries are closed only when the exit criteria are met, not when they stop being
   inconvenient.
+- [WSUS role migration contract](explanation/wsus-role-migration-contract.md) — the behavioural
+  contracts the removed WID-backed role held, each with the disposition the rebuild must satisfy.

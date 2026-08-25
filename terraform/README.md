@@ -11,36 +11,37 @@ framework owns the how, this repo owns only the what.
 | File | Purpose |
 |---|---|
 | `aws.tfvars` | The one ephemeral system (`wsus-poc-01`) as framework `all_systems` input; passed to terraform verbatim |
-| `../.github/terraform-framework-pin` | 40-char commit SHA of the framework (its `main` after the flat-identity-variables PR #105); pin the SHA, not a tag — release tags land after the fact |
+| `../.github/terraform-framework-pin` | 40-char commit SHA of the framework (release 3.1.1 plus #120); pin the SHA, not a tag — release tags land after the fact |
 
 ## How a deploy runs
 
-`.github/workflows/aws-deploy.yml` (one of the two workflows the OIDC trust admits — the
-other is the reaper) does, per run:
+`.github/workflows/aws-deploy.yml`, the one workflow the OIDC trust admits, does per run:
 
 1. Checks out the framework at the pinned commit (`actions/checkout` fails on a bad SHA).
-2. Passes `aws.tfvars` to terraform verbatim. That file is the single source of truth for
-   the deploy subnet: `bootstrap-iam.sh` parses `subnet_id` out of it (and derives the VPC
-   from the subnet) to materialize the IAM pin, so the tfvars and the launch policy cannot
-   disagree.
+2. Passes `aws.tfvars` to terraform verbatim.
 3. `terraform -chdir=<framework>/terraform init` with partial backend config:
    bucket `<account-id>-terraform`, key `nwarila-platform/windows-wsus/aws-poc.tfstate`,
    region `us-east-1`. `encrypt` and `use_lockfile` come from the framework's `backend.tf`;
-   the state policy denies unencrypted puts and tfstate deletion, and grants lock-object
-   (`*.tfstate.tflock`) delete — see `docs/reference/aws-iam/README.md`.
+   the state policy reaches exactly the state object and its lock, and nothing else in the
+   bucket — see `docs/reference/aws-iam/README.md`.
 4. Stages the standing launch key's private half from an organization secret, then runs
-   apply → configure (Ansible) → **destroy, always**.
+   apply → configure (Ansible) → destroy. Destroy is attempted after any successful init,
+   including on a handled failure; a job that exhausts its budget or is cancelled can still
+   strand resources.
 5. One fixed state key is protected by the deploy workflow's singleton concurrency group and
-   Terraform's S3 lockfile. The separately serialized reaper is a conservative stale-resource
-   fallback; it is not part of the deploy queue.
+   Terraform's S3 lockfile.
 
 ## Assumptions this layer does not (cannot) verify
 
-- **Reachability is zero-inbound SSH over SSM:** the SG allows no ingress; the runner
-  tunnels through an SSM session riding the agent's own outbound 443. The EIP exists purely
-  to give that outbound path a route (pre-created ENIs never get auto public IPs; the account
-  has no NAT and no VPC endpoints). The deploy subnet must route through an internet gateway;
-  the deploy role cannot probe that (`ec2:DescribeRouteTables` is not granted).
+- **Reachability is direct SSH admitted by two groups:** the runner dials sshd at the instance's
+  auto-assigned public IPv4. The framework's `runner_ip` group carries tcp/22 from that one
+  runner's `/32`, created for the run and destroyed with it, and is passed as an apply-time
+  `-var` because the address belongs to a single run; the interface's own group carries the
+  temporary development-cycle rules that open tcp/22 to the whole IPv4 space. This depends on the
+  shared deploy subnet keeping `MapPublicIpOnLaunch`, which `ec2:DescribeSubnets` does report; the
+  route from that subnet to the internet gateway is what cannot be verified, because
+  `ec2:DescribeRouteTables` is not granted. Either way the play fails on an inventory that yields
+  no reachable host rather than hanging.
 - The deploy role launches with the standing `nwarila-ec2-key` pair; it never creates key pairs.
   The private half lives in the `AWS_EC2_SSH_PRIVATE_KEY` organization secret, is staged into
   the runner's temporary directory at mode 0600 for the life of one job, and never enters
@@ -48,12 +49,13 @@ other is the reaper) does, per run:
 
 ## Local (break-glass) run
 
-Operators holding the `-admin` role can run the identical flow by hand: check out the
-framework at the pin, init with the same backend config, apply with `-var-file` pointing at
-`aws.tfvars` plus the same `-var` identity flags, destroy. State and lock live under the same
-key, so a local run and CI cannot race each other past the S3 lockfile.
+The `-admin` role would run the identical flow by hand — check out the framework at the pin, init
+with the same backend config, apply with `-var-file` pointing at `aws.tfvars` plus the same
+`-var` identity flags, destroy — and state and lock live under the same key, so a local run and
+CI cannot race past the S3 lockfile. That path is unavailable today: the Identity Center
+permission set's assume allowlist does not name the role
+(`docs/reference/aws-iam/README.md`).
 
 **Stuck lock recovery** (killed run left `aws-poc.tfstate.tflock` behind): confirm no run is
 live, then `aws s3 rm s3://<account-id>-terraform/nwarila-platform/windows-wsus/aws-poc.tfstate.tflock`.
-The state policy grants exactly that delete and denies deleting the state object itself.
 CI never auto-deletes the lock.

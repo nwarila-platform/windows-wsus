@@ -2,232 +2,135 @@
 # File: 'ansible/playbooks/wsus-aws.yml'
 # --- [ Description ] ----------------------------------------------------------------------- #
 #
-# Provisions the declared Windows data disks on the EPHEMERAL EC2 instance, then deploys the
-# WSUS (WID-backed) role. Runs from the COMPOSED tree only — in CI,
-# .github/workflows/aws-deploy.yml overlays the role into the pinned ansible-framework
-# checkout and executes this playbook against an exact JSON inventory built from Terraform
-# output and verified against live EC2 tags, reached by instance id over SSH-in-SSM — zero inbound.
+# Provisions the declared Windows data disks on the EPHEMERAL EC2 instance. The WSUS on SQL
+# Server roles follow, one action at a time. Runs from the COMPOSED tree only — in CI,
+# .github/workflows/aws-deploy.yml
+# overlays this repository's roles into the pinned ansible-framework checkout and executes this
+# playbook against a dynamic EC2 inventory filtered to this run by its framework-set EC2 tags,
+# reached by direct SSH to the instance's public IPv4.
 #
-#   * aws_windows_disk_manager is this repository's single-platform disk role (vendor
-#     assert: 'Amazon EC2'). Disk identities are declared by EBS `function` tag — volume ids
-#     only exist after terraform apply, so the role resolves each tag itself (one
-#     controller-side describe per host, Nitro serial == volume-id match). The Function tag
-#     values here must match the ebs_block_devices tags in terraform/aws.tfvars.
+# Three plays, in a required order: confirm the filtered inventory is non-empty, wait for that
+# instance to become reachable, then configure it.
 #
 # =========================================================================================== #
 ---
-# An inventory can contain zero hosts, which Ansible normally treats as a successful no-op. Make
-# cardinality and immutable deployment identity an explicit controller-side contract before any
-# SSH/SSM connection is attempted.
+
+#region ------ [ Play: Inventory Contract ] --------------------------------------------------- #
+# The dynamic EC2 inventory (aws_ec2.yml) already filters to this run's instance by its
+# framework-set tags, so the identity contract is not re-asserted here -- that would only re-check
+# what the aws-terraform-framework guarantees. This guards the one state the filter cannot cover:
+# an empty inventory, where the instance never launched or never tagged.
+
 - name: 'PLAY | Validate The Ephemeral AWS Inventory Contract'
   hosts: 'localhost'
   gather_facts: false
   become: false
-
-  vars:
-    __wsus_inventory_hosts__: "{{ groups['wsus_servers'] | default([]) }}"
-    __expected_repository_id__: "{{ lookup('ansible.builtin.env', 'GITHUB_REPOSITORY_ID') | trim }}"
-    __expected_run_id__: "{{ lookup('ansible.builtin.env', 'GITHUB_RUN_ID') | trim }}"
-    __expected_region__: "{{ aws_region | default('') | trim }}"
-
   tasks:
-    - name: 'INVENTORY | Require One Host And An Immutable Repository Identity'
+    - name: 'INVENTORY | Require At Least One Filtered Host'
       ansible.builtin.assert:
-        that:
-          - __wsus_inventory_hosts__ | length == 1
-          - __expected_repository_id__ is match('^[0-9]+$')
-          - __expected_run_id__ is match('^[0-9]+$')
-          - __expected_region__ is match('^[a-z]{2}(-[a-z]+)+-[0-9]$')
+        that: groups['wsus_servers'] | default([]) | length >= 1
         fail_msg: >-
-          Refusing to configure: expected exactly one running Function=wsus instance and a
-          numeric GITHUB_REPOSITORY_ID and GITHUB_RUN_ID, but inventory
-          hosts={{ __wsus_inventory_hosts__ }}, repository_id='{{ __expected_repository_id__ }}',
-          run_id='{{ __expected_run_id__ }}', region='{{ __expected_region__ }}'. A zero-host
-          inventory is not a successful deployment proof.
+          Refusing to configure: the 'wsus_servers' inventory group is empty. The dynamic EC2
+          inventory found no running instance tagged for this run -- a zero-host inventory is not a
+          successful deployment proof.
         quiet: true
 
-    - name: 'INVENTORY | Select The Sole Terraform Instance'
-      ansible.builtin.set_fact:
-        __wsus_inventory_host__: "{{ __wsus_inventory_hosts__ | first }}"
-
-    - name: 'INVENTORY | Assert Instance, Platform, Region, And Ownership Tags'
-      vars:
-        __selected__: "{{ hostvars[__wsus_inventory_host__] }}"
-        __selected_tags__: "{{ __selected__.ec2_tags | default({}) }}"
-      ansible.builtin.assert:
-        that:
-          - __selected__.ec2_instance_id is match('^i-[0-9a-f]+$')
-          - __wsus_inventory_host__ == __selected__.ec2_instance_id
-          - (__selected__.ec2_platform | default('') | lower) == 'windows'
-          - (__selected__.ec2_state.name | default('')) == 'running'
-          - (__selected_tags__.Function | default('')) == 'wsus'
-          - (__selected_tags__['RepositoryId'] | default('') | string) == __expected_repository_id__
-          - (__selected__.ec2_placement.availability_zone | default('')).startswith(__expected_region__)
-          - (__selected_tags__['RunId'] | default('') | string) == __expected_run_id__
-        fail_msg: >-
-          Refusing to configure {{ __wsus_inventory_host__ }}: it is not the one running Windows
-          instance owned by repository id {{ __expected_repository_id__ }} in
-          {{ __expected_region__ }}, or its tags do not contain current run id
-          '{{ __expected_run_id__ }}'. tags={{ __selected_tags__ }}.
-        quiet: true
+#endregion --- [ Play: Inventory Contract ] --------------------------------------------------- #
 
 #region ------ [ Play: Windows Readiness ] ---------------------------------------------------- #
-# Runs BEFORE any Windows module can work: wait for sshd (EC2Launch installs the launch key
-# minutes after boot) and for EC2Launch itself to finish provisioning. The OpenSSH
-# DefaultShell stays cmd — the boot default, which passes ansible's module bootstrap argv
-# through verbatim (a PowerShell login shell re-parses it and breaks -EncodedCommand; proven
-# live, run 31185575215). Nothing in the roles needs a PowerShell login shell: win_* modules
-# execute inside their own PowerShell wrapper regardless.
-- name: 'PLAY | Wait for Windows readiness (sshd, EC2Launch)'
+# The instance answers the EC2 API seconds after creation and accepts SSH minutes later: it must
+# finish sysprep and EC2Launch before sshd starts and the launch key is installed.
+#
+# Poll the TCP port without opening SSH sessions while sysprep and EC2Launch start sshd, then use
+# a bounded authenticated probe before running anything on the guest.
+
+- name: 'PLAY | Wait For Windows Readiness (direct SSH, EC2Launch)'
   hosts: 'wsus_servers'
   gather_facts: false
   become: false
   any_errors_fatal: true
-
-  vars:
-    # The same connection the inventory composes, spelled out for the controller-side probe
-    # below (an unreachable `raw` task is never retried by retries/until, so the WAIT must run
-    # on the controller, where a failing ssh is an ordinary command failure).
-    __ssh_probe__: >-
-      ssh {{ ansible_ssh_common_args }} -i {{ ansible_ssh_private_key_file }}
-      -o BatchMode=yes -o ConnectTimeout=10
-      {{ ansible_user }}@{{ ansible_host }} exit
 
   tasks:
-    - name: 'READY | Wait for the SSM-SSH path (agent registered, sshd up, launch key installed)'
+    - name: 'READY | Wait For The Direct SSH Port'
       delegate_to: 'localhost'
-      ansible.builtin.command:
-        cmd: "{{ __ssh_probe__ }}"
-      register: '__ssh_ready__'
-      retries: 90
-      delay: 10
-      until: __ssh_ready__.rc == 0
+
+      ansible.builtin.wait_for:
+        active_connection_states: [ 'ESTABLISHED', 'FIN_WAIT1', 'FIN_WAIT2', 'SYN_RECV', 'SYN_SENT', 'TIME_WAIT' ]
+        connect_timeout: 5
+        delay: 0
+        host: "{{ ansible_host }}"
+        port: 22
+        sleep: 15
+        state: 'started'
+        timeout: 900
+
+    - name: 'READY | Confirm The Direct SSH Path End To End'
+      changed_when: false
+      delay: 15
+      delegate_to: 'localhost'
       failed_when: __ssh_ready__.rc != 0
+      register: '__ssh_ready__'
+      retries: 20
+      until: __ssh_ready__.rc == 0
+
+      ansible.builtin.command:
+        cmd: >-
+          ssh {{ ansible_ssh_common_args }} -i {{ ansible_ssh_private_key_file }}
+          -o BatchMode=yes -o ConnectTimeout=15
+          {{ ansible_user }}@{{ ansible_host }} exit
+        expand_argument_vars: true
+        stdin_add_newline: true
+        strip_empty_ends: true
+
+    - name: 'READY | Wait For EC2Launch Provisioning To Complete'
       changed_when: false
 
-    - name: 'READY | Wait for EC2Launch provisioning to complete'
       ansible.builtin.raw: '"C:\Program Files\Amazon\EC2Launch\EC2Launch.exe" status -b'
-      changed_when: false
+
 #endregion --- [ Play: Windows Readiness ] ---------------------------------------------------- #
 
-- name: 'PLAY | WSUS Server (WID-backed, ephemeral AWS)'
+#region ------ [ Play: Guest Storage ] ------------------------------------------------------- #
+
+- name: 'PLAY | Guest Storage (ephemeral AWS)'
   hosts: 'wsus_servers'
-  # Roles gather the facts they need themselves at present-time; the play gathers nothing.
   gather_facts: false
-  # The framework chassis ansible.cfg sets become=sudo (POSIX-only). The admin account over SSH
-  # already holds an elevated token on Windows, so this transport setting remains explicit.
   become: false
   any_errors_fatal: true
-
   vars:
-    # Platform convention: 'env' is the operator-facing extra-var; 'ENV' is the
-    # play-var the loader validates (mirrors the wazuh central playbooks).
     ENV: "{{ env }}"
-    # One literal layout feeds both roles below.  Disk identity/format and application path
-    # consumers can no longer drift because a drive letter was edited in only one declaration.
+    # One volume per concern, matching terraform/aws.tfvars by Function tag. The letters are the
+    # contract this play publishes to the roles that follow: SUSDB on E, the WSUS content store
+    # on F, and the IIS root on G.
     wsus_disk_layout:
-      db:
-        function: 'WSUSDB'
+      - function: 'WSUSDB'
         drive_letter: 'E'
         label: 'WSUSDB'
         allocation_unit: 65536
-      content:
-        function: 'WSUSDATA'
+      - function: 'WSUSDATA'
         drive_letter: 'F'
         label: 'WSUSDATA'
         allocation_unit: 4096
-      iis:
-        function: 'WSUSIIS'
+      - function: 'WSUSIIS'
         drive_letter: 'G'
         label: 'WSUSIIS'
         allocation_unit: 4096
-
-
-  #region ------ [ Pre-Tasks ] ---------------------------------------------------------------- #
-  pre_tasks:
-
-    #region ------ [ Pre-Tasks: Assert AWS Deployment Identity ] ------------------------------ #
-    # The ROLE never reaches into an environment variable: every configuration value flows
-    # through the 'wsus:' override dict. Account-derived values are passed EXPLICITLY on the
-    # ansible-playbook invocation (-e aws_account_id=… -e aws_region=…), the same way the
-    # Terraform framework receives its deployment-identity variables — the workflow supplies
-    # both from its own environment, so the play and the deploy identity can never disagree.
-    - name: 'PRE | Assert the AWS deployment identity was provided'
-      ansible.builtin.assert:
-        that:
-          - aws_account_id is defined
-          - aws_account_id is match('^[0-9]{12}$')
-          - aws_region is defined
-          - aws_region is match('^[a-z]{2}(-[a-z]+)+-[0-9]$')
-        fail_msg: >-
-          aws_account_id and aws_region must be provided as extra-vars. The aws-deploy workflow
-          passes them from its own environment (the same values the OIDC role ARN and region
-          use); a local run must pass both explicitly.
-        quiet: true
-    #endregion --- [ Pre-Tasks: Assert AWS Deployment Identity ] ------------------------------ #
-
-  #endregion --- [ Pre-Tasks ] ---------------------------------------------------------------- #
-
 
   #region ------ [ Roles ] -------------------------------------------------------------------- #
   roles:
 
     #region ------ [ Roles: Windows Disk Manager ] -------------------------------------------- #
-    # Guest disk provisioning uses this repository's AWS-only disk role. Drive letters must
-    # match wsus_defaults.data_disks because wsus consumes the volumes by letter; each
-    # `function` names the EBS volume's Function tag (declared in the terraform template) and
-    # the role resolves it to the attached disk itself — no injected identities.
-    - role: 'aws_windows_disk_manager'
+    # Guest disk provisioning is delegated to the composed framework role. `function` names
+    # each EBS volume's Function tag (declared in
+    # terraform/aws.tfvars) and the role resolves it to the attached disk itself, because a
+    # volume id only exists after apply. The layout is passed through whole: adding a volume is
+    # a change in two files, not three.
+    - role: 'windows_disk_manager'
       vars:
-        aws_windows_disk_manager:
-          disks:
-            - function: "{{ wsus_disk_layout.db.function }}"
-              drive_letter: "{{ wsus_disk_layout.db.drive_letter }}"
-              label: "{{ wsus_disk_layout.db.label }}"
-              allocation_unit: "{{ wsus_disk_layout.db.allocation_unit }}"
-            - function: "{{ wsus_disk_layout.content.function }}"
-              drive_letter: "{{ wsus_disk_layout.content.drive_letter }}"
-              label: "{{ wsus_disk_layout.content.label }}"
-              allocation_unit: "{{ wsus_disk_layout.content.allocation_unit }}"
-            - function: "{{ wsus_disk_layout.iis.function }}"
-              drive_letter: "{{ wsus_disk_layout.iis.drive_letter }}"
-              label: "{{ wsus_disk_layout.iis.label }}"
-              allocation_unit: "{{ wsus_disk_layout.iis.allocation_unit }}"
+        windows_disk_manager:
+          platform: 'aws'
+          disks: "{{ wsus_disk_layout }}"
     #endregion --- [ Roles: Windows Disk Manager ] -------------------------------------------- #
 
-    #region ------ [ Roles: Windows Server Update Service ] ----------------------------------- #
-    - role: 'wsus'
-      vars:
-        wsus:
-          data_disks:
-            db:
-              drive_letter: "{{ wsus_disk_layout.db.drive_letter }}"
-            content:
-              drive_letter: "{{ wsus_disk_layout.content.drive_letter }}"
-            iis:
-              drive_letter: "{{ wsus_disk_layout.iis.drive_letter }}"
-          # Upstream WSUS server (C11d): REQUIRED input (validate.yml asserts it). PLACEHOLDER —
-          # the ephemeral PoC has no reachable upstream; the role only SAVES the downstream
-          # topology config (no connectivity check).
-          upstream_server: 'wsus-upstream.corp.local'
-          # There is no route from the ephemeral public proof account to the placeholder
-          # corporate upstream.  Configure the desired topology, but do not claim a successful
-          # synchronization.  Set this true only with a real reachable upstream; the role then
-          # waits for terminal success before recording its marker.
-          sync:
-            bootstrap_enabled: false
-          # Artifact bucket. The '-ansible' suffix is the platform's Layer-0 bucket naming
-          # convention (the state bucket is '<account-id>-terraform' the same way); it must
-          # match the <artifact-bucket> value materialized into the IAM sources.
-          bucket: "{{ aws_account_id }}-ansible"
-          # TLS: the controller delivers the CA-issued PFX (+ password) from bucket at the
-          # role's tls.pfx_key, imports it, binds 8531, and runs wsusutil configuressl for
-          # dns_name. thumbprint is trust-but-verify: the PFX must match before import, or
-          # the play fails — a modified or swapped S3 object cannot serve. Trust
-          # distribution is deliberately out of scope here.
-          tls:
-            enabled: true
-            dns_name: 'wsus.nwarila.internal'
-            thumbprint: '56FC0FC5BA6868BD7F1A5A03B8AE98AA5F0D867E'
-    #endregion --- [ Roles: Windows Server Update Service ] ----------------------------------- #
   #endregion --- [ Roles ] -------------------------------------------------------------------- #
+
+#endregion --- [ Play: Guest Storage ] ------------------------------------------------------- #
