@@ -1,56 +1,37 @@
-# =========================================================================================== #
-# File: 'ansible/inventory/aws_ec2.yml'
-# --- [ Description ] ----------------------------------------------------------------------- #
-#
-# Dynamic inventory for the ephemeral AWS PoC (amazon.aws.aws_ec2 plugin — the filename must
-# end in aws_ec2.yml for plugin detection). Finds the running instance the terraform framework
-# tagged Function=wsus and places it in the 'wsus_servers' group the playbooks target.
-#
-# TRANSPORT IS SSH OVER SSM: the instance has a zero-ingress security group, so every
-# connection tunnels through an SSM session (AWS-StartSSHSession — the capability the deploy
-# IAM's tag-gated session grants exist for). That is why ansible_host is the INSTANCE ID, not
-# an IP address: it is the target of `aws ssm start-session` in the ProxyCommand below.
-#
-# The protected lifecycle does not consume this file: it builds an exact inventory from
-# Terraform output and passes its runner-local ephemeral key explicitly. A human using this
-# broad discovery aid must supply the correct ephemeral/private key with `--private-key` or an
-# SSH agent; no long-lived repository key path is encoded here.
-#
-# =========================================================================================== #
-plugin: 'amazon.aws.aws_ec2'
+---
+plugin: amazon.aws.aws_ec2
 
-regions:
-  - 'us-east-1'
+regions: [ us-east-1 ]
 
 filters:
-  tag:Function: 'wsus'
-  instance-state-name: 'running'
+  instance-state-name: running
+  'tag:RepositoryId': "{{ lookup('ansible.builtin.env', 'GITHUB_REPOSITORY_ID') }}"
+  'tag:RunId': "{{ lookup('ansible.builtin.env', 'GITHUB_RUN_ID') }}"
+  'tag:Environment': test
+  'tag:Repository': "{{ lookup('ansible.builtin.env', 'GITHUB_REPOSITORY') }}"
 
-# Instance ids are globally unique inside the account/region and are also the SSM target.  Using
-# Name here allowed two stale/current instances with the same Name tag to collapse into one
-# inventory host and made an apparently successful zero/one-host run ambiguous.
-hostnames:
-  - 'instance-id'
+hostnames: [ instance-id ]
+
+strict: true
 
 groups:
-  wsus_servers: true
+  wsus_servers: 'true'
 
-# Namespace every EC2 attribute the plugin injects as a hostvar: unprefixed, `state`
-# ({'code': 16, 'name': 'running'}) shadows the framework loader's own `state` variable and
-# `platform`/`tags` are one refactor away from the same collision.
-hostvars_prefix: 'ec2_'
+# Namespace every attribute this plugin publishes. Without it the plugin exposes a host variable
+# named 'state' — the EC2 instance state — which collides with the role input of the same name that
+# selects present_windows.yml or clean_windows.yml. Prefixing removes the collision at the source
+# rather than relying on each caller to override it, and it protects any future generic name too.
+#
+# The prefix is applied BEFORE 'compose' evaluates, so expressions below read the prefixed names.
+# Host names are resolved from the raw instance data and are unaffected, as are the AWS-side filters.
+hostvars_prefix: 'aws_'
 
 compose:
-  # The SSM session target — see the header.
-  ansible_host: 'ec2_instance_id'
-  # Connection settings follow the DETECTED OS (EC2 reports platform 'windows' on Windows
-  # instances), so this inventory serves any future mixed fleet unchanged.
-  ansible_user: '"Administrator" if ec2_platform == "windows" else "ec2-user"'
-  # cmd, matching the OpenSSH DefaultShell Windows boots with: cmd passes ansible's module
-  # bootstrap argv through verbatim, where a PowerShell login shell re-parses and breaks it.
-  ansible_shell_type: '"cmd" if ec2_platform == "windows" else "sh"'
-  ansible_connection: '"ssh"'
-  ansible_ssh_common_args: >-
-    '-o StrictHostKeyChecking=accept-new
-    -o ProxyCommand="aws ssm start-session --target %h --document-name AWS-StartSSHSession
-    --parameters portNumber=%p --region us-east-1"'
+  ansible_host: aws_public_ip_address
+  ansible_connection: "'ssh'"
+  ansible_user: "'Administrator'"
+  ansible_shell_type: "'cmd'"
+  ansible_ssh_private_key_file: "lookup('ansible.builtin.env', 'CI_PRIVATE_KEY')"
+  # Keepalive: a long task that runs quiet on the guest otherwise drops the idle SSH session and
+  # the result is lost as UNREACHABLE. Twenty unanswered 30-second probes are tolerated first.
+  ansible_ssh_common_args: "'-o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -o ServerAliveCountMax=20'"

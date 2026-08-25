@@ -10,17 +10,14 @@
       "Action": "sts:AssumeRoleWithWebIdentity",
       "Condition": {
         "StringEquals": {
-          "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
           "token.actions.githubusercontent.com:repository_id": "<repository-id>",
+          "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
           "token.actions.githubusercontent.com:ref": "refs/heads/main",
           "token.actions.githubusercontent.com:sub": [
             "repo:nwarila-platform@<owner-id>/windows-wsus@<repository-id>:ref:refs/heads/main",
             "repo:nwarila-platform/windows-wsus:ref:refs/heads/main"
           ],
-          "token.actions.githubusercontent.com:job_workflow_ref": [
-            "nwarila-platform/windows-wsus/.github/workflows/aws-deploy.yml@refs/heads/main",
-            "nwarila-platform/windows-wsus/.github/workflows/aws-reaper.yml@refs/heads/main"
-          ]
+          "token.actions.githubusercontent.com:job_workflow_ref": "nwarila-platform/windows-wsus/.github/workflows/aws-deploy.yml@refs/heads/main"
         }
       }
     }

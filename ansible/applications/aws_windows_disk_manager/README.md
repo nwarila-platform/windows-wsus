@@ -17,8 +17,8 @@ What the narrowing removed:
 Both retired keys are refused by name at validation rather than silently ignored: a stale
 `unique_id` beside a `function` could target a different disk than the tag names.
 
-What is unchanged from the fork point: the shared v3.3.0 loader (byte-identical, like the
-`wsus` role's), the observed-state classification, and the mutation-safety contract — an
+What is unchanged from the fork point: the shared v3.3.0 loader, byte-identical as every
+consuming role's must be; the observed-state classification, and the mutation-safety contract — an
 idempotent online/writable fixup, provisioning only from a positively recognized RAW/blank or
 GPT/unformatted state, an idempotent skip when an NTFS volume already carries the declared
 label, and fail-closed refusal of the entire declaration set when any one disk classifies as
@@ -37,14 +37,14 @@ files as `config`. Validation runs against that effective mapping before target 
 | `disks[].label` | NTFS volume label, 1–32 characters, distinct per entry. |
 | `disks[].allocation_unit` | Optional; a classic NTFS cluster size (512–65536). Default 4096. |
 
-`ansible/playbooks/wsus-aws.yml` feeds this role and the `wsus` role one shared layout, so
-disk identity and application-path consumers cannot drift.
+This role is retained but unreferenced: `ansible/playbooks/wsus-aws.yml` currently delegates
+guest storage to the pinned framework's `windows_disk_manager`, mirroring the sibling reference.
 
 ## Requirements
 
 - Windows Server 2025 on EC2 reached over OpenSSH with `ansible_shell_type: cmd`; the play
-  must use `become: false` (transport setting, same as the `wsus` role).
-- Controller-side AWS credentials holding the deploy identity's existing `ec2:Describe*`
+  must use `become: false`, a transport setting rather than a role choice.
+- Controller-side AWS credentials holding the deploy identity's existing `ec2:DescribeVolumes`
   grant; the target instance itself needs no EBS or IAM permission.
 - Exact collection versions from `requirements-quality.yml` (`amazon.aws`,
   `ansible.windows`, `community.windows`).

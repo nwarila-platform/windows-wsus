@@ -16,11 +16,9 @@
 #   skip on a matching NTFS label, and fail-closed refusal of any foreign layout.
 #
 # =========================================================================================== #
+---
 aws_windows_disk_manager_defaults:
 
-  #region ------ [ Lifecycle ] ------------------------------------------------------------------ #
-  state: 'present'
-  #endregion --- [ Lifecycle ] ------------------------------------------------------------------ #
 
   #region ------ [ Managed disks ] -------------------------------------------------------------- #
   # Declared disks to manage. Empty by default. Each entry declares:

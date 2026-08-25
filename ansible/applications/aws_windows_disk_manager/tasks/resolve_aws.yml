@@ -14,11 +14,12 @@
 # host-specific (each host's own attached volumes), not a single value shared across the play.
 #
 # The TARGET instance needs NO EBS/IAM permissions of its own — the describe runs under the
-# deploy identity's existing ec2:Describe* grant (see docs/reference/aws-iam/README.md). The
+# deploy identity's existing ec2:DescribeVolumes grant (see docs/reference/aws-iam/README.md). The
 # instance-id comes from the target's own IMDSv2 (link-local, hop-limit-1 safe, no
 # credential), never from inventory metadata that could drift from the machine actually being
 # configured.
 # =========================================================================================== #
+---
 
 #region ------ [ Script ] -------------------------------------------------------------------- #
 
@@ -54,7 +55,6 @@
 - name: 'BEGIN | Describe Attached EBS Volumes For This Instance'
   delegate_to: 'localhost'
   become: false
-  no_log: true
   register: '__aws_vol_info__'
   retries: 5
   delay: 10

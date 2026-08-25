@@ -1,3 +1,0 @@
-# The quality gate fails correctness-relevant warnings and errors. Informational style findings
-# remain visible during ad-hoc full ShellCheck runs but do not destabilize the required check.
-severity=warning
