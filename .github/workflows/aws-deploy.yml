@@ -307,7 +307,7 @@ jobs:
           done
           echo "overlaid ${#role_sources[@]} repository role(s)"
 
-      # Readiness, host preparation and guest storage all live in the playbook.
+      # Readiness, host preparation, guest storage and the WSUS role all live in the playbook.
       # The EC2 inventory plugin filters live instances to this repository and run before exposing
       # one target.
       - name: Run the WSUS playbook

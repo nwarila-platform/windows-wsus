@@ -41,8 +41,14 @@ prevents, because most of them were learned from that failure rather than chosen
 
 ## 4. Task authoring idioms
 
-- Task names: `'STAGE | Imperative description'` — stages observed: `INIT`, `MAIN`,
-  `BEGIN` (input guards), `END` (verification), `Cleanup`, `INFO` (block wrappers).
+- Task names: `'STAGE | Imperative description'`. The loader owns `INIT`, `MAIN`, `Cleanup` and
+  `INFO` (block wrappers);
+  a role this repository writes owns `VALIDATE` (controller-side guards on the merged config)
+  and the three stages that follow it — `BEGIN` reads the machine and decides, `PROCESS` acts on
+  that decision, `END` proves the result. Each of the three is ONE top-level task carrying a
+  `block:`, and `END` is ungated so a converged host proves what a fresh one does. This is the
+  `pdq_deploy` shape, not the framework's `INFO | Entering OS Tasks` wrapper with `BEGIN`/`MAIN`
+  prefixes.
 - `#region` / `#endregion` banner comments delimit logical sections; files open with
   the boxed header comment (`File:`, description, version where applicable).
 - Fully-qualified collection names always (`ansible.builtin.*`, `ansible.windows.*`).
@@ -139,10 +145,10 @@ clobber, verified at the module source). These stay `quiet: true` with an action
 
 ## 5. Windows conventions
 
-- Transport: **SSH** (org standard; key auth, one transport story across the fleet).
-  `ansible_shell_type: cmd`; the target's OpenSSH `DefaultShell` stays cmd (the boot default) — a
-  PowerShell login shell re-parses ansible's module-bootstrap argv and breaks `-EncodedCommand`
-  (proven live); `win_*` modules run inside their own PowerShell wrapper regardless.
+- Transport: **SSH** (org standard; key auth, one transport story across the fleet). The target's
+  OpenSSH `DefaultShell` boots as cmd, and `os_bootstrap` flips it to PowerShell on first contact;
+  the inventory composes `ansible_shell_type: powershell` to match. Anything that must run before
+  that flip is `raw`, which the transport sends verbatim under either shell.
 - `become: false` at play level (framework chassis `become=sudo` is POSIX-only;
   built-in administrator over SSH is already elevated). Revisit for least-privilege
   runs (runas) when a non-admin service account is introduced — TBD.
@@ -231,7 +237,8 @@ clobber, verified at the module source). These stay `quiet: true` with an action
 
 - The controller toolchain installs into a virtualenv from `requirements-quality.txt`, which pins
   `ansible-core`, `ansible-lint`, and `yamllint` exactly. Collections are pinned in
-  `requirements-quality.yml`: `ansible.windows`, `community.windows`, and `amazon.aws`.
+  `requirements-quality.yml`: `ansible.windows`, `community.windows`, `amazon.aws`, and
+  `microsoft.ad`.
 - Windows targets are never long-lived development state: every proof creates a fresh ephemeral
   instance with Terraform; the lab-era snapshot-revert workflow is retired.
 - **Lint from the composed tree**: the playbook's roles resolve only inside the composed

@@ -1,0 +1,27 @@
+# =========================================================================================== #
+# File: '{{ role_path }}/vars/windows.yml'
+# --- [ Description ] ----------------------------------------------------------------------- #
+#
+# Windows overlay for the wsus role: properties of the platform rather than choices a site makes.
+# The loader merges this over defaults/main.yml, so a caller can still override any of it -- an
+# image that repackaged SQL Server differently is a configuration, not a fork.
+#
+# =========================================================================================== #
+---
+
+# The loader merges this file WHOLE over defaults/main.yml, so its top-level keys are config keys
+# -- there is no wrapping name.
+
+#region ------ [ Where the instance publishes itself ] --------------------------------------- #
+# SQL Server records the directory name of each instance under this key, keyed by instance name.
+# The directory carries the product major version ('MSSQL16.MSSQLSERVER'), which is why the role
+# reads it instead of composing it.
+sql:
+  # The instance the AWS SQL-Server images install, and the service it runs as -- one name, two
+  # places it appears. Not a caller's choice: validate.yml refuses any other, because the role
+  # composes a default-instance connection target rather than deriving one from this name.
+  instance: 'MSSQLSERVER'
+  instance_names_key: 'HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server\Instance Names\SQL'
+  instance_root: 'HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server'
+  service_name: 'MSSQLSERVER'
+#endregion --- [ Where the instance publishes itself ] --------------------------------------- #

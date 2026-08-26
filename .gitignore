@@ -19,6 +19,13 @@
 !/.github/
 !/.github/workflows/
 !/ansible/
+!/ansible/applications/
+!/ansible/applications/wsus/
+!/ansible/applications/wsus/defaults/
+!/ansible/applications/wsus/files/
+!/ansible/applications/wsus/meta/
+!/ansible/applications/wsus/tasks/
+!/ansible/applications/wsus/vars/
 !/ansible/inventory/
 !/ansible/playbooks/
 !/docs/
@@ -51,8 +58,18 @@
 !/.github/ansible-framework-pin
 !/.github/terraform-framework-pin
 !/.github/workflows/aws-deploy.yml
+!/.github/workflows/powershell.yml
 
 # --- [ allowed: the ansible tree ] --------------------------------------------------------- #
+!/ansible/applications/wsus/defaults/main.yml
+!/ansible/applications/wsus/files/Get-SqlDatabasePlacement.pester.ps1
+!/ansible/applications/wsus/files/Get-SqlDatabasePlacement.ps1
+!/ansible/applications/wsus/meta/main.yml
+!/ansible/applications/wsus/tasks/clean_windows.yml
+!/ansible/applications/wsus/tasks/main.yml
+!/ansible/applications/wsus/tasks/present_windows.yml
+!/ansible/applications/wsus/tasks/validate.yml
+!/ansible/applications/wsus/vars/windows.yml
 !/ansible/inventory/aws_ec2.yml
 !/ansible/playbooks/wsus-aws.yml
 

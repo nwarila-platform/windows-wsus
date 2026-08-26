@@ -1,0 +1,14 @@
+# ============================================================================================= #
+# File: '{{ role_path }}/tasks/clean_windows.yml'
+# --- [ Description ] ----------------------------------------------------------------------- #
+#
+# state=clean removes what this role STAGED on the guest, never what it configured. The loader
+# resolves an OS task file per state, so this file has to exist for 'clean' to dispatch at all --
+# the local style contract names it alongside present_windows.yml.
+#
+# It is deliberately empty. The role currently stages nothing: its one action pins registry values
+# and directory rights, which are configuration rather than a cache. The first staged artefact --
+# an installer copied to the guest -- brings its removal here with it.
+#
+# ============================================================================================= #
+---

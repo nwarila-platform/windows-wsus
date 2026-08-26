@@ -1,0 +1,31 @@
+# =========================================================================================== #
+# File: '{{ role_path }}/defaults/main.yml'
+# --- [ Description ] ----------------------------------------------------------------------- #
+#
+# Lowest-precedence configuration for the wsus role. The v3 loader merges the OS overlay in vars/
+# over this map and publishes the result as 'wsus_running'; tasks read only the merged map.
+#
+# WHAT DOES NOT BELONG HERE: anything the guest can be asked. The instance's own directory name
+# carries the product major version and is read from the registry at run time rather than
+# predicted here.
+#
+# =========================================================================================== #
+---
+
+wsus_defaults:
+
+  #region ------ [ Database placement ] ------------------------------------------------------ #
+  # WHERE SUSDB IS CREATED, and the reason this is the role's first action. wsusutil postinstall
+  # creates the database wherever the instance's default directories point, and moving it
+  # afterwards is the unsupported detach/copy/attach path (TD-005). Placement has to be right
+  # before anything can create it, so these are pinned before the feature is even installed.
+  #
+  # The letter is the contract the play publishes; the subdirectories are relative to it so a
+  # different letter moves both without editing two values.
+  # WHICH disk is a property of the deployment, so the letter and the label it must carry are
+  # published by the play and deliberately absent here -- validate.yml refuses a run that omits
+  # either. Only the layout WITHIN that volume defaults, because it is this role's own shape.
+  db:
+    data_subdir: 'MSSQL\Data'
+    log_subdir: 'MSSQL\Log'
+  #endregion --- [ Database placement ] ------------------------------------------------------ #

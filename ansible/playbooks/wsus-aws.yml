@@ -114,6 +114,21 @@
               allocation_unit: 4096
     #endregion --- [ Roles: Windows Disk Manager ] -------------------------------------------- #
 
+    #region ------ [ Roles: WSUS ] ------------------------------------------------------------ #
+    # Last, because it is the only role that needs the disks it writes to. Rebuilt one action at a
+    # time against docs/explanation/wsus-role-migration-contract.md.
+    #
+    # Both values restate what the disk layout above declares, and restating them is the point: the
+    # role proves at END that the volume mounted at this letter carries this label, so swapping two
+    # letters up there fails the run instead of quietly putting SUSDB on the wrong volume.
+    - role: 'wsus'
+      vars:
+        wsus:
+          db:
+            drive_letter: 'E'
+            volume_label: 'WSUSDB'
+    #endregion --- [ Roles: WSUS ] ------------------------------------------------------------ #
+
   #endregion --- [ Roles ] -------------------------------------------------------------------- #
 
 #endregion --- [ Play: Configure The Guest ] -------------------------------------------------- #
