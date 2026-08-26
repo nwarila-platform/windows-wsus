@@ -99,7 +99,8 @@ workarounds are not accidentally restored.
   is a Feature-on-Demand on 2022, while the pinned framework's Windows user_data runs
   `Set-Service -Name sshd` under `$ErrorActionPreference = "Stop"`. On a 2022 image that aborts
   the whole script before the launch key is installed, so the guest is unreachable. Installing
-  the capability needs either Windows Update or an S3-hosted CAB, and the guest has no egress.
+  the capability needs either Windows Update or an S3-hosted CAB, and the guest has no HTTPS
+  egress.
 - **Consequence:** the two generations carry different operating-system STIGs, so once
   hardening is part of the proof again it will be hardening the production host never sees. The
   application surface — SQL Server and IIS — is unaffected. One install-time detail does
@@ -108,7 +109,7 @@ workarounds are not accidentally restored.
   is unverified.
 - **Exit criteria:** a self-published Server 2022 image carrying both a licensed SQL Server and
   the OpenSSH capability, which is the same image work TD-009 requires; or a framework
-  user_data that installs the capability, which needs guest egress this deployment does not
+  user_data that installs the capability, which needs outbound HTTPS this deployment does not
   grant.
 
 ## TD-013 — no PowerShell gate, and the org template it will return to is defective

@@ -19,8 +19,8 @@
 # runner-scoped security group.
 #
 # readiness_gate is FALSE by design: the playbook owns the bounded direct-SSH readiness check.
-# The OpenSSH DefaultShell stays cmd — the boot default — because a PowerShell login shell breaks
-# ansible's module bootstrap.
+# The OpenSSH DefaultShell boots as cmd; the playbook's bootstrap role flips it to PowerShell on
+# first contact, and every play after that declares the PowerShell shell type.
 #
 # =========================================================================================== #
 
@@ -31,7 +31,7 @@
 all_systems = [
   {
     region   = "us_east_1"
-    hostname = "wsus-poc-01"
+    hostname = "tcnaw-wsus01"
     # The ratified availability-zone spec lock, and a subnet in this account's only VPC.
     availability_zone = "us-east-1c"
     subnet_id         = "subnet-03a855e712be7b399"
@@ -132,7 +132,7 @@ all_systems = [
 
     network_interfaces = [
       {
-        description     = "wsus-poc-01 CI firewall"
+        description     = "tcnaw-wsus01 CI firewall"
         interface_type  = null
         private_ip      = null
         security_groups = []
@@ -159,9 +159,22 @@ all_systems = [
             referenced_security_group_id = null
           }
         ]
-        # Empty because the guest still originates nothing; replies to inbound SSH are stateful.
-        egress = []
-        tags   = {}
+        # The VPN tunnel that carries this host onto the private network, and nothing else.
+        # Scoped by port rather than by address because the profile names its endpoint by DNS and
+        # that address changes. Every S3 fetch happens on the CONTROLLER, so the guest still needs
+        # no outbound HTTPS of its own; replies to inbound SSH are stateful.
+        egress = [
+          {
+            description                  = "OpenVPN tunnel out"
+            ip_protocol                  = "udp"
+            from_port                    = 1194
+            to_port                      = 1194
+            cidr_ipv4                    = "0.0.0.0/0"
+            prefix_list_id               = null
+            referenced_security_group_id = null
+          }
+        ]
+        tags = {}
       }
     ]
 

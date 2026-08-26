@@ -130,6 +130,13 @@ echo ">> Framework pinned at $(git -C "${FRAMEWORK_DIR}" rev-parse --short HEAD)
 # never touches those.
 git -C "${FRAMEWORK_DIR}" clean --quiet -ffdx -- applications/
 
+# Framework roles track PowerShell as .ps1.stub markers and materialize the real sources at build
+# time. Without this a role's lookup('file', ...) fails on a name that exists only as a stub, so a
+# local run diverges from CI at exactly the point that is hardest to attribute.
+if [ -x "${FRAMEWORK_DIR}/scripts/materialize-role-scripts.sh" ]; then
+    (cd "${FRAMEWORK_DIR}" && ./scripts/materialize-role-scripts.sh)
+fi
+
 # --- 2. Overlay roles into the framework namespace ------------------------------------------ #
 shopt -s nullglob
 role_sources=("${REPO_ROOT}"/ansible/applications/*)
