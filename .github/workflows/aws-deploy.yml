@@ -307,11 +307,11 @@ jobs:
           done
           echo "overlaid ${#role_sources[@]} repository role(s)"
 
-      # Readiness and guest storage both live in the playbook; WSUS itself is not configured yet.
+      # Readiness, host preparation and guest storage all live in the playbook.
       # The EC2 inventory plugin filters live instances to this repository and run before exposing
       # one target.
       - name: Run the WSUS playbook
-        timeout-minutes: 30
+        timeout-minutes: 60
         working-directory: .frameworks/ansible-framework
         env:
           ANSIBLE_CONFIG: ${{ github.workspace }}/.frameworks/ansible-framework/ansible.cfg

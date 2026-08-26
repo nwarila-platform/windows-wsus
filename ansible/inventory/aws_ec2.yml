@@ -14,7 +14,7 @@
 # group is the set of functions whose hosts this playbook configures -- add a function to the list
 # to have its hosts join, and give a second group its own list to split a deployment by role.
 groups:
-  wsus_servers: "(aws_tags.Function | default('', true)) in ['Windows Server Update Services (WSUS)']"
+  wsus_servers: "(aws_tags.Function | default('', true)) in ['wsus']"
 
 #endregion --- [ This Repository ] ------------------------------------------------------------ #
 
@@ -31,7 +31,7 @@ filters:
   'tag:RepositoryId': "{{ lookup('ansible.builtin.env', 'GITHUB_REPOSITORY_ID') }}"
   'tag:RunId': "{{ lookup('ansible.builtin.env', 'GITHUB_RUN_ID') }}"
   'tag:Repository': "{{ lookup('ansible.builtin.env', 'GITHUB_REPOSITORY') }}"
-  'tag:Environment': "{{ lookup('ansible.builtin.env', 'ENVIRONMENT') }}"
+  'tag:Environment': "{{ lookup('ansible.builtin.env', 'ENVIRONMENT') | default('test', true) }}"
 
 #endregion --- [ Selecting This Run ] --------------------------------------------------------- #
 

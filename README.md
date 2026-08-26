@@ -40,7 +40,7 @@ only `refs/heads/main`.
 
 | Path | Purpose |
 |---|---|
-| `ansible/playbooks/wsus-aws.yml` | Composed play: inventory contract, host readiness, then guest storage |
+| `ansible/playbooks/wsus-aws.yml` | Composed play: inventory contract, then readiness, bootstrap, tunnel, directory join and guest storage |
 | `ansible/inventory/aws_ec2.yml` | Dynamic EC2 inventory filtered to one run |
 | `terraform/aws.tfvars` | Data-only input for the pinned Terraform framework |
 | `scripts/compose-and-run.sh` | Local composition and execution |
@@ -52,6 +52,6 @@ only `refs/heads/main`.
 
 Rebuilding. The WID-backed WSUS role was removed on 2026-08-23 because WSUS on SQL Server
 differs at the postinstall boundary; its contracts are recorded in the migration contract
-above. What the lifecycle does today is the bare host: provision, reach it over direct SSH, and
-provision the three guest volumes. WSUS and SQL Server configuration is the next work, one
-action at a time.
+above. What the lifecycle does today is the bare host: provision it, reach it over direct SSH,
+bring up the tunnel, join the directory, and provision the three guest volumes. WSUS and SQL
+Server configuration is the next work, one action at a time.

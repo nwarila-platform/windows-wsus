@@ -35,6 +35,16 @@
           successful deployment proof.
         quiet: true
 
+    # The site roles template their bucket names from the account id, so a wrong one surfaces as a
+    # download failure on the guest minutes later. Refuse it here, before anything is dialled.
+    - name: 'INVENTORY | Require The Deploying Account'
+      ansible.builtin.assert:
+        that: aws_account_id is defined and aws_account_id is match('^[0-9]{12}$')
+        fail_msg: >-
+          Refusing to configure: aws_account_id must be passed as an extra-var and must be the
+          twelve-digit account this run deploys into.
+        quiet: true
+
 #endregion --- [ Play: Inventory Contract ] --------------------------------------------------- #
 
 #region ------ [ Play: Configure The Guest ] -------------------------------------------------- #
@@ -49,8 +59,13 @@
     #region ------ [ Roles: Host Readiness ] -------------------------------------------------- #
     # Waits for the connection itself, never a port: a TCP connect cannot speak for a connection
     # reaching its target through a proxy or a tunnel, and this inventory can select those. It
-    # then waits out EC2Launch, detecting the platform itself rather than being told.
+    # then waits out EC2Launch.
     - role: 'host_readiness'
+      vars:
+        # Declared, not detected. The role's probe carries ignore_errors, so a failed probe reads
+        # as "no platform" and SKIPS the EC2Launch wait -- and the next role renames the computer
+        # and reboots, which is exactly what that wait exists to sequence against.
+        host_readiness_platform: 'aws'
     #endregion --- [ Roles: Host Readiness ] -------------------------------------------------- #
 
     #region ------ [ Roles: OS Bootstrap ] ---------------------------------------------------- #
@@ -73,7 +88,7 @@
     - role: 'domain_member'
       vars:
         domain_member:
-          password: { bucket: "{{ aws_account_id }}-ansible" }
+          password: { bucket: "{{ aws_account_id | default('') }}-ansible" }
           computer_ou: 'OU=WSUS,OU=Domain Servers,DC=tcn,DC=trinitytechnicalservices,DC=com'
     #endregion --- [ Roles: Domain Member ] --------------------------------------------------- #
 
@@ -85,18 +100,18 @@
         windows_disk_manager:
           platform: 'aws'
           disks:
-          - function: 'WSUSDB'
-            drive_letter: 'E'
-            label: 'WSUSDB'
-            allocation_unit: 65536
-          - function: 'WSUSDATA'
-            drive_letter: 'F'
-            label: 'WSUSDATA'
-            allocation_unit: 4096
-          - function: 'WSUSIIS'
-            drive_letter: 'G'
-            label: 'WSUSIIS'
-            allocation_unit: 4096
+            - function: 'WSUSDB'
+              drive_letter: 'E'
+              label: 'WSUSDB'
+              allocation_unit: 65536
+            - function: 'WSUSDATA'
+              drive_letter: 'F'
+              label: 'WSUSDATA'
+              allocation_unit: 4096
+            - function: 'WSUSIIS'
+              drive_letter: 'G'
+              label: 'WSUSIIS'
+              allocation_unit: 4096
     #endregion --- [ Roles: Windows Disk Manager ] -------------------------------------------- #
 
   #endregion --- [ Roles ] -------------------------------------------------------------------- #

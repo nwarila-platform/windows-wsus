@@ -10,7 +10,7 @@ framework owns the how, this repo owns only the what.
 
 | File | Purpose |
 |---|---|
-| `aws.tfvars` | The one ephemeral system (`wsus-poc-01`) as framework `all_systems` input; passed to terraform verbatim |
+| `aws.tfvars` | The one ephemeral system (`tcnaw-wsus01`) as framework `all_systems` input; passed to terraform verbatim |
 | `../.github/terraform-framework-pin` | 40-char commit SHA of the framework (release 3.1.1 plus #120); pin the SHA, not a tag — release tags land after the fact |
 
 ## How a deploy runs
