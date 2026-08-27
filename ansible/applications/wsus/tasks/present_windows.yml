@@ -21,7 +21,7 @@
 #
 # ============================================================================================= #
 ---
-#region ------ [ Begin: Read Where This Instance Creates Databases ] -------------------------- #
+#region ------ [ Begin: Read The Machine ] ---------------------------------------------------- #
 
 - name: 'BEGIN | Read The Machine And Decide One Action'
   vars:
@@ -107,12 +107,12 @@
 
     #endregion --- [ Begin: Refuse A Volume This Role Was Not Aimed At ] ---------------------- #
 
-#endregion --- [ Begin: Read Where This Instance Creates Databases ] -------------------------- #
+#endregion --- [ Begin: Read The Machine ] ---------------------------------------------------- #
 
 
-#region ------ [ Process: Place The Database On The Data Volume ] ----------------------------- #
+#region ------ [ Process: Configure The Host ] ------------------------------------------------ #
 
-- name: 'PROCESS | Place The Instance Databases On The Data Volume'
+- name: 'PROCESS | Configure The Host'
   vars:
     __desired_data__: "{{ wsus_running.db.drive_letter }}:\\{{ wsus_running.db.data_subdir }}"
     __desired_log__: "{{ wsus_running.db.drive_letter }}:\\{{ wsus_running.db.log_subdir }}"
@@ -224,10 +224,43 @@
 
     #endregion --- [ Process: Place The Database ] -------------------------------------------- #
 
-#endregion --- [ Process: Place The Database On The Data Volume ] ----------------------------- #
+    #region ------ [ Process: Install The WSUS Features ] ------------------------------------- #
+    # After placement, because the features are what bring postinstall within reach and postinstall
+    # creates the database wherever the engine now points. Before anything reads WSUS, because the
+    # console and the UpdateServices module arrive with them.
+
+    # Named one by one, and neither the bare parent nor include_sub_features. Both select the
+    # Windows Internal Database backend, and Windows refuses that alongside the SQL one -- so the
+    # obvious install line is the one that cannot work here.
+    - name: 'PROCESS | Install The WSUS Features And HTTP Logging'
+      register: '__wsus_feature_install__'
+
+      ansible.windows.win_feature:
+        name: "{{ wsus_running.features.present }}"
+        include_management_tools: true
+        state: 'present'
+
+    # Inside this region on purpose: the reboot the feature transaction asks for is taken before
+    # postinstall or any database mutation exists to be interrupted by it.
+    - name: 'PROCESS | Take The Reboot The Feature Installation Asks For'
+      when: __wsus_feature_install__.reboot_required | default(false) | bool
+
+      ansible.windows.win_reboot:
+        boot_time_command: >-
+          (Get-CimInstance -ClassName Win32_OperatingSystem -Property
+          LastBootUpTime).LastBootUpTime.ToFileTime()
+        connect_timeout: 5
+        msg: 'Rebooting to complete WSUS feature installation'
+        post_reboot_delay: 0
+        pre_reboot_delay: 2
+        reboot_timeout: 600
+
+    #endregion --- [ Process: Install The WSUS Features ] ------------------------------------- #
+
+#endregion --- [ Process: Configure The Host ] ------------------------------------------------ #
 
 
-#region ------ [ End: Prove The Engine Creates Databases On The Data Volume ] ----------------- #
+#region ------ [ End: Prove The Result ] ------------------------------------------------------ #
 
 - name: 'END | Prove The Result'
   vars:
@@ -253,7 +286,14 @@
       # fail it on the first attempt.
       retries: 12
       delay: 5
-      until: '__wsus_placement_proof__ is succeeded'
+      # Reading successfully is not the same as the engine being up. win_reboot returns at the
+      # logon prompt, before the auto-start services have finished, and the script reports a
+      # Start Pending instance as a clean read with placement_read false -- which would fail two
+      # asserts below on a host that is converging correctly. `and` short-circuits, so a genuinely
+      # failed read never dereferences .result.
+      until: >-
+        __wsus_placement_proof__ is succeeded
+        and __wsus_placement_proof__.result.placement_read
 
       ansible.windows.win_powershell:
         depth: 3
@@ -358,4 +398,53 @@
 
     #endregion --- [ End: Prove The ACE This Role Writes Is On Both Directories ] ------------- #
 
-#endregion --- [ End: Prove The Engine Creates Databases On The Data Volume ] ----------------- #
+    #region ------ [ End: Prove The Feature Set, Including What Must Not Be There ] ----------- #
+    # Re-read rather than trusting what the install reported, because a feature transaction that
+    # asked for a reboot has not finished until the host has taken it, and because absence is the
+    # half no installer reports at all.
+
+    # One call per name: win_feature_info takes a single name or wildcard, not a list, and a
+    # comma-joined string reaches Get-WindowsFeature as one pattern that matches nothing at all.
+    - name: 'END | Re-Read Which WSUS Features Are Installed'
+      loop: "{{ wsus_running.features.present + wsus_running.features.absent }}"
+      loop_control:
+        loop_var: '__feature__'
+        label: "{{ __feature__ }}"
+      register: '__wsus_features_proof__'
+
+      ansible.windows.win_feature_info:
+        name: "{{ __feature__ }}"
+
+    # The absent half is the load-bearing one, and it proves a state rather than catching a
+    # failure: Windows refuses the two backends together, so a host carrying WID fails the
+    # install above rather than reaching here. What this clause defends is the quieter case --
+    # a future edit to the list that installs the WID backend instead of the SQL one, which
+    # would converge perfectly well and back WSUS with the wrong database.
+    - name: 'END | Prove The SQL Backend Is Installed And The WID Backend Is Not'
+      vars:
+        __returned__: >-
+          {{ __wsus_features_proof__.results | map(attribute='features') | flatten
+             | map(attribute='name') | list }}
+        __installed__: >-
+          {{ __wsus_features_proof__.results | map(attribute='features') | flatten
+             | selectattr('installed') | map(attribute='name') | list }}
+      ansible.builtin.assert:
+        fail_msg: >-
+          Expected {{ wsus_running.features.present | join(', ') }} installed and
+          {{ wsus_running.features.absent | join(', ') }} absent. Returned by the host:
+          {{ __returned__ | join(', ') | default('none', true) }}. Installed:
+          {{ __installed__ | join(', ') | default('none', true) }}.
+        quiet: true
+        that:
+          # A name the host does not return is not evidence of absence -- it is a question that
+          # was never answered, and without this clause a renamed or mistyped WID feature would
+          # satisfy the absence check by being unfindable.
+          - >-
+            (wsus_running.features.present + wsus_running.features.absent)
+            | difference(__returned__) | length == 0
+          - wsus_running.features.present | difference(__installed__) | length == 0
+          - wsus_running.features.absent | intersect(__installed__) | length == 0
+
+    #endregion --- [ End: Prove The Feature Set, Including What Must Not Be There ] ----------- #
+
+#endregion --- [ End: Prove The Result ] ------------------------------------------------------ #

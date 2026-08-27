@@ -59,6 +59,37 @@
       - (wsus_running.db.drive_letter ~ ':\\' ~ __data__) | length <= 128
       - (wsus_running.db.drive_letter ~ ':\\' ~ __log__) | length <= 128
 
+# The feature lists are merged configuration like everything else, which means a caller can empty
+# or edit them. An override dropping the WID name would let END pass on a host still carrying that
+# backend, and one dropping a required feature would narrow what PROCESS installs and END proves
+# in the same stroke -- both silently. The sets are therefore pinned here, exactly and by spelling.
+#
+# Exactly, rather than "must contain": a superset is as wrong as a subset, because every name in
+# the present list is installed. By spelling, because END compares what the host returns against
+# these strings and Get-WindowsFeature answers in canonical case -- a lowercase override would
+# pass a case-insensitive check here and then false-fail a proof it had no way to satisfy.
+- name: 'VALIDATE | Require The Exact SQL Feature Contract'
+  when: (state | default('present') | string | lower | trim) == 'present'
+  vars:
+    __present__: "{{ wsus_running.features.present | default([], true) }}"
+    __absent__: "{{ wsus_running.features.absent | default([], true) }}"
+    __required__: ['UpdateServices-Services', 'UpdateServices-DB', 'Web-Http-Logging']
+  ansible.builtin.assert:
+    fail_msg: >-
+      Refusing to configure: the feature contract has been overridden into something this role
+      cannot honour. features.present must be exactly
+      {{ __required__ | join(', ') }} -- UpdateServices-DB is the SQL Server backend, and the
+      other two are separate features Windows does not imply. features.absent must be exactly
+      UpdateServices-WidDB: Windows refuses the two backends together, so a host carrying WID
+      cannot take the SQL one at all. The bare UpdateServices parent may appear in neither list --
+      requesting it selects the WID backend, and proving it absent can never pass, because it
+      arrives as a dependency of UpdateServices-Services. Names are compared as spelled, because
+      that is how the host reports them back.
+    quiet: true
+    that:
+      - __present__ | sort == __required__ | sort
+      - __absent__ | sort == ['UpdateServices-WidDB']
+
 # The role composes 'Server=.' and names the service by the merged service_name. Both are correct
 # for the default instance and wrong for any other: a named instance answers on '.\NAME' and runs
 # as 'MSSQL$NAME', so an override here would have the role probe one engine while restarting

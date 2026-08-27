@@ -12,6 +12,28 @@
 # The loader merges this file WHOLE over defaults/main.yml, so its top-level keys are config keys
 # -- there is no wrapping name.
 
+#region ------ [ The Windows features WSUS is made of ] -------------------------------------- #
+# Microsoft's documented SQL form, and note what is NOT in it: the bare 'UpdateServices' parent.
+# Asking for the parent selects the Windows Internal Database backend by default, and Windows
+# refuses WID and SQL connectivity together -- 'Feature WID Database has a conflict with the
+# features Database'. The parent still arrives, as a dependency of UpdateServices-Services, which
+# is the point: it is installed rather than requested, so it brings no default backend with it.
+features:
+  # UpdateServices-DB is the SQL Server connectivity backend, the positive counterpart of the WID
+  # feature this build must never have. The two are declared as one pair for that reason.
+  present:
+    - 'UpdateServices-Services'
+    - 'UpdateServices-DB'
+    - 'Web-Http-Logging'
+  # Proven gone rather than removed. Nothing here installs it: the image carries no WSUS, the
+  # host is rebuilt from that image every run, and validate refuses the two names that would
+  # select it. The assertion is what the migration contract owes for an inverted authority: it
+  # costs nothing, and it turns "nothing installs it" from this file's assumption into something
+  # the host states every run.
+  absent:
+    - 'UpdateServices-WidDB'
+#endregion --- [ The Windows features WSUS is made of ] -------------------------------------- #
+
 #region ------ [ Where the instance publishes itself ] --------------------------------------- #
 # SQL Server records the directory name of each instance under this key, keyed by instance name.
 # The directory carries the product major version ('MSSQL16.MSSQLSERVER'), which is why the role
