@@ -41,6 +41,10 @@ name: AWS Deploy
           - '120'
           - '240'
         default: '0'
+      os_swap:
+        description: After converge, replace the OS drive and prove the data volumes reattach
+        type: boolean
+        default: false
   push:
     branches: [main]
   schedule:
@@ -352,6 +356,75 @@ jobs:
             exit 1
           fi
           echo "idempotent: the second converge reported no changes"
+
+      # OS-DRIVE REPLACEMENT proof (opt-in). Bumping refresh_serial replaces the OS instance while
+      # the STANDALONE data volumes detach and reattach to the replacement, so the guest has to
+      # come back on the databases it already had. This is the mandate's replaceable-operating-
+      # system property, and it is also the only state in which the WSUS role ever meets an
+      # existing SUSDB: every lifecycle destroys its volumes at the end, so nothing else this
+      # repository can build leaves a database behind to be adopted.
+      - name: Replace the OS drive, keeping the data volumes (refresh_serial bump)
+        if: inputs.os_swap
+        timeout-minutes: 15
+        working-directory: .frameworks/aws-terraform-framework/terraform
+        run: |
+          set -euo pipefail
+          terraform apply -input=false -auto-approve -lock-timeout=120s \
+            -var-file="${GITHUB_WORKSPACE}/terraform/aws.tfvars" \
+            -var "runner_ip=${RUNNER_IP}" \
+            -var "environment=test" \
+            -var "repository=${GITHUB_REPOSITORY}" \
+            -var "repository_id=${GITHUB_REPOSITORY_ID}" \
+            -var "commit_sha=$(git -C "${GITHUB_WORKSPACE}" rev-parse HEAD)" \
+            -var "run_id=${GITHUB_RUN_ID}" \
+            -var "refresh_serial=1"
+
+      # The operating system is new, so this pays a first converge's costs again and gets a first
+      # converge's budget. The disk role adopts each reattached volume untouched -- it classifies a
+      # disk carrying an NTFS volume with the declared label as one of its own, formats only what
+      # is blank or unformatted, and re-letters the rest -- so SUSDB is still on E: when the WSUS
+      # role runs.
+      - name: Re-converge onto the reattached data
+        if: inputs.os_swap
+        timeout-minutes: 60
+        working-directory: .frameworks/ansible-framework
+        env:
+          ANSIBLE_CONFIG: ${{ github.workspace }}/.frameworks/ansible-framework/ansible.cfg
+          GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          ansible-playbook "${GITHUB_WORKSPACE}/ansible/playbooks/wsus-aws.yml" \
+            --inventory "${GITHUB_WORKSPACE}/ansible/inventory/aws_ec2.yml"    \
+            --extra-vars env=test                                              \
+            --extra-vars aws_account_id="${AWS_ACCOUNT_ID}"                    \
+            --extra-vars state=present
+
+      # The same idempotency bar as the first converge, on a host whose operating system was
+      # rebuilt underneath it: a rebuilt guest that has adopted its data is no less settled than
+      # one that created it.
+      - name: Prove the rebuilt host is steady (second run is a no-op)
+        if: inputs.os_swap
+        timeout-minutes: 30
+        working-directory: .frameworks/ansible-framework
+        env:
+          ANSIBLE_CONFIG: ${{ github.workspace }}/.frameworks/ansible-framework/ansible.cfg
+          GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          recap="$(ansible-playbook "${GITHUB_WORKSPACE}/ansible/playbooks/wsus-aws.yml" \
+            --inventory "${GITHUB_WORKSPACE}/ansible/inventory/aws_ec2.yml"    \
+            --extra-vars env=test                                              \
+            --extra-vars aws_account_id="${AWS_ACCOUNT_ID}"                    \
+            --extra-vars state=present 2>&1 | tee /dev/stderr)"
+          if printf '%s\n' "${recap}" | grep -Eq ': +ok=[0-9]+ +changed=[1-9]'; then
+            echo "::error::the rebuilt host reported changes on a second converge" >&2
+            exit 1
+          fi
+          echo "steady: the rebuilt host reported no changes"
 
       - name: Hold the provisioned guest for interactive work
         if: >-
