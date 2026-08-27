@@ -151,9 +151,9 @@ jobs:
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
         with:
-          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ env.DEPLOY_ROLE }}
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/${{ env.DEPLOY_ROLE }}
           aws-region: ${{ env.AWS_REGION }}
-          allowed-account-ids: ${{ secrets.AWS_ACCOUNT_ID }}
+          allowed-account-ids: ${{ vars.AWS_ACCOUNT_ID }}
           role-session-name: aws-deploy-${{ github.run_id }}
           role-duration-seconds: 7800
 
@@ -239,7 +239,7 @@ jobs:
         id: tf-init
         working-directory: .frameworks/aws-terraform-framework/terraform
         env:
-          AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+          AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
         run: |
           set -euo pipefail
           terraform init -input=false                                      \
@@ -323,7 +323,7 @@ jobs:
           # run's instance, and a lookup('env') has no command-line equivalent.
           GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
           GITHUB_RUN_ID: ${{ github.run_id }}
-          AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+          AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
         run: |
           set -euo pipefail
           ansible-playbook "${GITHUB_WORKSPACE}/ansible/playbooks/wsus-aws.yml" \
@@ -343,7 +343,7 @@ jobs:
           ANSIBLE_CONFIG: ${{ github.workspace }}/.frameworks/ansible-framework/ansible.cfg
           GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
           GITHUB_RUN_ID: ${{ github.run_id }}
-          AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+          AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
         run: |
           set -euo pipefail
           recap="$(ansible-playbook "${GITHUB_WORKSPACE}/ansible/playbooks/wsus-aws.yml" \
@@ -392,7 +392,7 @@ jobs:
           ANSIBLE_CONFIG: ${{ github.workspace }}/.frameworks/ansible-framework/ansible.cfg
           GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
           GITHUB_RUN_ID: ${{ github.run_id }}
-          AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+          AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
         run: |
           set -euo pipefail
           ansible-playbook "${GITHUB_WORKSPACE}/ansible/playbooks/wsus-aws.yml" \
@@ -412,7 +412,7 @@ jobs:
           ANSIBLE_CONFIG: ${{ github.workspace }}/.frameworks/ansible-framework/ansible.cfg
           GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
           GITHUB_RUN_ID: ${{ github.run_id }}
-          AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+          AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
         run: |
           set -euo pipefail
           recap="$(ansible-playbook "${GITHUB_WORKSPACE}/ansible/playbooks/wsus-aws.yml" \
@@ -450,9 +450,9 @@ jobs:
         if: always() && steps.tf-init.outcome == 'success'
         uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
         with:
-          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ env.DEPLOY_ROLE }}
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/${{ env.DEPLOY_ROLE }}
           aws-region: ${{ env.AWS_REGION }}
-          allowed-account-ids: ${{ secrets.AWS_ACCOUNT_ID }}
+          allowed-account-ids: ${{ vars.AWS_ACCOUNT_ID }}
           role-session-name: aws-deploy-${{ github.run_id }}-teardown
           role-duration-seconds: 3600
 
