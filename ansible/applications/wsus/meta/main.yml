@@ -1,0 +1,41 @@
+# =========================================================================================== #
+# File: '{{ role_path }}/meta/main.yml'
+# --- [ Description ] ----------------------------------------------------------------------- #
+# Role metadata for wsus. Description-only (style guide 8): NOT an enforcing argument spec. The
+# role's tasks/validate.yml enforces its merged-config guards.
+#
+# REQUIRED INPUTS: 'wsus.db.drive_letter' and 'wsus.db.volume_label'. WHICH disk holds the
+# database is a property of the deployment, so the play publishes both and validate.yml refuses a
+# run that omits either. The SQL instance is NOT an input: the AWS images install the default
+# instance, this role composes a default-instance connection target, and validate.yml refuses any
+# other name rather than pretending the choice exists.
+#
+# The role is being rebuilt one action at a time against
+# docs/explanation/wsus-role-migration-contract.md, and declares an input when an action needs it.
+#
+# =========================================================================================== #
+---
+galaxy_info:
+
+  role_name: 'wsus'
+  namespace: 'nwarila_platform'
+  author: 'nwarila-platform'
+  description: >-
+    Windows Server Update Services on SQL Server. Places SUSDB on a dedicated data volume before
+    anything can create it, because the supported path puts a database where the instance's
+    directories point rather than moving it afterwards.
+
+  license: 'MIT'
+  min_ansible_version: '2.17'
+
+  platforms:
+    - name: 'Windows'
+      versions:
+        - '2025'
+
+  galaxy_tags:
+    - 'wsus'
+    - 'sqlserver'
+    - 'windows'
+
+dependencies: []

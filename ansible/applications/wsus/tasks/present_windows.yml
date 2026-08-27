@@ -1,0 +1,450 @@
+# ============================================================================================= #
+# File: '{{ role_path }}/tasks/present_windows.yml'
+# --- [ Description ] ----------------------------------------------------------------------- #
+#
+# Windows / state=present provider.
+#
+# Built one action at a time against docs/explanation/wsus-role-migration-contract.md. Three
+# stages: BEGIN reads the machine and decides, PROCESS acts on that decision, END proves the
+# result. END is ungated on purpose, so a converged host proves the same state as a fresh one.
+#
+# Guest PowerShell is a first-class file under files/, never inline, and END re-runs the SAME
+# script BEGIN ran, so the read and the proof cannot disagree about what counts as placed. Unlike
+# the reference this repository tracks the .ps1 itself rather than a .stub, because the local rule
+# forbids the materialization step that would otherwise produce it.
+#
+# --check against a host that has never converged does not complete: win_file predicts the
+# directories rather than creating them, and win_acl needs a path that exists even to predict
+# against. That is the ordinary limit of check mode on tasks that depend on an earlier task's
+# side effect, not something this role can repair without carrying conditionals for a path the
+# lifecycle never runs. --check against a converged host reads and proves normally.
+#
+# ============================================================================================= #
+---
+#region ------ [ Begin: Read The Machine ] ---------------------------------------------------- #
+
+- name: 'BEGIN | Read The Machine And Decide One Action'
+  vars:
+    __desired_data__: "{{ wsus_running.db.drive_letter }}:\\{{ wsus_running.db.data_subdir }}"
+    __desired_log__: "{{ wsus_running.db.drive_letter }}:\\{{ wsus_running.db.log_subdir }}"
+
+  # Begin The 'Begin' Block
+  block:
+
+    #region ------ [ Begin: Read The Engine's Effective Placement ] --------------------------- #
+    # One read answers every question this stage has: whether the engine is up to be asked, which
+    # directory the instance publishes itself under, where it would ACTUALLY put a database right
+    # now, and what access the two directories give it.
+    #
+    # A stopped instance is read, not raised. PROCESS starts it; failing here would deny the very
+    # repair the next stage exists to perform. The script declares SupportsShouldProcess, so this
+    # read still runs under --check and PROCESS can predict against a real answer.
+    #
+    # The service reconcile therefore sits in PROCESS, AFTER this read, which means the first
+    # connection is opened against a service this role has not yet reconciled. That is deliberate:
+    # BEGIN does not mutate the target, and every mutation belongs to PROCESS. It costs nothing --
+    # a down instance is reported rather than queried, and the restart below fires on what this
+    # read established rather than on what it could not.
+
+    - name: 'BEGIN | Read Where This Instance Creates Databases'
+      register: '__wsus_placement__'
+
+      # The same startup race END retries for, on the same terms: an instance that has just come
+      # back -- from a reboot, or from a converge killed mid-restart -- reports Running before it
+      # accepts connections, and opening the connection throws. Without this a rerun dies on timing
+      # at the very read that would have diagnosed the host, before PROCESS can repair anything.
+      retries: 12
+      delay: 5
+      until: '__wsus_placement__ is succeeded'
+
+      ansible.windows.win_powershell:
+        depth: 3
+        error_action: 'stop'
+        parameters:
+          ServiceName: "{{ wsus_running.sql.service_name }}"
+          InstanceName: "{{ wsus_running.sql.instance }}"
+          InstanceNamesKey: "{{ wsus_running.sql.instance_names_key }}"
+          InstanceRoot: "{{ wsus_running.sql.instance_root }}"
+          DesiredData: "{{ __desired_data__ }}"
+          DesiredLog: "{{ __desired_log__ }}"
+        script: "{{ lookup('ansible.builtin.file', 'Get-SqlDatabasePlacement.ps1') }}"
+
+    #endregion --- [ Begin: Read The Engine's Effective Placement ] --------------------------- #
+
+    #region ------ [ Begin: Refuse A Volume This Role Was Not Aimed At ] ---------------------- #
+    # BEFORE the first mutation, because that is where a state-aware safety assert belongs and
+    # because none of what PROCESS does is cheap to undo: it creates directories, stamps rights on
+    # them, repoints the engine and restarts it -- a service outage. Proving the volume afterwards
+    # would report the mistake only once it had been made on the wrong disk.
+    #
+    # The letter alone proves only that SOMETHING is mounted there. Swap two letters in the
+    # deployment's disk layout and every step below would succeed against the volume provisioned
+    # for something else. The label is the declared convention that tells them apart, and this
+    # role names the one it expects rather than reading the configuration of the role that wrote
+    # it.
+    #
+    # The same guard refuses a path that only LOOKS like it is on that volume: a junction above
+    # either directory would place the database on whatever it points at while every name in the
+    # run still said E:. END proves both claims again on the way out.
+
+    - name: 'BEGIN | Refuse A Database Volume This Role Was Not Aimed At'
+      ansible.builtin.assert:
+        fail_msg: >-
+          Expected drive {{ wsus_running.db.drive_letter }}: to carry the volume label
+          '{{ wsus_running.db.volume_label }}' with no reparse point above either database
+          directory. It reports label '{{ __wsus_placement__.result.volume_label }}', data
+          aliased={{ __wsus_placement__.result.data_path_aliased }}, log
+          aliased={{ __wsus_placement__.result.log_path_aliased }}. A junction above either path
+          would place the database on whatever volume it points at, whatever the letter says.
+          Nothing has been changed on this host.
+        quiet: true
+        that:
+          - >-
+            (__wsus_placement__.result.volume_label | lower)
+            == (wsus_running.db.volume_label | lower)
+          - not __wsus_placement__.result.data_path_aliased
+          - not __wsus_placement__.result.log_path_aliased
+
+    #endregion --- [ Begin: Refuse A Volume This Role Was Not Aimed At ] ---------------------- #
+
+#endregion --- [ Begin: Read The Machine ] ---------------------------------------------------- #
+
+
+#region ------ [ Process: Configure The Host ] ------------------------------------------------ #
+
+- name: 'PROCESS | Configure The Host'
+  vars:
+    __desired_data__: "{{ wsus_running.db.drive_letter }}:\\{{ wsus_running.db.data_subdir }}"
+    __desired_log__: "{{ wsus_running.db.drive_letter }}:\\{{ wsus_running.db.log_subdir }}"
+
+  # Begin The 'Process' Block
+  block:
+
+    #region ------ [ Process: Hold The Instance Automatic And Running ] ----------------------- #
+    # First, because everything after it needs an engine to talk to and every later stage inherits
+    # the same obligation: a host that reboots must come back serving updates without an operator.
+    # Unconditional rather than gated on what BEGIN read, so a correct-but-Manual instance is
+    # corrected too -- start_mode is state this role owns, not a detail of the restart below.
+
+    - name: 'PROCESS | Hold The Instance Automatic And Running'
+      ansible.windows.win_service:
+        name: "{{ wsus_running.sql.service_name }}"
+        start_mode: 'auto'
+        state: 'started'
+
+    #endregion --- [ Process: Hold The Instance Automatic And Running ] ----------------------- #
+
+    #region ------ [ Process: Place The Database ] -------------------------------------------- #
+    # Four acts in the only order that works: the directories must exist before an ACL can name
+    # them, the ACL must grant the engine before it is told to write there, the registry must say
+    # where, and the service must restart before any of it is true. Modules rather than one script,
+    # so each act reports its own change and a converged host reads as a column of 'ok'.
+
+    - name: 'PROCESS | Create The Database Directories On The Data Volume'
+      loop:
+        - "{{ __desired_data__ }}"
+        - "{{ __desired_log__ }}"
+      loop_control:
+        loop_var: '__directory__'
+        label: "{{ __directory__ }}"
+
+      ansible.windows.win_file:
+        path: "{{ __directory__ }}"
+        state: 'directory'
+
+    # The per-service account, which Windows resolves to a SID derived from the service NAME
+    # rather than from the machine -- so the entry this writes is the one a REPLACEMENT operating
+    # system reading the same volume would also resolve, which is what lets the data volume outlive
+    # the host. END compares that SID rather than this name, because a renamed or localised
+    # principal would satisfy a name comparison while granting nothing.
+    - name: 'PROCESS | Grant The Instance Its Rights On Those Directories'
+      loop:
+        - "{{ __desired_data__ }}"
+        - "{{ __desired_log__ }}"
+      loop_control:
+        loop_var: '__directory__'
+        label: "{{ __directory__ }}"
+
+      ansible.windows.win_acl:
+        path: "{{ __directory__ }}"
+        user: "NT SERVICE\\{{ wsus_running.sql.service_name }}"
+        rights: 'FullControl'
+        type: 'allow'
+        state: 'present'
+        inherit: 'ContainerInherit, ObjectInherit'
+        propagation: 'None'
+
+    - name: 'PROCESS | Pin The Instance Default Data And Log Directories'
+      loop:
+        - name: 'DefaultData'
+          value: "{{ __desired_data__ }}"
+        - name: 'DefaultLog'
+          value: "{{ __desired_log__ }}"
+      loop_control:
+        loop_var: '__setting__'
+        label: "{{ __setting__.name }}"
+      register: '__wsus_placement_pinned__'
+
+      ansible.windows.win_regedit:
+        path: "{{ __wsus_placement__.result.settings_key }}"
+        name: "{{ __setting__.name }}"
+        data: "{{ __setting__.value }}"
+        type: 'string'
+        state: 'present'
+
+    # A restart is a service outage, so it fires on evidence, never on ignorance. Two cases earn
+    # one, and no others:
+    #
+    #   the registry just changed -- the engine is still serving what it read at startup, and
+    #   measured on a live instance, writing the registry moved neither SERVERPROPERTY nor where a
+    #   database landed until the service came back;
+    #
+    #   BEGIN reached the engine and it named the wrong directory.
+    #
+    # An instance that was DOWN when BEGIN looked earns nothing by itself: it has since been
+    # started, and it read the registry on the way up. If that registry was already right it is
+    # already serving the right directories, and bouncing it would be an outage bought with a
+    # question nobody asked. If it was wrong, the pin above changed and the first case fires. END
+    # proves the outcome either way, so a wrong guess here fails the run rather than passing it.
+    #
+    # force_dependent_services because the instance carries dependents -- on this image
+    # MSSQLLaunchpad runs and SQLSERVERAGENT is installed -- and Windows refuses to stop a service
+    # that has them. Measured on the guest: after this restart the running Launchpad came back
+    # with the engine, and a stopped SQLSERVERAGENT stayed stopped.
+    - name: 'PROCESS | Restart The Instance So It Adopts The Pinned Directories'
+      when: >-
+        (__wsus_placement_pinned__ is changed)
+        or (__wsus_placement__.result.placement_read
+            and not __wsus_placement__.result.placement_valid)
+
+      ansible.windows.win_service:
+        name: "{{ wsus_running.sql.service_name }}"
+        state: 'restarted'
+        force_dependent_services: true
+
+    #endregion --- [ Process: Place The Database ] -------------------------------------------- #
+
+    #region ------ [ Process: Install The WSUS Features ] ------------------------------------- #
+    # After placement, because the features are what bring postinstall within reach and postinstall
+    # creates the database wherever the engine now points. Before anything reads WSUS, because the
+    # console and the UpdateServices module arrive with them.
+
+    # Named one by one, and neither the bare parent nor include_sub_features. Both select the
+    # Windows Internal Database backend, and Windows refuses that alongside the SQL one -- so the
+    # obvious install line is the one that cannot work here.
+    - name: 'PROCESS | Install The WSUS Features And HTTP Logging'
+      register: '__wsus_feature_install__'
+
+      ansible.windows.win_feature:
+        name: "{{ wsus_running.features.present }}"
+        include_management_tools: true
+        state: 'present'
+
+    # Inside this region on purpose: the reboot the feature transaction asks for is taken before
+    # postinstall or any database mutation exists to be interrupted by it.
+    - name: 'PROCESS | Take The Reboot The Feature Installation Asks For'
+      when: __wsus_feature_install__.reboot_required | default(false) | bool
+
+      ansible.windows.win_reboot:
+        boot_time_command: >-
+          (Get-CimInstance -ClassName Win32_OperatingSystem -Property
+          LastBootUpTime).LastBootUpTime.ToFileTime()
+        connect_timeout: 5
+        msg: 'Rebooting to complete WSUS feature installation'
+        post_reboot_delay: 0
+        pre_reboot_delay: 2
+        reboot_timeout: 600
+
+    #endregion --- [ Process: Install The WSUS Features ] ------------------------------------- #
+
+#endregion --- [ Process: Configure The Host ] ------------------------------------------------ #
+
+
+#region ------ [ End: Prove The Result ] ------------------------------------------------------ #
+
+- name: 'END | Prove The Result'
+  vars:
+    __desired_data__: "{{ wsus_running.db.drive_letter }}:\\{{ wsus_running.db.data_subdir }}"
+    __desired_log__: "{{ wsus_running.db.drive_letter }}:\\{{ wsus_running.db.log_subdir }}"
+
+  # Begin The 'End' Block
+  block:
+
+    #region ------ [ End: Re-Read The Engine ] ------------------------------------------------ #
+    # Ungated, so a converged host proves the same state as one this run just changed. This is the
+    # same read BEGIN performed, against the same script, so the two cannot disagree about what
+    # counts as placed -- and it asks the ENGINE, because the registry is only a request.
+
+    - name: 'END | Re-Read Where This Instance Creates Databases'
+      register: '__wsus_placement_proof__'
+
+      # A restarted instance reports Running before it accepts connections, so opening the
+      # connection can throw for a few seconds after PROCESS. Retrying covers that, and with it
+      # every other throw this read can raise -- a host missing the service or the settings key
+      # spends the full minute before failing. What it does NOT cover is a wrong answer: an engine
+      # that responds and names the wrong directory returns successfully, and the asserts below
+      # fail it on the first attempt.
+      retries: 12
+      delay: 5
+      # Reading successfully is not the same as the engine being up. win_reboot returns at the
+      # logon prompt, before the auto-start services have finished, and the script reports a
+      # Start Pending instance as a clean read with placement_read false -- which would fail two
+      # asserts below on a host that is converging correctly. `and` short-circuits, so a genuinely
+      # failed read never dereferences .result.
+      until: >-
+        __wsus_placement_proof__ is succeeded
+        and __wsus_placement_proof__.result.placement_read
+
+      ansible.windows.win_powershell:
+        depth: 3
+        error_action: 'stop'
+        parameters:
+          ServiceName: "{{ wsus_running.sql.service_name }}"
+          InstanceName: "{{ wsus_running.sql.instance }}"
+          InstanceNamesKey: "{{ wsus_running.sql.instance_names_key }}"
+          InstanceRoot: "{{ wsus_running.sql.instance_root }}"
+          DesiredData: "{{ __desired_data__ }}"
+          DesiredLog: "{{ __desired_log__ }}"
+        script: "{{ lookup('ansible.builtin.file', 'Get-SqlDatabasePlacement.ps1') }}"
+
+    #endregion --- [ End: Re-Read The Engine ] ------------------------------------------------ #
+
+    #region ------ [ End: Prove The Instance Survives A Reboot ] ------------------------------ #
+    # Automatic AND Running, because either alone is a host that stops serving updates: Running but
+    # Manual dies at the next reboot with nothing to restart it, Automatic but stopped is already
+    # not serving.
+
+    - name: 'END | Prove The Instance Is Automatic And Running'
+      ansible.builtin.assert:
+        fail_msg: >-
+          Expected '{{ wsus_running.sql.service_name }}' Running and Automatic; found
+          {{ __wsus_placement_proof__.result.service_state }} and
+          {{ __wsus_placement_proof__.result.service_start_mode }}. A host that reboots must come
+          back serving updates without an operator.
+        quiet: true
+        that:
+          - __wsus_placement_proof__.result.service_state == 'Running'
+          - __wsus_placement_proof__.result.service_start_mode == 'Auto'
+
+    #endregion --- [ End: Prove The Instance Survives A Reboot ] ------------------------------ #
+
+    #region ------ [ End: Prove The Database Lands On The Data Volume ] ----------------------- #
+    # The whole point of the action: wsusutil postinstall creates SUSDB wherever the instance's
+    # default directories point, so this is what keeps application state off the system volume.
+
+    - name: 'END | Prove The Instance Places Databases On The Data Volume'
+      ansible.builtin.assert:
+        fail_msg: >-
+          Expected the instance to create databases in '{{ __desired_data__ }}' and
+          '{{ __desired_log__ }}'; it creates them in
+          '{{ __wsus_placement_proof__.result.effective_data }}' and
+          '{{ __wsus_placement_proof__.result.effective_log }}'. A database created now would land
+          where the engine reports, not where this role was told to put it.
+        quiet: true
+        that: [ __wsus_placement_proof__.result.placement_valid ]
+
+    #endregion --- [ End: Prove The Database Lands On The Data Volume ] ----------------------- #
+
+    #region ------ [ End: Prove The Volume Is The One This Role Was Aimed At ] ---------------- #
+    # The letter proves only that SOMETHING is mounted there. Two letters swapped in the
+    # deployment's disk layout and every other step still succeeds -- the directories are created,
+    # the rights granted, the registry pinned, the engine restarted, and END reads back exactly the
+    # path it asked for -- while SUSDB lands on a volume provisioned for something else. The label
+    # is the declared convention that distinguishes them, and this role names the one it expects
+    # rather than reading the configuration of the role that wrote it.
+
+    - name: 'END | Prove The Database Volume Carries Its Declared Label'
+      ansible.builtin.assert:
+        fail_msg: >-
+          Expected drive {{ wsus_running.db.drive_letter }}: to carry the volume label
+          '{{ wsus_running.db.volume_label }}' with no reparse point above either database
+          directory. It reports label '{{ __wsus_placement_proof__.result.volume_label }}', data
+          aliased={{ __wsus_placement_proof__.result.data_path_aliased }}, log
+          aliased={{ __wsus_placement_proof__.result.log_path_aliased }}. BEGIN accepted this
+          volume, so something relabelled, remounted or redirected it during the run.
+        quiet: true
+        that:
+          - >-
+            (__wsus_placement_proof__.result.volume_label | lower)
+            == (wsus_running.db.volume_label | lower)
+          - not __wsus_placement_proof__.result.data_path_aliased
+          - not __wsus_placement_proof__.result.log_path_aliased
+
+    #endregion --- [ End: Prove The Volume Is The One This Role Was Aimed At ] ---------------- #
+
+    #region ------ [ End: Prove The ACE This Role Writes Is On Both Directories ] ------------- #
+    # This proves the explicit inheritable service-SID ACE this role owns, not effective access.
+    # Inheritable, because the engine creates files and subdirectories beneath these paths and an
+    # ACE that stops at the folder grants them nothing. The deny scan is a bounded guard on that
+    # same SID -- deny wins over allow in Windows -- and cannot see a deny reaching the service
+    # through a group or its dynamic logon SID. Whether the engine can actually write is proven
+    # where it matters, by the action that creates the database.
+
+    - name: 'END | Prove The Instance Holds Inheritable Rights On Both Directories'
+      ansible.builtin.assert:
+        fail_msg: >-
+          Expected '{{ __desired_data__ }}' and '{{ __desired_log__ }}' to grant
+          {{ __wsus_placement_proof__.result.service_sid }} inheritable FullControl with nothing
+          denying it back. Granted: data={{ __wsus_placement_proof__.result.data_acl_granted }},
+          log={{ __wsus_placement_proof__.result.log_acl_granted }}. Denied:
+          data={{ __wsus_placement_proof__.result.data_acl_denied }},
+          log={{ __wsus_placement_proof__.result.log_acl_denied }}.
+        quiet: true
+        that:
+          - __wsus_placement_proof__.result.data_acl_granted
+          - __wsus_placement_proof__.result.log_acl_granted
+          - not __wsus_placement_proof__.result.data_acl_denied
+          - not __wsus_placement_proof__.result.log_acl_denied
+
+    #endregion --- [ End: Prove The ACE This Role Writes Is On Both Directories ] ------------- #
+
+    #region ------ [ End: Prove The Feature Set, Including What Must Not Be There ] ----------- #
+    # Re-read rather than trusting what the install reported, because a feature transaction that
+    # asked for a reboot has not finished until the host has taken it, and because absence is the
+    # half no installer reports at all.
+
+    # One call per name: win_feature_info takes a single name or wildcard, not a list, and a
+    # comma-joined string reaches Get-WindowsFeature as one pattern that matches nothing at all.
+    - name: 'END | Re-Read Which WSUS Features Are Installed'
+      loop: "{{ wsus_running.features.present + wsus_running.features.absent }}"
+      loop_control:
+        loop_var: '__feature__'
+        label: "{{ __feature__ }}"
+      register: '__wsus_features_proof__'
+
+      ansible.windows.win_feature_info:
+        name: "{{ __feature__ }}"
+
+    # The absent half is the load-bearing one, and it proves a state rather than catching a
+    # failure: Windows refuses the two backends together, so a host carrying WID fails the
+    # install above rather than reaching here. What this clause defends is the quieter case --
+    # a future edit to the list that installs the WID backend instead of the SQL one, which
+    # would converge perfectly well and back WSUS with the wrong database.
+    - name: 'END | Prove The SQL Backend Is Installed And The WID Backend Is Not'
+      vars:
+        __returned__: >-
+          {{ __wsus_features_proof__.results | map(attribute='features') | flatten
+             | map(attribute='name') | list }}
+        __installed__: >-
+          {{ __wsus_features_proof__.results | map(attribute='features') | flatten
+             | selectattr('installed') | map(attribute='name') | list }}
+      ansible.builtin.assert:
+        fail_msg: >-
+          Expected {{ wsus_running.features.present | join(', ') }} installed and
+          {{ wsus_running.features.absent | join(', ') }} absent. Returned by the host:
+          {{ __returned__ | join(', ') | default('none', true) }}. Installed:
+          {{ __installed__ | join(', ') | default('none', true) }}.
+        quiet: true
+        that:
+          # A name the host does not return is not evidence of absence -- it is a question that
+          # was never answered, and without this clause a renamed or mistyped WID feature would
+          # satisfy the absence check by being unfindable.
+          - >-
+            (wsus_running.features.present + wsus_running.features.absent)
+            | difference(__returned__) | length == 0
+          - wsus_running.features.present | difference(__installed__) | length == 0
+          - wsus_running.features.absent | intersect(__installed__) | length == 0
+
+    #endregion --- [ End: Prove The Feature Set, Including What Must Not Be There ] ----------- #
+
+#endregion --- [ End: Prove The Result ] ------------------------------------------------------ #

@@ -1,0 +1,109 @@
+# =========================================================================================== #
+# File: '{{ role_path }}/tasks/validate.yml'
+# --- [ Description ] ----------------------------------------------------------------------- #
+#
+# Validates the merged running config on the CONTROLLER, before anything touches the guest.
+# Guards arrive with the action that needs them, so this grows one region at a time.
+#
+# 'state' is normalised EXACTLY as the loader normalises it for dispatch -- lower and trimmed --
+# because a guard that reads the value differently from the dispatcher is a guard the dispatcher
+# can route around: ' present ' would skip every check here and still run present_windows.yml.
+#
+# The config values themselves are checked exactly as the tasks CONSUME them, with no trimming,
+# because a guard that normalises what the role does not is a guard that passes input the role
+# then mishandles.
+#
+# =========================================================================================== #
+---
+
+- name: 'VALIDATE | Require A Usable Database Placement'
+  when: (state | default('present') | string | lower | trim) == 'present'
+  vars:
+    # One grammar for both subdirectories: segments of word characters, dots and hyphens, each
+    # starting with an alphanumeric and never ending in a dot, joined by single backslashes. It
+    # admits no drive, no leading or trailing separator, no '..' and no environment reference,
+    # because the value is joined to a drive letter and handed to the SQL engine verbatim. A
+    # trailing separator would compare unequal to what the engine reports back, restarting the
+    # instance on every converge; a trailing dot names a directory Windows will not create.
+    __subdir__: '^[A-Za-z0-9_]([A-Za-z0-9_.-]*[A-Za-z0-9_-])?(\\[A-Za-z0-9_]([A-Za-z0-9_.-]*[A-Za-z0-9_-])?)*$'
+    # DOS device names are reserved in every directory and at any position before an extension, so
+    # a segment naming one reaches win_file only to fail there -- after PROCESS has already
+    # started and possibly restarted the instance.
+    __reserved__: '(?i)(^|\\)(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\.|\\|$)'
+    __data__: "{{ wsus_running.db.data_subdir | default('', true) }}"
+    __log__: "{{ wsus_running.db.log_subdir | default('', true) }}"
+  ansible.builtin.assert:
+    fail_msg: >-
+      Refusing to configure: the database placement is malformed. wsus.db.drive_letter must be one
+      capital letter in D-Z, because the system volume is never a place for application state. The
+      data and log subdirectories must each be a relative Windows path built from segments of
+      letters, digits, underscores, dots and hyphens joined by single backslashes -- 'MSSQL\Data'
+      -- each segment starting with a letter or digit and ending in one. They must also name
+      different directories compared case-insensitively, because Windows treats 'MSSQL\Data' and
+      'mssql\data' as one and the engine would then write logs and data to the same place. A
+      volume label is required and may not begin or end with whitespace: it is what makes the
+      drive letter verifiable, and a label of spaces would compare equal to an unlabelled volume.
+      Each composed path must also be at most 128 characters, because that is what the engine
+      reports back and a longer one could never be proven placed.
+    quiet: true
+    that:
+      - wsus_running.db.drive_letter | default('', true) is match('^[D-Z]$')
+      - __data__ is match(__subdir__)
+      - __log__ is match(__subdir__)
+      - not (__data__ is search(__reserved__))
+      - not (__log__ is search(__reserved__))
+      - (__data__ | lower) != (__log__ | lower)
+      - wsus_running.db.volume_label | default('', true) is match('^\\S(.*\\S)?$')
+      # SERVERPROPERTY returns nvarchar(128), so a longer path is one the engine can be told but
+      # never reports back intact -- END would compare the truncated answer and fail forever.
+      - (wsus_running.db.drive_letter ~ ':\\' ~ __data__) | length <= 128
+      - (wsus_running.db.drive_letter ~ ':\\' ~ __log__) | length <= 128
+
+# The feature lists are merged configuration like everything else, which means a caller can empty
+# or edit them. An override dropping the WID name would let END pass on a host still carrying that
+# backend, and one dropping a required feature would narrow what PROCESS installs and END proves
+# in the same stroke -- both silently. The sets are therefore pinned here, exactly and by spelling.
+#
+# Exactly, rather than "must contain": a superset is as wrong as a subset, because every name in
+# the present list is installed. By spelling, because END compares what the host returns against
+# these strings and Get-WindowsFeature answers in canonical case -- a lowercase override would
+# pass a case-insensitive check here and then false-fail a proof it had no way to satisfy.
+- name: 'VALIDATE | Require The Exact SQL Feature Contract'
+  when: (state | default('present') | string | lower | trim) == 'present'
+  vars:
+    __present__: "{{ wsus_running.features.present | default([], true) }}"
+    __absent__: "{{ wsus_running.features.absent | default([], true) }}"
+    __required__: ['UpdateServices-Services', 'UpdateServices-DB', 'Web-Http-Logging']
+  ansible.builtin.assert:
+    fail_msg: >-
+      Refusing to configure: the feature contract has been overridden into something this role
+      cannot honour. features.present must be exactly
+      {{ __required__ | join(', ') }} -- UpdateServices-DB is the SQL Server backend, and the
+      other two are separate features Windows does not imply. features.absent must be exactly
+      UpdateServices-WidDB: Windows refuses the two backends together, so a host carrying WID
+      cannot take the SQL one at all. The bare UpdateServices parent may appear in neither list --
+      requesting it selects the WID backend, and proving it absent can never pass, because it
+      arrives as a dependency of UpdateServices-Services. Names are compared as spelled, because
+      that is how the host reports them back.
+    quiet: true
+    that:
+      - __present__ | sort == __required__ | sort
+      - __absent__ | sort == ['UpdateServices-WidDB']
+
+# The role composes 'Server=.' and names the service by the merged service_name. Both are correct
+# for the default instance and wrong for any other: a named instance answers on '.\NAME' and runs
+# as 'MSSQL$NAME', so an override here would have the role probe one engine while restarting
+# another and report the wrong one converged. Supporting a named instance means deriving both from
+# this name; until an image ships one, refusing is the truthful contract.
+- name: 'VALIDATE | Require The Default SQL Instance'
+  when: (state | default('present') | string | lower | trim) == 'present'
+  ansible.builtin.assert:
+    fail_msg: >-
+      Refusing to configure: wsus.sql.instance is
+      '{{ wsus_running.sql.instance | default('', true) }}', but this role addresses the default
+      instance only -- the instance the AWS SQL-Server images install. A named instance needs the
+      connection target and the service name derived from it, which this role does not do.
+    quiet: true
+    that:
+      - wsus_running.sql.instance | default('', true) == 'MSSQLSERVER'
+      - wsus_running.sql.service_name | default('', true) == 'MSSQLSERVER'
