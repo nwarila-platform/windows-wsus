@@ -53,7 +53,15 @@ all_systems = [
     # OpenSSH Server ships installed only from 2025, and the framework's user_data starts sshd
     # rather than installing it; on 2022 that bootstrap aborts and nothing can reach the guest.
     ami     = "ami-0ac1b4c911759cc2e"
-    refresh = false
+    # OS-DRIVE REPLACEMENT (immutable-OS pattern). refresh=true makes this host swap-eligible:
+    # bumping the framework's refresh_serial (0 -> 1 -> ...) replaces the OS instance while the
+    # three data volumes, which are standalone resources rather than inline block devices, detach
+    # and reattach to the replacement. It is a no-op until refresh_serial actually changes, so an
+    # ordinary lifecycle is unaffected. Without it the mandate's replaceable operating system
+    # cannot be exercised at all, and neither can the WSUS role's adoption of an existing SUSDB:
+    # every lifecycle destroys its volumes at the end, so a swap inside one run is the only way a
+    # database outlives the host that created it.
+    refresh = true
     # t3.xlarge because AWS publishes no license-included SQL Server Standard rate for any
     # 2-vCPU burstable type: t3.large has no SQL Std SKU at all, so RunInstances rejects the
     # pair after the network interface and volumes already exist. Four vCPUs is also the
