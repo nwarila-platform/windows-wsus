@@ -40,9 +40,7 @@
       letters, digits, underscores, dots and hyphens joined by single backslashes -- 'MSSQL\Data'
       -- each segment starting with a letter or digit and ending in one. They must also name
       different directories compared case-insensitively, because Windows treats 'MSSQL\Data' and
-      'mssql\data' as one and the engine would then write logs and data to the same place. A
-      volume label is required and may not begin or end with whitespace: it is what makes the
-      drive letter verifiable, and a label of spaces would compare equal to an unlabelled volume.
+      'mssql\data' as one and the engine would then write logs and data to the same place.
       Each composed path must also be at most 128 characters, because that is what the engine
       reports back and a longer one could never be proven placed.
     quiet: true
@@ -53,11 +51,39 @@
       - not (__data__ is search(__reserved__))
       - not (__log__ is search(__reserved__))
       - (__data__ | lower) != (__log__ | lower)
-      - wsus_running.db.volume_label | default('', true) is match('^\\S(.*\\S)?$')
       # SERVERPROPERTY returns nvarchar(128), so a longer path is one the engine can be told but
       # never reports back intact -- END would compare the truncated answer and fail forever.
       - (wsus_running.db.drive_letter ~ ':\\' ~ __data__) | length <= 128
       - (wsus_running.db.drive_letter ~ ':\\' ~ __log__) | length <= 128
+
+# This role's gate never re-runs a completed post-installation to correct the root it recorded --
+# the vendor's own repair for a wrong CONTENT_DIR is exactly that re-run, which is a thing an
+# operator does and this role does not. The letter is therefore held to the same grammar as the
+# database letter, and the subdirectory to the same grammar as its subdirectories.
+- name: 'VALIDATE | Require A Usable Content Placement'
+  when: (state | default('present') | string | lower | trim) == 'present'
+  vars:
+    __subdir__: '^[A-Za-z0-9_]([A-Za-z0-9_.-]*[A-Za-z0-9_-])?(\\[A-Za-z0-9_]([A-Za-z0-9_.-]*[A-Za-z0-9_-])?)*$'
+    __reserved__: '(?i)(^|\\)(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\.|\\|$)'
+    __content__: "{{ wsus_running.content.subdir | default('', true) }}"
+  ansible.builtin.assert:
+    fail_msg: >-
+      Refusing to configure: the content placement is malformed. wsus.content.drive_letter must be
+      one capital letter in D-Z, because this role's gate never re-runs a completed
+      post-installation to correct one. The subdirectory follows the same grammar as the database
+      ones. It must also name a different volume from the database: SUSDB and the update store
+      grow independently, and sharing a disk lets either one stop the other.
+    quiet: true
+    that:
+      - wsus_running.content.drive_letter | default('', true) is match('^[D-Z]$')
+      - __content__ is match(__subdir__)
+      - not (__content__ is search(__reserved__))
+      # Owed by the migration contract's validate.yml row 1, on the reason it records: the
+      # disk-manager role validates its own declaration and cannot see this role's independently
+      # overrideable targets. Decision 21 retired the checks that re-proved the HOST it was
+      # handed; this one holds the role's own merged configuration to a shape nothing upstream
+      # can see, so it is not that class and does not travel with them.
+      - (wsus_running.content.drive_letter | upper) != (wsus_running.db.drive_letter | upper)
 
 # The feature lists are merged configuration like everything else, which means a caller can empty
 # or edit them. An override dropping the WID name would let END pass on a host still carrying that
@@ -89,6 +115,25 @@
     that:
       - __present__ | sort == __required__ | sort
       - __absent__ | sort == ['UpdateServices-WidDB']
+
+# The completion flags are merged configuration too, and the gate reads them: an override that
+# drops a flag turns a partial post-installation -- that flag still at 1 -- into both a skipped
+# action and a passing proof. Pinned exactly, and by spelling, for the same reasons the feature
+# sets are.
+- name: 'VALIDATE | Require The Exact Post-Installation Flag Set'
+  when: (state | default('present') | string | lower | trim) == 'present'
+  vars:
+    __flags__: "{{ wsus_running.postinstall.flags | default([], true) }}"
+    __required__: ['UpdateServices-API', 'UpdateServices-Database', 'UpdateServices-Services', 'UpdateServices-UI']
+  ansible.builtin.assert:
+    fail_msg: >-
+      Refusing to configure: wsus.postinstall.flags must be exactly
+      {{ __required__ | join(', ') }}. These are the four completion markers a SQL-backed
+      post-installation writes, measured on the target; dropping one hides an unfinished
+      component from both the gate that would repair it and the proof that would catch it.
+    quiet: true
+    that:
+      - __flags__ | sort == __required__ | sort
 
 # The role composes 'Server=.' and names the service by the merged service_name. Both are correct
 # for the default instance and wrong for any other: a named instance answers on '.\NAME' and runs

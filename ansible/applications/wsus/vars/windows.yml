@@ -34,6 +34,26 @@ features:
     - 'UpdateServices-WidDB'
 #endregion --- [ The Windows features WSUS is made of ] -------------------------------------- #
 
+#region ------ [ What a finished post-installation looks like ] ------------------------------ #
+# The four completion flags post-installation writes, each reaching 2 only when its component
+# finishes. Measured on the target rather than carried over from the WID build, which named a
+# fourth flag this one does not have: after the features install and before post-installation,
+# API and UI already read 2 while Database and Services read 1.
+postinstall:
+  flags_key: 'HKLM:\SOFTWARE\Microsoft\Update Services\Server\Setup\Installed Role Services'
+  setup_key: 'HKLM:\SOFTWARE\Microsoft\Update Services\Server\Setup'
+  flags:
+    - 'UpdateServices-API'
+    - 'UpdateServices-Database'
+    - 'UpdateServices-Services'
+    - 'UpdateServices-UI'
+  # The tool that performs it, at the path its own feature installs it to.
+  tool: 'C:\Program Files\Update Services\Tools\wsusutil.exe'
+  # Where Windows publishes this machine's name, which is the instance name a default SQL
+  # instance answers to and therefore what SQL_INSTANCE_NAME must carry.
+  computer_name_key: 'HKLM:\SYSTEM\CurrentControlSet\Control\ComputerName\ActiveComputerName'
+#endregion --- [ What a finished post-installation looks like ] ------------------------------ #
+
 #region ------ [ Where the instance publishes itself ] --------------------------------------- #
 # SQL Server records the directory name of each instance under this key, keyed by instance name.
 # The directory carries the product major version ('MSSQL16.MSSQLSERVER'), which is why the role

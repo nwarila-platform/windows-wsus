@@ -4,7 +4,7 @@
 # Role metadata for wsus. Description-only (style guide 8): NOT an enforcing argument spec. The
 # role's tasks/validate.yml enforces its merged-config guards.
 #
-# REQUIRED INPUTS: 'wsus.db.drive_letter' and 'wsus.db.volume_label'. WHICH disk holds the
+# REQUIRED INPUTS: 'wsus.db.drive_letter' and 'wsus.content.drive_letter'. WHICH disk holds the
 # database is a property of the deployment, so the play publishes both and validate.yml refuses a
 # run that omits either. The SQL instance is NOT an input: the AWS images install the default
 # instance, this role composes a default-instance connection target, and validate.yml refuses any
