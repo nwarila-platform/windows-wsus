@@ -12,7 +12,7 @@ not open a public issue for suspected credential exposure, privilege
 escalation, trust-policy bypass, or unsafe resource cleanup.
 
 Include the affected commit, relevant workflow or policy path, reproduction
-steps, and the potential AWS or Windows impact. Maintainers aim to acknowledge
+steps, and the potential AWS or guest impact. Maintainers aim to acknowledge
 a report within three business days and provide an initial assessment within
 seven business days.
 
