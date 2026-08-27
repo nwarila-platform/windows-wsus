@@ -58,6 +58,7 @@
 # --- [ allowed: GitHub configuration ] ----------------------------------------------------- #
 !/.github/CODEOWNERS
 !/.github/ansible-framework-pin
+!/.github/renovate.json5
 !/.github/terraform-framework-pin
 !/.github/workflows/aws-deploy.yml
 !/.github/workflows/powershell.yml
