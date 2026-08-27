@@ -22,10 +22,22 @@ wsus_defaults:
   #
   # The letter is the contract the play publishes; the subdirectories are relative to it so a
   # different letter moves both without editing two values.
-  # WHICH disk is a property of the deployment, so the letter and the label it must carry are
-  # published by the play and deliberately absent here -- validate.yml refuses a run that omits
-  # either. Only the layout WITHIN that volume defaults, because it is this role's own shape.
+  # WHICH disk is a property of the deployment, so the letter is published by the play and
+  # deliberately absent here -- validate.yml refuses a run that omits it. Only the layout WITHIN
+  # that volume defaults, because it is this role's own shape.
   db:
     data_subdir: 'MSSQL\Data'
     log_subdir: 'MSSQL\Log'
   #endregion --- [ Database placement ] ------------------------------------------------------ #
+
+  #region ------ [ Content placement ] ------------------------------------------------------- #
+  # WHERE UPDATE FILES LAND. Post-installation takes this as CONTENT_DIR and will not create a
+  # missing tree, so the directory exists before it runs. Measured on the target: the feature
+  # install writes ContentDir = C:\Program Files\Update Services, so passing this is what keeps
+  # the update store off the system volume rather than a preference about where it looks tidier.
+  #
+  # Same split as the database: which volume is the deployment's to publish, the layout within it
+  # is this role's own shape.
+  content:
+    subdir: 'WSUS'
+  #endregion --- [ Content placement ] ------------------------------------------------------- #

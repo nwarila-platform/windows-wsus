@@ -71,41 +71,30 @@
 
     #endregion --- [ Begin: Read The Engine's Effective Placement ] --------------------------- #
 
-    #region ------ [ Begin: Refuse A Volume This Role Was Not Aimed At ] ---------------------- #
-    # BEFORE the first mutation, because that is where a state-aware safety assert belongs and
-    # because none of what PROCESS does is cheap to undo: it creates directories, stamps rights on
-    # them, repoints the engine and restarts it -- a service outage. Proving the volume afterwards
-    # would report the mistake only once it had been made on the wrong disk.
-    #
-    # The letter alone proves only that SOMETHING is mounted there. Swap two letters in the
-    # deployment's disk layout and every step below would succeed against the volume provisioned
-    # for something else. The label is the declared convention that tells them apart, and this
-    # role names the one it expects rather than reading the configuration of the role that wrote
-    # it.
-    #
-    # The same guard refuses a path that only LOOKS like it is on that volume: a junction above
-    # either directory would place the database on whatever it points at while every name in the
-    # run still said E:. END proves both claims again on the way out.
+    #region ------ [ Begin: Read What Post-Installation Has Already Done ] -------------------- #
+    # Post-installation is the one expensive action here -- it builds the database schema and the
+    # content store -- so it is gated on evidence rather than run every converge. Not because
+    # repeating it is unsafe: re-running it is the vendor's own repair for a wrong CONTENT_DIR.
+    # The evidence is its own completion flags: each reaches 2 only when its component finishes,
+    # so a partial run leaves a value this can see and repairs itself on the next pass.
 
-    - name: 'BEGIN | Refuse A Database Volume This Role Was Not Aimed At'
-      ansible.builtin.assert:
-        fail_msg: >-
-          Expected drive {{ wsus_running.db.drive_letter }}: to carry the volume label
-          '{{ wsus_running.db.volume_label }}' with no reparse point above either database
-          directory. It reports label '{{ __wsus_placement__.result.volume_label }}', data
-          aliased={{ __wsus_placement__.result.data_path_aliased }}, log
-          aliased={{ __wsus_placement__.result.log_path_aliased }}. A junction above either path
-          would place the database on whatever volume it points at, whatever the letter says.
-          Nothing has been changed on this host.
-        quiet: true
-        that:
-          - >-
-            (__wsus_placement__.result.volume_label | lower)
-            == (wsus_running.db.volume_label | lower)
-          - not __wsus_placement__.result.data_path_aliased
-          - not __wsus_placement__.result.log_path_aliased
+    - name: 'BEGIN | Read The Post-Installation Completion Flags'
+      register: '__wsus_postinstall_state__'
 
-    #endregion --- [ Begin: Refuse A Volume This Role Was Not Aimed At ] ---------------------- #
+      ansible.windows.win_reg_stat:
+        path: "{{ wsus_running.postinstall.flags_key }}"
+
+    # SQL_INSTANCE_NAME must carry the machine name, because a default instance answers to it and
+    # to nothing else. Read rather than assumed from the inventory name: the two agree today, and
+    # a host renamed after its join would make that agreement quietly false.
+    - name: 'BEGIN | Read This Machine Name'
+      register: '__wsus_computer_name__'
+
+      ansible.windows.win_reg_stat:
+        path: "{{ wsus_running.postinstall.computer_name_key }}"
+        name: 'ComputerName'
+
+    #endregion --- [ Begin: Read What Post-Installation Has Already Done ] -------------------- #
 
 #endregion --- [ Begin: Read The Machine ] ---------------------------------------------------- #
 
@@ -116,6 +105,13 @@
   vars:
     __desired_data__: "{{ wsus_running.db.drive_letter }}:\\{{ wsus_running.db.data_subdir }}"
     __desired_log__: "{{ wsus_running.db.drive_letter }}:\\{{ wsus_running.db.log_subdir }}"
+    __content_dir__: "{{ wsus_running.content.drive_letter }}:\\{{ wsus_running.content.subdir }}"
+    __wsus_machine_name__: "{{ __wsus_computer_name__.value }}"
+    # Any flag short of 2 means a component did not finish, including a run interrupted midway.
+    __wsus_postinstall_incomplete__: >-
+      {{ wsus_running.postinstall.flags
+         | map('extract', __wsus_postinstall_state__.properties | default({}), 'value')
+         | map('default', 0) | select('ne', 2) | list | length > 0 }}
 
   # Begin The 'Process' Block
   block:
@@ -257,6 +253,35 @@
 
     #endregion --- [ Process: Install The WSUS Features ] ------------------------------------- #
 
+    #region ------ [ Process: Complete The Post-Installation ] -------------------------------- #
+    # The action that creates SUSDB. Everything before it exists so that this one can be a
+    # creation rather than a repair: the engine already points at the data volume, so the database
+    # is born there and the relocation arc the WID build carried is never needed.
+
+    - name: 'PROCESS | Create The Content Directory On The Content Volume'
+      ansible.windows.win_file:
+        path: "{{ __content_dir__ }}"
+        state: 'directory'
+
+    # Both arguments are mandatory, and neither is tidiness. Measured on the target: the feature
+    # install leaves SqlServerName pointing at the Windows Internal Database instance -- a
+    # backend this host does not have -- and ContentDir on the system volume. Left to its own
+    # defaults, post-installation would aim at the wrong database and put the store on C:.
+    #
+    # argv form so the module hands the arguments over as given, rather than parsing a command
+    # line back into them.
+    - name: 'PROCESS | Complete The Post-Installation Against The SQL Instance'
+      when: __wsus_postinstall_incomplete__
+
+      ansible.windows.win_command:
+        argv:
+          - "{{ wsus_running.postinstall.tool }}"
+          - 'postinstall'
+          - "SQL_INSTANCE_NAME={{ __wsus_machine_name__ }}"
+          - "CONTENT_DIR={{ __content_dir__ }}"
+
+    #endregion --- [ Process: Complete The Post-Installation ] -------------------------------- #
+
 #endregion --- [ Process: Configure The Host ] ------------------------------------------------ #
 
 
@@ -266,6 +291,8 @@
   vars:
     __desired_data__: "{{ wsus_running.db.drive_letter }}:\\{{ wsus_running.db.data_subdir }}"
     __desired_log__: "{{ wsus_running.db.drive_letter }}:\\{{ wsus_running.db.log_subdir }}"
+    __content_dir__: "{{ wsus_running.content.drive_letter }}:\\{{ wsus_running.content.subdir }}"
+    __wsus_machine_name__: "{{ __wsus_computer_name__.value }}"
 
   # Begin The 'End' Block
   block:
@@ -345,33 +372,6 @@
 
     #endregion --- [ End: Prove The Database Lands On The Data Volume ] ----------------------- #
 
-    #region ------ [ End: Prove The Volume Is The One This Role Was Aimed At ] ---------------- #
-    # The letter proves only that SOMETHING is mounted there. Two letters swapped in the
-    # deployment's disk layout and every other step still succeeds -- the directories are created,
-    # the rights granted, the registry pinned, the engine restarted, and END reads back exactly the
-    # path it asked for -- while SUSDB lands on a volume provisioned for something else. The label
-    # is the declared convention that distinguishes them, and this role names the one it expects
-    # rather than reading the configuration of the role that wrote it.
-
-    - name: 'END | Prove The Database Volume Carries Its Declared Label'
-      ansible.builtin.assert:
-        fail_msg: >-
-          Expected drive {{ wsus_running.db.drive_letter }}: to carry the volume label
-          '{{ wsus_running.db.volume_label }}' with no reparse point above either database
-          directory. It reports label '{{ __wsus_placement_proof__.result.volume_label }}', data
-          aliased={{ __wsus_placement_proof__.result.data_path_aliased }}, log
-          aliased={{ __wsus_placement_proof__.result.log_path_aliased }}. BEGIN accepted this
-          volume, so something relabelled, remounted or redirected it during the run.
-        quiet: true
-        that:
-          - >-
-            (__wsus_placement_proof__.result.volume_label | lower)
-            == (wsus_running.db.volume_label | lower)
-          - not __wsus_placement_proof__.result.data_path_aliased
-          - not __wsus_placement_proof__.result.log_path_aliased
-
-    #endregion --- [ End: Prove The Volume Is The One This Role Was Aimed At ] ---------------- #
-
     #region ------ [ End: Prove The ACE This Role Writes Is On Both Directories ] ------------- #
     # This proves the explicit inheritable service-SID ACE this role owns, not effective access.
     # Inheritable, because the engine creates files and subdirectories beneath these paths and an
@@ -446,5 +446,114 @@
           - wsus_running.features.absent | intersect(__installed__) | length == 0
 
     #endregion --- [ End: Prove The Feature Set, Including What Must Not Be There ] ----------- #
+
+    #region ------ [ End: Prove Post-Installation Finished Against The Right Backend ] -------- #
+    # Read back rather than trusting the command's exit code: post-installation reports success
+    # for work it completed against defaults nobody wanted, so the proof is which backend and
+    # which content root it actually recorded.
+
+    - name: 'END | Re-Read The Post-Installation Completion Flags'
+      register: '__wsus_postinstall_proof__'
+
+      ansible.windows.win_reg_stat:
+        path: "{{ wsus_running.postinstall.flags_key }}"
+
+    - name: 'END | Re-Read What Post-Installation Recorded'
+      register: '__wsus_setup_proof__'
+
+      ansible.windows.win_reg_stat:
+        path: "{{ wsus_running.postinstall.setup_key }}"
+
+    - name: 'END | Prove Every Component Finished'
+      vars:
+        __values__: >-
+          {{ wsus_running.postinstall.flags
+             | map('extract', __wsus_postinstall_proof__.properties | default({}), 'value')
+             | map('default', 0) | list }}
+      ansible.builtin.assert:
+        fail_msg: >-
+          Expected every post-installation component to report 2. Read
+          {{ wsus_running.postinstall.flags | zip(__values__) | map('join', '=') | join(', ') }}.
+          A component short of 2 did not finish, and the next converge repeats the action.
+        quiet: true
+        that:
+          - __values__ | select('ne', 2) | list | length == 0
+
+    # The backend is the half no exit code can speak for. The feature install seeds this value
+    # with the Windows Internal Database instance, so a post-installation that ignored
+    # SQL_INSTANCE_NAME leaves a server this host cannot serve from and reports success doing it.
+    - name: 'END | Prove WSUS Records The SQL Instance And The Declared Content Root'
+      vars:
+        __recorded_server__: "{{ __wsus_setup_proof__.properties.SqlServerName.value | default('') }}"
+        __recorded_content__: "{{ __wsus_setup_proof__.properties.ContentDir.value | default('') }}"
+      ansible.builtin.assert:
+        fail_msg: >-
+          Expected WSUS to record SQL server '{{ __wsus_machine_name__ }}' and content root
+          '{{ __content_dir__ }}'. It records server '{{ __recorded_server__ }}' and content
+          '{{ __recorded_content__ }}'. A server that is not this machine means post-installation
+          fell back to the backend the feature install seeded rather than the one it was given.
+        quiet: true
+        that:
+          - (__recorded_server__ | lower) == (__wsus_machine_name__ | lower)
+          # WSUS records the content root with a trailing separator, which the declared root has
+          # no reason to carry. Measured on core 2.21.2: only this doubled spelling reaches the
+          # regex as one literal backslash, in a `that` conditional and in a double-quoted
+          # template alike; the single form strips nothing in either.
+          - (__recorded_content__ | lower | regex_replace('\\\\+$', ''))
+            == (__content_dir__ | lower)
+
+    # The claim the whole ordering exists to make: SUSDB was CREATED on the data volume, not
+    # moved there afterwards. Post-installation chose these paths itself, from the defaults the
+    # placement region pinned before the feature existed. Asked of the ENGINE, because files at
+    # the expected paths survive a detach and a SUSDB attached from somewhere else leaves exactly
+    # that picture -- only sys.master_files says which files the database is attached FROM. It
+    # says nothing about the database's health: the catalog lists files for an OFFLINE database
+    # too, and proving it serviceable is contract row 37's job, not this one's.
+    - name: 'END | Prove The Engine Has SUSDB Attached On The Declared Volume'
+      ansible.builtin.assert:
+        fail_msg: >-
+          Expected the engine to have SUSDB attached from '{{ __desired_data__ }}\SUSDB.mdf' and
+          '{{ __desired_log__ }}\SUSDB_log.ldf', and from nothing else. It reports
+          {{ __wsus_placement_proof__.result.susdb_file_count }} file(s):
+          '{{ __wsus_placement_proof__.result.susdb_data_path | default('nothing', true) }}' and
+          '{{ __wsus_placement_proof__.result.susdb_log_path | default('nothing', true) }}'. A
+          database anywhere else was created before the engine was pinned, and moving it is the
+          unsupported path this ordering exists to avoid.
+        quiet: true
+        that:
+          - >-
+            (__wsus_placement_proof__.result.susdb_data_path | lower)
+            == (__desired_data__ ~ '\SUSDB.mdf') | lower
+          - >-
+            (__wsus_placement_proof__.result.susdb_log_path | lower)
+            == (__desired_log__ ~ '\SUSDB_log.ldf') | lower
+          - __wsus_placement_proof__.result.susdb_file_count == 2
+
+    # The recorded root is not the store. WSUS writes into a cache directory beneath it, created
+    # by post-installation, and a root that exists with no cache under it is a host that recorded
+    # the right answer and cannot serve a single file.
+    - name: 'END | Read The Content Cache Post-Installation Created'
+      register: '__wsus_content_cache__'
+
+      ansible.windows.win_stat:
+        path: "{{ __content_dir__ ~ '\\WsusContent' }}"
+        get_checksum: false
+        # The proof needs the path, never the contents. Left at its default this enumerates every
+        # file beneath the directory to total them, which on a populated update store is the whole
+        # cache, read every converge, to answer a question about the directory itself.
+        get_size: false
+
+    - name: 'END | Prove The Content Cache Exists Beneath The Declared Root'
+      ansible.builtin.assert:
+        fail_msg: >-
+          Expected post-installation to have created
+          '{{ __content_dir__ }}\WsusContent'. It is not there, so nothing has anywhere to put
+          update files even though the recorded content root is correct.
+        quiet: true
+        that:
+          - __wsus_content_cache__.stat.exists
+          - __wsus_content_cache__.stat.isdir
+
+    #endregion --- [ End: Prove Post-Installation Finished Against The Right Backend ] -------- #
 
 #endregion --- [ End: Prove The Result ] ------------------------------------------------------ #

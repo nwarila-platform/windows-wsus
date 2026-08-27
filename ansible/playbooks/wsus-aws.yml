@@ -113,22 +113,36 @@
               label: 'WSUSIIS'
               allocation_unit: 4096
     #endregion --- [ Roles: Windows Disk Manager ] -------------------------------------------- #
+  #endregion --- [ Roles ] -------------------------------------------------------------------- #
+
+#endregion --- [ Play: Configure The Guest ] -------------------------------------------------- #
+
+#region ------ [ Play: WSUS ] ----------------------------------------------------------------- #
+# Its own play, as the reference gives its products one: the roles above bring a host into
+# existence and into the directory, and this is the product that host exists to run. The split is
+# what lets the product's failure be read as the product's, rather than as one more role in a
+# chain that also formats disks.
+
+- name: 'PLAY | WSUS On SQL Server (ephemeral AWS)'
+  hosts: 'wsus_servers'
+  any_errors_fatal: true
+
+  #region ------ [ Roles ] -------------------------------------------------------------------- #
+  roles:
 
     #region ------ [ Roles: WSUS ] ------------------------------------------------------------ #
-    # Last, because it is the only role that needs the disks it writes to. Rebuilt one action at a
-    # time against docs/explanation/wsus-role-migration-contract.md.
+    # Rebuilt one region at a time against docs/explanation/wsus-role-migration-contract.md.
     #
-    # Both values restate what the disk layout above declares, and restating them is the point: the
-    # role proves at END that the volume mounted at this letter carries this label, so swapping two
-    # letters up there fails the run instead of quietly putting SUSDB on the wrong volume.
+    # The letters the disk role laid down in the previous play. That role owns the layout and
+    # holds it identical across a replacement, so these are named here, not re-proven downstream.
     - role: 'wsus'
       vars:
         wsus:
           db:
             drive_letter: 'E'
-            volume_label: 'WSUSDB'
+          content:
+            drive_letter: 'F'
     #endregion --- [ Roles: WSUS ] ------------------------------------------------------------ #
-
   #endregion --- [ Roles ] -------------------------------------------------------------------- #
 
-#endregion --- [ Play: Configure The Guest ] -------------------------------------------------- #
+#endregion --- [ Play: WSUS ] ----------------------------------------------------------------- #

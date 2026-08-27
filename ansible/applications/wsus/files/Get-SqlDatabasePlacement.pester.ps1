@@ -121,61 +121,6 @@ BeforeAll {
     Return ($global:FakePaths -contains $LiteralPath)
   }
 
-  Function Get-Volume {
-    [CmdletBinding()]
-    Param ([Parameter()] [System.String]$DriveLetter)
-    $global:FakeVolumeAsked = $DriveLetter
-    If ($global:FakeVolumeCmdletMissing) {
-      # What a runspace without the Storage module raises. Its category is ObjectNotFound too,
-      # which is exactly why the script's typed rethrow has to come first.
-      # Constructed through the type, not New-Object: this file shadows New-Object for the
-      # script's own use, so the stub cannot route its own construction through it.
-      Throw ([System.Management.Automation.CommandNotFoundException]::new(
-        'The term ''Get-Volume'' is not recognized as the name of a cmdlet.'
-      ))
-    }
-    If ($global:FakeVolumeFault) {
-      Write-Error -Message 'The CIM provider is unavailable.' -Category 'ResourceUnavailable'
-      Return $Null
-    }
-    If (-not $global:FakeVolumes.ContainsKey($DriveLetter)) {
-      Write-Error -Category 'ObjectNotFound' -Message (
-        'No MSFT_Volume objects found with property DriveLetter equal to {0}' -f $DriveLetter
-      )
-      Return $Null
-    }
-    [PSCustomObject]@{ FileSystemLabel = $global:FakeVolumes[$DriveLetter] }
-  }
-
-  Function Get-Item {
-    [CmdletBinding()]
-    Param ([Parameter()] [System.String]$LiteralPath, [Parameter()] [System.Management.Automation.SwitchParameter]$Force)
-    If ($global:FakePaths -notcontains $LiteralPath) {
-      # What a real host raises for a component that does not exist. The walk must therefore ask
-      # Test-Path first; without this branch a stub that always answers hides that requirement,
-      # and a first converge -- where no directory exists yet -- would die in BEGIN.
-      Throw ([System.Management.Automation.ItemNotFoundException]::new(
-        ('Cannot find path ''{0}'' because it does not exist.' -f $LiteralPath)
-      ))
-    }
-    $Attributes = [System.IO.FileAttributes]::Directory
-    If ($global:FakeReparsePoints -contains $LiteralPath) {
-      $Attributes = $Attributes -bor [System.IO.FileAttributes]::ReparsePoint
-    }
-    [PSCustomObject]@{ Attributes = $Attributes }
-  }
-
-  Function Split-Path {
-    [CmdletBinding()]
-    Param ([Parameter()] [System.String]$Path, [Parameter()] [System.Management.Automation.SwitchParameter]$Parent)
-    # Windows semantics on any host: strip the last backslash component, stop at the drive root.
-    If ($Path -match '^[A-Za-z]:\\?$') { Return '' }
-    $Cut = $Path.LastIndexOf('\')
-    If ($Cut -lt 0) { Return '' }
-    If ($Cut -eq 2 -and $Path[1] -eq ':') { Return $Path.Substring(0, 3) }
-    Return $Path.Substring(0, $Cut)
-  }
-
   Function Get-Acl {
     [CmdletBinding()]
     Param ([Parameter()] [System.String]$LiteralPath)
@@ -213,6 +158,9 @@ BeforeAll {
         $Command | Add-Member -MemberType ScriptMethod -Name 'ExecuteScalar' -Value {
           If ($this.CommandText -match 'InstanceDefaultDataPath') { Return $global:FakeDataPath }
           If ($this.CommandText -match 'InstanceDefaultLogPath') { Return $global:FakeLogPath }
+          If ($this.CommandText -match 'COUNT\(\*\).*master_files') { Return $global:FakeSusdbFileCount }
+          If ($this.CommandText -match "master_files.*type_desc = 'ROWS'") { Return $global:FakeSusdbData }
+          If ($this.CommandText -match "master_files.*type_desc = 'LOG'") { Return $global:FakeSusdbLog }
           Throw ('Unexpected query: {0}' -f $this.CommandText)
         }
         Return $Command
@@ -247,21 +195,17 @@ Describe 'Get-SqlDatabasePlacement' {
       $script:NamesKey = @{ 'MSSQLSERVER' = 'MSSQL16.MSSQLSERVER' }
     }
     $global:FakeRegistryReads = @()
-    $global:FakeVolumes = @{ 'E' = 'WSUSDB' }
-    $global:FakeVolumeFault = $False
-    $global:FakeVolumeCmdletMissing = $False
-    $global:FakeReparsePoints = @()
     $global:FakeAclAskedFor = $Null
     $global:FakeConnectionString = ''
-    $global:FakeVolumeAsked = ''
     $global:FakeAccountRequested = ''
     $global:FakeCimAsked = $Null
-    $global:FakePaths = @(
-      $script:SettingsKey, $script:Data, $script:Log, 'E:\MSSQL', 'E:\'
-    )
+    $global:FakePaths = @($script:SettingsKey, $script:Data, $script:Log)
     # The engine reports a trailing separator; the script is expected to trim it.
     $global:FakeDataPath = ($script:Data + '\')
     $global:FakeLogPath = ($script:Log + '\')
+    $global:FakeSusdbData = ($script:Data + '\SUSDB.mdf')
+    $global:FakeSusdbLog = ($script:Log + '\SUSDB_log.ldf')
+    $global:FakeSusdbFileCount = 2
     $global:FakeServiceSid = $script:Sid
     $global:FakeAcl = @{
       $script:Data = @(New-Rule -Sid $script:Sid)
@@ -279,9 +223,9 @@ Describe 'Get-SqlDatabasePlacement' {
     Remove-AnsibleContext
     Remove-Variable -Scope 'Global' -Force -ErrorAction 'SilentlyContinue' -Name @(
       'FakeServiceMissing', 'FakeServiceName', 'FakeServiceState', 'FakeServiceStartMode',
-      'FakeRegistry', 'FakeRegistryReads', 'FakeVolumes', 'FakeVolumeAsked', 'FakeVolumeFault',
-      'FakeVolumeCmdletMissing', 'FakeAclAskedFor', 'FakeConnectionString', 'FakeReparsePoints',
+      'FakeRegistry', 'FakeRegistryReads', 'FakeAclAskedFor', 'FakeConnectionString',
       'FakeAccountRequested', 'FakeCimAsked', 'FakePaths', 'FakeDataPath', 'FakeLogPath',
+      'FakeSusdbData', 'FakeSusdbLog', 'FakeSusdbFileCount',
       'FakeServiceSid', 'FakeAcl', 'FakeConnectionRefused', 'FakeOpens', 'FakeCloses',
       'FakeAclReads', 'FakeAclCurrent'
     )
@@ -532,12 +476,6 @@ Describe 'Get-SqlDatabasePlacement' {
       $global:FakeCimAsked.Filter | Should -Be "Name='MSSQLSERVER'"
     }
 
-    It 'reads the volume at the drive the desired paths name' {
-      $null = & $script:Invoke | ConvertFrom-Json
-
-      $global:FakeVolumeAsked | Should -Be 'E'
-    }
-
     It 'connects to the default instance, the same engine the caller restarts' {
       $null = & $script:Invoke | ConvertFrom-Json
 
@@ -548,42 +486,6 @@ Describe 'Get-SqlDatabasePlacement' {
       $Source = Get-Content -LiteralPath $script:ScriptPath -Raw
 
       $Source | Should -Match '\[CmdletBinding\(SupportsShouldProcess\)\]'
-    }
-  }
-
-  Context 'the volume behind the drive letter' {
-
-    It 'reports the label the volume carries' {
-      (& $script:Invoke | ConvertFrom-Json).volume_label | Should -Be 'WSUSDB'
-    }
-
-    It 'reports the label of a volume this role was not aimed at, rather than hiding it' {
-      $global:FakeVolumes = @{ 'E' = 'WSUSDATA' }
-
-      (& $script:Invoke | ConvertFrom-Json).volume_label | Should -Be 'WSUSDATA'
-    }
-
-    It 'reports an empty label when nothing is mounted at that letter' {
-      $global:FakeVolumes = @{}
-
-      (& $script:Invoke | ConvertFrom-Json).volume_label | Should -BeNullOrEmpty
-    }
-
-    It 'raises a storage failure instead of disguising it as an unmounted letter' {
-      $global:FakeVolumeFault = $True
-
-      { & $script:Invoke } | Should -Throw '*CIM provider is unavailable*'
-    }
-  }
-
-  Context 'failures it must not disguise' {
-
-    It 'raises a missing Storage module instead of reporting an unmounted letter' {
-      # Its category is ObjectNotFound, the same as a letter with no volume, so only the typed
-      # rethrow separates 'this host has no such drive' from 'this runspace cannot ask'.
-      $global:FakeVolumeCmdletMissing = $True
-
-      { & $script:Invoke } | Should -Throw '*Get-Volume*'
     }
   }
 
@@ -652,37 +554,51 @@ Describe 'Get-SqlDatabasePlacement' {
     }
   }
 
-  Context 'a path that only looks like it is on the declared volume' {
+  Context 'where the engine actually has SUSDB' {
 
-    It 'reports no aliasing when every component is an ordinary directory' {
+    It 'reports the file paths the engine has the database attached from' {
       $Result = & $script:Invoke | ConvertFrom-Json
 
-      $Result.data_path_aliased | Should -BeFalse
-      $Result.log_path_aliased | Should -BeFalse
+      $Result.susdb_data_path | Should -Be 'E:\MSSQL\Data\SUSDB.mdf'
+      $Result.susdb_log_path | Should -Be 'E:\MSSQL\Log\SUSDB_log.ldf'
+      $Result.susdb_file_count | Should -Be 2
     }
 
-    It 'reports the directory itself as aliased when it is a reparse point' {
-      $global:FakeReparsePoints = @($script:Data)
-
-      $Result = & $script:Invoke | ConvertFrom-Json
-
-      $Result.data_path_aliased | Should -BeTrue
-      $Result.log_path_aliased | Should -BeFalse
-    }
-
-    It 'reports aliasing from a junction ABOVE the directory, which the name never shows' {
-      $global:FakeReparsePoints = @('E:\MSSQL')
+    # A first converge has no such database, and DB_ID returns null rather than raising. The
+    # caller must be able to tell that apart from a database attached somewhere unexpected.
+    It 'reports empty paths and no files when the database does not exist' {
+      $global:FakeSusdbData = $Null
+      $global:FakeSusdbLog = $Null
+      $global:FakeSusdbFileCount = 0
 
       $Result = & $script:Invoke | ConvertFrom-Json
 
-      $Result.data_path_aliased | Should -BeTrue
-      $Result.log_path_aliased | Should -BeTrue
+      $Result.susdb_data_path | Should -BeNullOrEmpty
+      $Result.susdb_log_path | Should -BeNullOrEmpty
+      $Result.susdb_file_count | Should -Be 0
     }
 
-    It 'reports aliasing from a reparse point at the drive root' {
-      $global:FakeReparsePoints = @('E:\')
+    It 'reports a database attached from somewhere else verbatim, rather than hiding it' {
+      $global:FakeSusdbData = 'C:\SUSDB.mdf'
 
-      (& $script:Invoke | ConvertFrom-Json).data_path_aliased | Should -BeTrue
+      (& $script:Invoke | ConvertFrom-Json).susdb_data_path | Should -Be 'C:\SUSDB.mdf'
+    }
+
+    # The path scalars report the FIRST file of each kind, so an extra data file elsewhere leaves
+    # both of them reading correctly; only the count sees it.
+    It 'reports a file count above the pair the role creates' {
+      $global:FakeSusdbFileCount = 3
+
+      (& $script:Invoke | ConvertFrom-Json).susdb_file_count | Should -Be 3
+    }
+
+    It 'reports nothing about SUSDB when the instance is not running' {
+      $global:FakeServiceState = 'Stopped'
+
+      $Result = & $script:Invoke | ConvertFrom-Json
+
+      $Result.susdb_data_path | Should -BeNullOrEmpty
+      $Result.susdb_file_count | Should -Be 0
     }
   }
 

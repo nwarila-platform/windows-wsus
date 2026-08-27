@@ -4,7 +4,8 @@
 
 <#
     .SYNOPSIS
-        Reads where a SQL Server instance would create a database, and who may write there.
+        Reads where a SQL Server instance would create a database, who may write there, and
+        which files it currently has SUSDB attached from.
 
     .DESCRIPTION
         The effective directories are asked of the ENGINE rather than composed from the registry,
@@ -88,9 +89,14 @@
 
     .OUTPUTS
         One object carrying changed, check_mode, data_acl_denied, data_acl_granted,
-        effective_data, effective_log, data_path_aliased, log_path_aliased, log_acl_denied,
-        log_acl_granted, msg, placement_read, placement_valid, service_sid, service_start_mode,
-        service_state, settings_key and volume_label.
+        effective_data, effective_log, log_acl_denied, log_acl_granted, msg, placement_read,
+        placement_valid, service_sid, service_start_mode, service_state, settings_key,
+        susdb_data_path, susdb_file_count and susdb_log_path.
+
+        The susdb_* fields are where the ENGINE has SUSDB's files attached from, taken from
+        sys.master_files. They are empty and zero on a host with no such database, which is what
+        a first converge looks like before post-installation runs. Attachment and location are
+        all they report; the catalog lists files for an OFFLINE database too.
 
         placement_read says whether the engine could be ASKED. It separates "the instance was
         down, so its placement is unknown" from "the instance answered and named the wrong
@@ -320,6 +326,9 @@ If (-not (Test-Path -LiteralPath:$SettingsKey)) {
 
 $EffectiveData = ''
 $EffectiveLog = ''
+$SusdbData = ''
+$SusdbLog = ''
+$SusdbFileCount = 0
 If ($Running) {
   $Connection = New-Object -TypeName:'System.Data.SqlClient.SqlConnection' -ArgumentList:(
     'Server=.;Database=master;Integrated Security=true;Encrypt=false;'
@@ -341,28 +350,34 @@ If ($Running) {
     # comparison that missed that would restart the instance on every converge.
     $EffectiveData = $EffectiveData.TrimEnd('\')
     $EffectiveLog = $EffectiveLog.TrimEnd('\')
+
+    # Where the ENGINE has SUSDB's files, which is the only thing that proves the database is
+    # attached FROM them. Files sitting at the expected paths prove nothing on their own: they
+    # survive a detach, and a SUSDB attached from somewhere else leaves exactly that picture.
+    # Attachment is all this reports: the catalog lists files for an OFFLINE database too, so
+    # whether the database is serviceable is a separate question and not one asked here.
+    # DB_ID returns null when no such database exists. The path queries then match no row and
+    # ExecuteScalar returns null; the count query still returns one row carrying zero. Either
+    # way these read empty and 0 -- a host that has not run post-installation yet.
+    $SusdbSelect = "SELECT CAST(physical_name AS nvarchar(4000)) FROM sys.master_files"
+    $SusdbWhere = "WHERE database_id = DB_ID('SUSDB')"
+
+    $SusdbDataCommand = $Connection.CreateCommand()
+    $SusdbDataCommand.CommandText = "$SusdbSelect $SusdbWhere AND type_desc = 'ROWS'"
+    $SusdbData = [System.String]$SusdbDataCommand.ExecuteScalar()
+
+    $SusdbLogCommand = $Connection.CreateCommand()
+    $SusdbLogCommand.CommandText = "$SusdbSelect $SusdbWhere AND type_desc = 'LOG'"
+    $SusdbLog = [System.String]$SusdbLogCommand.ExecuteScalar()
+
+    # Counted as well as located, because the scalars above report the FIRST file of each kind.
+    # A second data file on another volume would leave both of them reading correctly.
+    $SusdbCountCommand = $Connection.CreateCommand()
+    $SusdbCountCommand.CommandText = "SELECT COUNT(*) FROM sys.master_files $SusdbWhere"
+    $SusdbFileCount = [System.Int32]$SusdbCountCommand.ExecuteScalar()
   } Finally {
     $Connection.Close()
   }
-}
-
-# The label of the volume the caller aimed this role at. The drive letter alone proves only that
-# SOMETHING is mounted there: swap two letters in the disk layout and every step below still
-# succeeds against the wrong volume. The label is the declared convention that names which one.
-# Only "no volume carries that letter" is a REPORT; it is what an unprovisioned or wrongly
-# lettered host looks like, and the caller decides what to do about it. Every other failure --
-# the Storage module absent from the runspace, a CIM provider fault, an RPC error -- is a fault
-# this script must not disguise as an empty label, because an empty label reads as 'nothing is
-# mounted there' and would send an operator to the disk layout instead of the real cause.
-$VolumeLabel = ''
-Try {
-  $Volume = Get-Volume -DriveLetter:($DesiredData.Substring(0, 1)) -ErrorAction:'Stop'
-  $VolumeLabel = [System.String]$Volume.FileSystemLabel
-} Catch [System.Management.Automation.CommandNotFoundException] {
-  # Caught before the ObjectNotFound test below: a missing cmdlet reports that same category.
-  Throw
-} Catch {
-  If ($PSItem.CategoryInfo.Category -ne 'ObjectNotFound') { Throw }
 }
 
 $ServiceSid = (
@@ -398,27 +413,6 @@ ForEach ($Target In @($DesiredData, $DesiredLog)) {
   $Granted = $False
   $Denied = $False
 
-  # A reparse point ANYWHERE above the directory moves it to another volume while every name
-  # involved keeps saying otherwise: with 'E:\MSSQL' a junction to 'C:\MSSQL', the directory is
-  # created on C:, the engine is told 'E:\MSSQL\Data' and reports it back verbatim, and the label
-  # and access checks all pass against E: -- while SUSDB is written to the system volume. The
-  # letter and the label describe a path, not the storage behind it, so every existing component
-  # from the target up to the drive root is examined.
-  $Aliased = $False
-  $Probe = $Target
-  While ($Probe) {
-    If (Test-Path -LiteralPath:$Probe) {
-      $Component = Get-Item -LiteralPath:$Probe -Force
-      If (($Component.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
-        $Aliased = $True
-        Break
-      }
-    }
-    $Parent = Split-Path -Path:$Probe -Parent
-    If ([System.String]::IsNullOrEmpty($Parent) -or $Parent -eq $Probe) { Break }
-    $Probe = $Parent
-  }
-
   If (Test-Path -LiteralPath:$Target) {
     $Rules = (Get-Acl -LiteralPath:$Target).GetAccessRules(
       $True, $True, [System.Security.Principal.SecurityIdentifier]
@@ -436,7 +430,7 @@ ForEach ($Target In @($DesiredData, $DesiredLog)) {
         $PSItem.PropagationFlags -eq $NoPropagation
       }).Count -gt 0
   }
-  $Access += [PSCustomObject]@{ Granted = $Granted; Denied = $Denied; Aliased = $Aliased }
+  $Access += [PSCustomObject]@{ Granted = $Granted; Denied = $Denied }
 }
 
 $PlacementValid = $Running -and ($EffectiveData -ieq $DesiredData) -and ($EffectiveLog -ieq $DesiredLog)
@@ -445,12 +439,10 @@ $Result = [PSCustomObject]@{
   changed            = [System.Boolean]$False
   check_mode         = [System.Boolean]$Ansible.CheckMode
   data_acl_denied    = [System.Boolean]$Access[0].Denied
-  data_path_aliased  = [System.Boolean]$Access[0].Aliased
   data_acl_granted   = [System.Boolean]$Access[0].Granted
   effective_data     = [System.String]$EffectiveData
   effective_log      = [System.String]$EffectiveLog
   log_acl_denied     = [System.Boolean]$Access[1].Denied
-  log_path_aliased   = [System.Boolean]$Access[1].Aliased
   log_acl_granted    = [System.Boolean]$Access[1].Granted
   msg                = If (-not $Running) {
     'Instance {0} is {1}; placement cannot be read until it runs' -f $ServiceName, $Service.State
@@ -465,7 +457,9 @@ $Result = [PSCustomObject]@{
   service_start_mode = [System.String]$Service.StartMode
   service_state      = [System.String]$Service.State
   settings_key       = [System.String]$SettingsKey
-  volume_label       = [System.String]$VolumeLabel
+  susdb_data_path    = [System.String]$SusdbData
+  susdb_file_count   = [System.Int32]$SusdbFileCount
+  susdb_log_path     = [System.String]$SusdbLog
 }
 
 #endregion --- [ Main ] ---------------------------------------------------------------------- #
