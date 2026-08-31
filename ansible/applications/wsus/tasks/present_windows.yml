@@ -296,7 +296,6 @@
 
       ansible.windows.win_regedit:
         data: "{{ item.value }}"
-        delete_key: true
         name: "{{ item.name }}"
         path: "{{ __wsus_placement__.result.settings_key }}"
         state: 'present'
@@ -398,10 +397,6 @@
     #endregion --- [ Process: Adopt A Preserved SUSDB ] --------------------------------------- #
 
     #region ------ [ Process: Create The Content Directory On The Content Volume ] ------------ #
-    # The action that creates SUSDB. Everything before it exists so that this one can be a
-    # creation rather than a repair: the engine already points at the data volume, so the database
-    # is born there and never has to be moved.
-
     - name: 'PROCESS | Create The Content Directory On The Content Volume'
 
       ansible.windows.win_file:
@@ -414,6 +409,10 @@
     #endregion --- [ Process: Create The Content Directory On The Content Volume ] ------------ #
 
     #region ------ [ Process: Complete The Post-Installation Against The SQL Instance ] ------- #
+    # The region that creates SUSDB. Everything before it exists so that this one can be a
+    # creation rather than a repair: the engine already points at the data volume, so the
+    # database is born there and never has to be moved.
+    #
     # Both arguments are mandatory, and neither is tidiness. Measured on the target: the feature
     # install leaves SqlServerName pointing at the Windows Internal Database instance -- a
     # backend this host does not have -- and ContentDir on the system volume. Left to its own
@@ -586,6 +585,8 @@
       ansible.windows.win_feature_info:
         name: "{{ item }}"
 
+    # ----------------------------------------------------------------------------------------- #
+
     - name: 'END | Prove Every Requested Feature Is Installed'
       vars:
         __required__: ['UpdateServices-Services', 'UpdateServices-DB', 'Web-Http-Logging']
@@ -620,6 +621,8 @@
       ansible.windows.win_reg_stat:
         path: 'HKLM:\SOFTWARE\Microsoft\Update Services\Server\Setup\Installed Role Services'
 
+    # ----------------------------------------------------------------------------------------- #
+
     - name: 'END | Prove Every Component Finished'
       vars:
         __postinstall_flags__:
@@ -652,6 +655,8 @@
     # The backend is the half no exit code can speak for. The feature install seeds this value
     # with the Windows Internal Database instance, so a post-installation that ignored
     # SQL_INSTANCE_NAME leaves a server this host cannot serve from and reports success doing it.
+
+    # ----------------------------------------------------------------------------------------- #
 
     - name: 'END | Prove WSUS Records The SQL Instance And The Declared Content Root'
       vars:
@@ -724,6 +729,8 @@
         get_size: false
         path: "{{ __content_dir__ ~ '\\WsusContent' }}"
 
+    # ----------------------------------------------------------------------------------------- #
+
     - name: 'END | Prove The Content Cache Exists Beneath The Declared Root'
 
       ansible.builtin.assert:
@@ -783,6 +790,8 @@
     # The migration contract inverts its removal task here: under SQL nothing may place a SUSDB
     # file on the system volume, so the rebuild proves the absence instead of performing a
     # deletion. A file found here is not deleted -- an operator decides what it is.
+    # ----------------------------------------------------------------------------------------- #
+
 
     - name: 'END | Prove No SUSDB File Sits On The System Volume'
       ansible.builtin.assert:
