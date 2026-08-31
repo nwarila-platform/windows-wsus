@@ -66,7 +66,10 @@ BeforeAll {
       $Command | Add-Member -MemberType ScriptMethod -Name 'ExecuteNonQuery' -Value {
         $global:FakeSql += $this.CommandText
         If ($this.CommandText -match 'FOR ATTACH') { $global:FakeAttached = $true }
-        If ($this.CommandText -match 'sp_detach_db') { $global:FakeAttached = $false }
+        If ($this.CommandText -match 'sp_detach_db') {
+          If ($global:FakeDetachThrows) { Throw 'detach refused by the engine' }
+          $global:FakeAttached = $false
+        }
         Return 0
       }
 
@@ -81,6 +84,7 @@ Describe 'Invoke-SusdbAdoption' {
 
   BeforeEach {
     $global:FakeAttached = $false
+    $global:FakeDetachThrows = $false
     $global:FakeState = 'ONLINE'
     $global:FakeStateReadThrows = $false
     $global:FakeSql = @()
@@ -216,6 +220,35 @@ Describe 'Invoke-SusdbAdoption' {
     }
 
     # A database that was already there is not this script's to remove, however unhealthy.
+    # A rollback that fails leaves the database attached, and possibly in EMERGENCY and
+    # SINGLE_USER. Reporting no change there tells an operator the host was untouched while it is
+    # in a worse state than this run found it.
+    It 'reports a change when the rollback detach fails and the database is left attached' {
+      $global:FakeState = 'SUSPECT'
+      $global:FakeDetachThrows = $true
+
+      { & $script:Invoke } | Should -Throw
+
+      $global:Ansible.Changed | Should -BeTrue
+      $global:FakeAttached | Should -BeTrue
+    }
+
+    # Both causes, because either alone misdescribes the repair: the first says why the database
+    # was rejected, the second says why it is still there.
+    It 'names both the rejection and the failed rollback when it cannot detach' {
+      $global:FakeState = 'SUSPECT'
+      $global:FakeDetachThrows = $true
+
+      # One invocation, because the fake carries the attach forward: a second call would find
+      # SUSDB already present, take the pre-existing path, and never reach the rollback.
+      $Message = ''
+      Try { & $script:Invoke } Catch { $Message = $PSItem.Exception.Message }
+
+      $Message | Should -BeLike '*SUSPECT*'
+      $Message | Should -BeLike '*detach refused by the engine*'
+      $Message | Should -BeLike '*still attached*'
+    }
+
     It 'leaves a pre-existing database attached when a gate fails' {
       $global:FakeAttached = $true
       $global:FakeState = 'SUSPECT'

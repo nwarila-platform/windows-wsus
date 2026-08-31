@@ -652,12 +652,11 @@
       ansible.windows.win_reg_stat:
         path: 'HKLM:\SOFTWARE\Microsoft\Update Services\Server\Setup'
 
+    # ----------------------------------------------------------------------------------------- #
+
     # The backend is the half no exit code can speak for. The feature install seeds this value
     # with the Windows Internal Database instance, so a post-installation that ignored
     # SQL_INSTANCE_NAME leaves a server this host cannot serve from and reports success doing it.
-
-    # ----------------------------------------------------------------------------------------- #
-
     - name: 'END | Prove WSUS Records The SQL Instance And The Declared Content Root'
       vars:
         __recorded_server__: "{{ __wsus_setup_proof__.properties.SqlServerName.value | default('') }}"
@@ -787,12 +786,11 @@
         recurse: true
         use_regex: false
 
+    # ----------------------------------------------------------------------------------------- #
+
     # The migration contract inverts its removal task here: under SQL nothing may place a SUSDB
     # file on the system volume, so the rebuild proves the absence instead of performing a
     # deletion. A file found here is not deleted -- an operator decides what it is.
-    # ----------------------------------------------------------------------------------------- #
-
-
     - name: 'END | Prove No SUSDB File Sits On The System Volume'
       ansible.builtin.assert:
         fail_msg: >-

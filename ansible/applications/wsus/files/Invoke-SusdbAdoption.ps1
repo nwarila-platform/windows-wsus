@@ -32,11 +32,12 @@
 
         Rollback detaches ONLY what this invocation attached. A database that was already there
         when the script started is never detached by a failure here, because this script is not
-        what put it at risk. The detach is best-effort: it takes the database through EMERGENCY
-        and SINGLE_USER first, which is what the engine's own limitations demand for a SUSPECT
-        database, but a detach that still fails is reported as a warning and the original failure
-        is what propagates. The run stops either way; what a failed rollback costs is a database
-        left attached for an operator to deal with, not a silent success.
+        what put it at risk. The detach takes the database through EMERGENCY and SINGLE_USER
+        first, which is what the engine's own limitations demand for a SUSPECT database. A detach
+        that still fails raises BOTH causes together -- why the database was rejected and why it
+        is still attached -- because either alone misdescribes the repair, and the run reports
+        that it changed the host, since it did: it left a database attached that an operator has
+        to deal with. The run stops either way, never on a silent success.
 
         Org scripts are a single straightforward process stage in the org script template's
         architecture: one [ Script ] region carrying [ Initialization ] (strict mode, transport
@@ -266,6 +267,11 @@ CREATE DATABASE SUSDB ON (FILENAME = N'$DataFile') LOG ON (FILENAME = N'$LogFile
 "@
       $Null = $AttachCommand.ExecuteNonQuery()
       $Adopted = $True
+
+      # The host is mutated from this instant, and everything below can throw. Recorded here so a
+      # run that attaches and then fails cannot report that it changed nothing; cleared again only
+      # if the rollback actually detaches, which is the one case where the net change is zero.
+      $Ansible.Changed = $True
     }
   }
 
@@ -295,6 +301,8 @@ CREATE DATABASE SUSDB ON (FILENAME = N'$DataFile') LOG ON (FILENAME = N'$LogFile
       Throw ('SUSDB attached but reports state {0}, not ONLINE' -f $State)
     }
   } Catch {
+    $Failure = $PSItem
+
     # Only what THIS invocation attached is detached. A database that was already present is left
     # exactly as found: this script did not put it at risk and must not remove it.
     If ($Adopted) {
@@ -316,12 +324,21 @@ CREATE DATABASE SUSDB ON (FILENAME = N'$DataFile') LOG ON (FILENAME = N'$LogFile
         "EXEC @DetachStatus = sp_detach_db @dbname = N'SUSDB', @skipchecks = 'true'; " +
         "IF @DetachStatus <> 0 THROW 50000, 'sp_detach_db reported a non-zero status', 1;"
         $Null = $DetachCommand.ExecuteNonQuery()
+
+        # Both cleared only once the detach has actually succeeded. Setting either before would
+        # report a database as released while it is still attached, and the run as having changed
+        # nothing while it had.
+        $Adopted = $False
+        $Ansible.Changed = $False
       } Catch {
-        Write-Warning -Message:('Rollback detach failed: {0}' -f $PSItem.Exception.Message)
+        # The rollback failed, so this run leaves SUSDB attached and possibly in EMERGENCY and
+        # SINGLE_USER -- a worse state than it found. Both causes are raised together because
+        # either alone misdescribes the repair: the first says why the database was rejected, the
+        # second says why it is still there.
+        Throw ('SUSDB was attached by this run and could not be rolled back, so it is still attached from {0} and may be left in EMERGENCY and SINGLE_USER. Rejected because: {1}. Rollback failed because: {2}' -f $DataFile, $Failure.Exception.Message, $PSItem.Exception.Message)
       }
-      $Adopted = $False
     }
-    Throw
+    Throw $Failure
   }
 } Finally {
   $Connection.Close()
