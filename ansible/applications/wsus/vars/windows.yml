@@ -2,68 +2,13 @@
 # File: '{{ role_path }}/vars/windows.yml'
 # --- [ Description ] ----------------------------------------------------------------------- #
 #
-# Windows overlay for the wsus role: properties of the platform rather than choices a site makes.
-# The loader merges this over defaults/main.yml, so a caller can still override any of it -- an
-# image that repackaged SQL Server differently is a configuration, not a fork.
+# Windows-family overlay merged over wsus_defaults by the v3 loader.
+#
+# WSUS is a Windows-only product, so the defaults are already the Windows values and this overlay
+# carries nothing. It exists because the loader resolves an OS overlay per family; an empty map is
+# the honest statement that this family needs no override, rather than a duplicate of defaults
+# that would drift.
 #
 # =========================================================================================== #
 ---
-
-# The loader merges this file WHOLE over defaults/main.yml, so its top-level keys are config keys
-# -- there is no wrapping name.
-
-#region ------ [ The Windows features WSUS is made of ] -------------------------------------- #
-# Microsoft's documented SQL form, and note what is NOT in it: the bare 'UpdateServices' parent.
-# Asking for the parent selects the Windows Internal Database backend by default, and Windows
-# refuses WID and SQL connectivity together -- 'Feature WID Database has a conflict with the
-# features Database'. The parent still arrives, as a dependency of UpdateServices-Services, which
-# is the point: it is installed rather than requested, so it brings no default backend with it.
-features:
-  # UpdateServices-DB is the SQL Server connectivity backend, the positive counterpart of the WID
-  # feature this build must never have. The two are declared as one pair for that reason.
-  present:
-    - 'UpdateServices-Services'
-    - 'UpdateServices-DB'
-    - 'Web-Http-Logging'
-  # Proven gone rather than removed. Nothing here installs it: the image carries no WSUS, the
-  # host is rebuilt from that image every run, and validate refuses the two names that would
-  # select it. The assertion is what the migration contract owes for an inverted authority: it
-  # costs nothing, and it turns "nothing installs it" from this file's assumption into something
-  # the host states every run.
-  absent:
-    - 'UpdateServices-WidDB'
-#endregion --- [ The Windows features WSUS is made of ] -------------------------------------- #
-
-#region ------ [ What a finished post-installation looks like ] ------------------------------ #
-# The four completion flags post-installation writes, each reaching 2 only when its component
-# finishes. Measured on the target rather than carried over from the WID build, which named a
-# fourth flag this one does not have: after the features install and before post-installation,
-# API and UI already read 2 while Database and Services read 1.
-postinstall:
-  flags_key: 'HKLM:\SOFTWARE\Microsoft\Update Services\Server\Setup\Installed Role Services'
-  setup_key: 'HKLM:\SOFTWARE\Microsoft\Update Services\Server\Setup'
-  flags:
-    - 'UpdateServices-API'
-    - 'UpdateServices-Database'
-    - 'UpdateServices-Services'
-    - 'UpdateServices-UI'
-  # The tool that performs it, at the path its own feature installs it to.
-  tool: 'C:\Program Files\Update Services\Tools\wsusutil.exe'
-  # Where Windows publishes this machine's name, which is the instance name a default SQL
-  # instance answers to and therefore what SQL_INSTANCE_NAME must carry.
-  computer_name_key: 'HKLM:\SYSTEM\CurrentControlSet\Control\ComputerName\ActiveComputerName'
-#endregion --- [ What a finished post-installation looks like ] ------------------------------ #
-
-#region ------ [ Where the instance publishes itself ] --------------------------------------- #
-# SQL Server records the directory name of each instance under this key, keyed by instance name.
-# The directory carries the product major version ('MSSQL16.MSSQLSERVER'), which is why the role
-# reads it instead of composing it.
-sql:
-  # The instance the AWS SQL-Server images install, and the service it runs as -- one name, two
-  # places it appears. Not a caller's choice: validate.yml refuses any other, because the role
-  # composes a default-instance connection target rather than deriving one from this name.
-  instance: 'MSSQLSERVER'
-  instance_names_key: 'HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server\Instance Names\SQL'
-  instance_root: 'HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server'
-  service_name: 'MSSQLSERVER'
-#endregion --- [ Where the instance publishes itself ] --------------------------------------- #
+{}

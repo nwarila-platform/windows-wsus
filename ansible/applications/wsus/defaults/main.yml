@@ -5,9 +5,16 @@
 # Lowest-precedence configuration for the wsus role. The v3 loader merges the OS overlay in vars/
 # over this map and publishes the result as 'wsus_running'; tasks read only the merged map.
 #
-# WHAT DOES NOT BELONG HERE: anything the guest can be asked. The instance's own directory name
-# carries the product major version and is read from the registry at run time rather than
-# predicted here.
+# WHAT BELONGS HERE: the values a deployer can meaningfully choose. That is the layout inside the
+# volumes this role is given -- and only that.
+#
+# WHAT DOES NOT: constants wearing a default's clothes. The features WSUS is made of, the flags its
+# post-installation writes, the services that answer for it, the registry keys Windows publishes
+# and the default SQL instance are all fixed by the product, not by a site. They are written where
+# they are used. The tell is validate.yml: a key it has to pin to one exact value was never
+# configuration, and every such key has been inlined rather than defended.
+#
+# The drive letters are the PLAYBOOK's to publish, beside the disk layout that creates them.
 #
 # =========================================================================================== #
 ---
