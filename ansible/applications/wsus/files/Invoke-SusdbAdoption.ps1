@@ -310,11 +310,11 @@ CREATE DATABASE SUSDB ON (FILENAME = N'$DataFile') LOG ON (FILENAME = N'$LogFile
         # status, so a detach that failed would otherwise look like one that worked.
         $DetachCommand = $Connection.CreateCommand()
         $DetachCommand.CommandText =
-          'ALTER DATABASE SUSDB SET EMERGENCY; ' +
-          'ALTER DATABASE SUSDB SET SINGLE_USER WITH ROLLBACK IMMEDIATE; ' +
-          'DECLARE @DetachStatus int; ' +
-          "EXEC @DetachStatus = sp_detach_db @dbname = N'SUSDB', @skipchecks = 'true'; " +
-          "IF @DetachStatus <> 0 THROW 50000, 'sp_detach_db reported a non-zero status', 1;"
+        'ALTER DATABASE SUSDB SET EMERGENCY; ' +
+        'ALTER DATABASE SUSDB SET SINGLE_USER WITH ROLLBACK IMMEDIATE; ' +
+        'DECLARE @DetachStatus int; ' +
+        "EXEC @DetachStatus = sp_detach_db @dbname = N'SUSDB', @skipchecks = 'true'; " +
+        "IF @DetachStatus <> 0 THROW 50000, 'sp_detach_db reported a non-zero status', 1;"
         $Null = $DetachCommand.ExecuteNonQuery()
       } Catch {
         Write-Warning -Message:('Rollback detach failed: {0}' -f $PSItem.Exception.Message)

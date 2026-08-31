@@ -390,7 +390,7 @@ If ($Running) {
     If ($SusdbState) {
       $SusdbReadOnlyCommand = $Connection.CreateCommand()
       $SusdbReadOnlyCommand.CommandText =
-        "SELECT CAST(is_read_only AS int) FROM sys.databases WHERE name = 'SUSDB'"
+      "SELECT CAST(is_read_only AS int) FROM sys.databases WHERE name = 'SUSDB'"
       $SusdbReadOnly = [System.Int32]$SusdbReadOnlyCommand.ExecuteScalar()
     }
   } Finally {
