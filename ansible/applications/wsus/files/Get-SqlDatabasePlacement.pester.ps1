@@ -161,6 +161,8 @@ BeforeAll {
           If ($this.CommandText -match 'COUNT\(\*\).*master_files') { Return $global:FakeSusdbFileCount }
           If ($this.CommandText -match "master_files.*type_desc = 'ROWS'") { Return $global:FakeSusdbData }
           If ($this.CommandText -match "master_files.*type_desc = 'LOG'") { Return $global:FakeSusdbLog }
+          If ($this.CommandText -match 'state_desc FROM sys\.databases') { Return $global:FakeSusdbState }
+          If ($this.CommandText -match 'is_read_only.*FROM sys\.databases') { Return $global:FakeSusdbReadOnly }
           Throw ('Unexpected query: {0}' -f $this.CommandText)
         }
         Return $Command
@@ -206,6 +208,8 @@ Describe 'Get-SqlDatabasePlacement' {
     $global:FakeSusdbData = ($script:Data + '\SUSDB.mdf')
     $global:FakeSusdbLog = ($script:Log + '\SUSDB_log.ldf')
     $global:FakeSusdbFileCount = 2
+    $global:FakeSusdbState = 'ONLINE'
+    $global:FakeSusdbReadOnly = 0
     $global:FakeServiceSid = $script:Sid
     $global:FakeAcl = @{
       $script:Data = @(New-Rule -Sid $script:Sid)
@@ -225,7 +229,7 @@ Describe 'Get-SqlDatabasePlacement' {
       'FakeServiceMissing', 'FakeServiceName', 'FakeServiceState', 'FakeServiceStartMode',
       'FakeRegistry', 'FakeRegistryReads', 'FakeAclAskedFor', 'FakeConnectionString',
       'FakeAccountRequested', 'FakeCimAsked', 'FakePaths', 'FakeDataPath', 'FakeLogPath',
-      'FakeSusdbData', 'FakeSusdbLog', 'FakeSusdbFileCount',
+      'FakeSusdbData', 'FakeSusdbLog', 'FakeSusdbFileCount', 'FakeSusdbState', 'FakeSusdbReadOnly',
       'FakeServiceSid', 'FakeAcl', 'FakeConnectionRefused', 'FakeOpens', 'FakeCloses',
       'FakeAclReads', 'FakeAclCurrent'
     )
@@ -582,6 +586,31 @@ Describe 'Get-SqlDatabasePlacement' {
       $global:FakeSusdbData = 'C:\SUSDB.mdf'
 
       (& $script:Invoke | ConvertFrom-Json).susdb_data_path | Should -Be 'C:\SUSDB.mdf'
+    }
+
+    # Where the files are and whether the database can serve are different questions, and
+    # post-installation would build on an attached database that cannot.
+    It 'reports whether the database can actually serve' {
+      $Result = & $script:Invoke | ConvertFrom-Json
+
+      $Result.susdb_state | Should -Be 'ONLINE'
+      $Result.susdb_read_only | Should -Be 0
+    }
+
+    It 'reports a database recovering from an unclean stop as such' {
+      $global:FakeSusdbState = 'RECOVERY_PENDING'
+
+      (& $script:Invoke | ConvertFrom-Json).susdb_state | Should -Be 'RECOVERY_PENDING'
+    }
+
+    # -1, not 0: a database that does not exist is not a writable one.
+    It 'reports no state and no read-only answer when the database does not exist' {
+      $global:FakeSusdbState = $Null
+
+      $Result = & $script:Invoke | ConvertFrom-Json
+
+      $Result.susdb_state | Should -BeNullOrEmpty
+      $Result.susdb_read_only | Should -Be -1
     }
 
     # The path scalars report the FIRST file of each kind, so an extra data file elsewhere leaves

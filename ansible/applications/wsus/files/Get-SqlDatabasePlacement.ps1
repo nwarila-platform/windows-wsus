@@ -91,12 +91,13 @@
         One object carrying changed, check_mode, data_acl_denied, data_acl_granted,
         effective_data, effective_log, log_acl_denied, log_acl_granted, msg, placement_read,
         placement_valid, service_sid, service_start_mode, service_state, settings_key,
-        susdb_data_path, susdb_file_count and susdb_log_path.
+        susdb_data_path, susdb_file_count, susdb_log_path, susdb_read_only and susdb_state.
 
-        The susdb_* fields are where the ENGINE has SUSDB's files attached from, taken from
-        sys.master_files. They are empty and zero on a host with no such database, which is what
-        a first converge looks like before post-installation runs. Attachment and location are
-        all they report; the catalog lists files for an OFFLINE database too.
+        The susdb_* fields answer two different questions. Attachment and location come from
+        sys.master_files; serviceability -- susdb_state and susdb_read_only -- comes from
+        sys.databases, because the catalog lists files for an OFFLINE database too and cannot
+        speak for whether the database can be used. They are empty and zero on a host with no
+        such database, which is what a first converge looks like before post-installation runs.
 
         placement_read says whether the engine could be ASKED. It separates "the instance was
         down, so its placement is unknown" from "the instance answered and named the wrong
@@ -329,6 +330,8 @@ $EffectiveLog = ''
 $SusdbData = ''
 $SusdbLog = ''
 $SusdbFileCount = 0
+$SusdbState = ''
+$SusdbReadOnly = -1
 If ($Running) {
   $Connection = New-Object -TypeName:'System.Data.SqlClient.SqlConnection' -ArgumentList:(
     'Server=.;Database=master;Integrated Security=true;Encrypt=false;'
@@ -354,8 +357,8 @@ If ($Running) {
     # Where the ENGINE has SUSDB's files, which is the only thing that proves the database is
     # attached FROM them. Files sitting at the expected paths prove nothing on their own: they
     # survive a detach, and a SUSDB attached from somewhere else leaves exactly that picture.
-    # Attachment is all this reports: the catalog lists files for an OFFLINE database too, so
-    # whether the database is serviceable is a separate question and not one asked here.
+    # The catalog lists files for an OFFLINE database too, so attachment cannot answer whether
+    # the database is serviceable; that is read separately, from sys.databases, below.
     # DB_ID returns null when no such database exists. The path queries then match no row and
     # ExecuteScalar returns null; the count query still returns one row carrying zero. Either
     # way these read empty and 0 -- a host that has not run post-installation yet.
@@ -375,6 +378,21 @@ If ($Running) {
     $SusdbCountCommand = $Connection.CreateCommand()
     $SusdbCountCommand.CommandText = "SELECT COUNT(*) FROM sys.master_files $SusdbWhere"
     $SusdbFileCount = [System.Int32]$SusdbCountCommand.ExecuteScalar()
+
+    # Whether the database can SERVE, which is a different question from where its files are. It
+    # can be attached from the declared volume and still be RECOVERY_PENDING after an unclean stop,
+    # or read-only after an ALTER, and post-installation would build on either. Empty and -1 when
+    # no such database exists, which is what a first converge looks like.
+    $SusdbStateCommand = $Connection.CreateCommand()
+    $SusdbStateCommand.CommandText = "SELECT state_desc FROM sys.databases WHERE name = 'SUSDB'"
+    $SusdbState = [System.String]$SusdbStateCommand.ExecuteScalar()
+
+    If ($SusdbState) {
+      $SusdbReadOnlyCommand = $Connection.CreateCommand()
+      $SusdbReadOnlyCommand.CommandText =
+        "SELECT CAST(is_read_only AS int) FROM sys.databases WHERE name = 'SUSDB'"
+      $SusdbReadOnly = [System.Int32]$SusdbReadOnlyCommand.ExecuteScalar()
+    }
   } Finally {
     $Connection.Close()
   }
@@ -460,6 +478,8 @@ $Result = [PSCustomObject]@{
   susdb_data_path    = [System.String]$SusdbData
   susdb_file_count   = [System.Int32]$SusdbFileCount
   susdb_log_path     = [System.String]$SusdbLog
+  susdb_read_only    = [System.Int32]$SusdbReadOnly
+  susdb_state        = [System.String]$SusdbState
 }
 
 #endregion --- [ Main ] ---------------------------------------------------------------------- #
