@@ -96,8 +96,10 @@
         The susdb_* fields answer two different questions. Attachment and location come from
         sys.master_files; serviceability -- susdb_state and susdb_read_only -- comes from
         sys.databases, because the catalog lists files for an OFFLINE database too and cannot
-        speak for whether the database can be used. They are empty and zero on a host with no
-        such database, which is what a first converge looks like before post-installation runs.
+        speak for whether the database can be used. On a host with no such database -- which is
+        what a first converge looks like before post-installation runs -- the paths and the state
+        are empty, the file count is zero, and susdb_read_only is -1 rather than 0, because a
+        database that does not exist is not a writable one.
 
         placement_read says whether the engine could be ASKED. It separates "the instance was
         down, so its placement is unknown" from "the instance answered and named the wrong

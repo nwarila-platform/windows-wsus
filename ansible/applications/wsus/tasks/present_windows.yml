@@ -409,9 +409,12 @@
     #endregion --- [ Process: Create The Content Directory On The Content Volume ] ------------ #
 
     #region ------ [ Process: Complete The Post-Installation Against The SQL Instance ] ------- #
-    # The region that creates SUSDB. Everything before it exists so that this one can be a
-    # creation rather than a repair: the engine already points at the data volume, so the
-    # database is born there and never has to be moved.
+    # The region SUSDB comes out of, by one of two routes. On a first converge it CREATES the
+    # database, and everything before it exists so that this is a creation rather than a repair:
+    # the engine already points at the data volume, so the database is born there and never has
+    # to be moved. On a converge that adopted a preserved SUSDB, the adoption region attached it
+    # already and this configures the database it found. The command is the same either way --
+    # what differs is whether the engine holds SUSDB when it runs.
     #
     # Both arguments are mandatory, and neither is tidiness. Measured on the target: the feature
     # install leaves SqlServerName pointing at the Windows Internal Database instance -- a
