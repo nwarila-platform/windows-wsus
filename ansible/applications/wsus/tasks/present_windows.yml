@@ -499,6 +499,30 @@
 
     #endregion --- [ Process: Ensure The WSUS Services Are Running ] -------------------------- #
 
+    #region ------ [ Process: Restrict The Update Languages WSUS Will Accept ] ---------------- #
+    # A WSUS server installs with every language Microsoft publishes enabled, so a synchronisation
+    # would pull metadata and binaries for all of them. On a server that patches one estate that is
+    # a permanent cost in disk and sync time for content nobody will ever approve.
+    #
+    # After the services, because the configuration is read and written through the WSUS API rather
+    # than the registry, and the API answers only once the server is up.
+    #
+    # The script does both halves and verifies from a FRESH server handle: clearing the
+    # all-languages flag without writing a list leaves the old list, writing a list without
+    # clearing the flag leaves the flag overriding it, and the configuration object is a
+    # client-side cache that would report either assignment back whether or not it persisted.
+
+    - name: 'PROCESS | Restrict The Update Languages WSUS Will Accept'
+      register: '__wsus_languages__'
+
+      ansible.windows.win_powershell:
+        depth: 3
+        error_action: 'stop'
+        parameters:
+          Language: "{{ wsus_running.updates.languages }}"
+        script: "{{ lookup('ansible.builtin.file', 'Set-WsusUpdateLanguage.ps1') }}"
+    #endregion --- [ Process: Restrict The Update Languages WSUS Will Accept ] ---------------- #
+
 #endregion --- [ Process: Configure WSUS on Windows ] ----------------------------------------- #
 
 
@@ -916,5 +940,32 @@
           - >-
             'BUILTIN\\Users:(OI)(CI)(RX)' in __wsus_content_root_acl__.stdout
     #endregion --- [ End: Prove Browse Access On The Content Root Is Explicit ] --------------- #
+
+    #region ------ [ End: Prove WSUS Accepts Only The Declared Update Languages ] ------------- #
+    # Read from the server after the write, not from the object written through -- the script
+    # re-acquires the configuration from a fresh handle before reporting, which is the only way to
+    # tell a value that persisted from one that was merely assigned.
+    #
+    # Stated plainly: this asserts on the actor's own report rather than on an independent probe.
+    # An independent read means a second script pair for one boolean and one list, and the report
+    # it checks is a genuine post-write server read. Both halves are asserted, because the flag
+    # overrides the list and a server with the right list and the flag still set is unrestricted.
+
+    - name: 'END | Prove WSUS Accepts Only The Declared Update Languages'
+
+      ansible.builtin.assert:
+        fail_msg: >-
+          WSUS does not accept exactly the declared update languages. all_languages_enabled is
+          {{ __wsus_languages__.result.all_languages_enabled }} and the server reports
+          {{ __wsus_languages__.result.languages | join(', ') }}, against the declared
+          {{ wsus_running.updates.languages | join(', ') }}. A server with the all-languages
+          flag still set synchronises every language whatever its list says.
+        quiet: true
+        that:
+          - not __wsus_languages__.result.all_languages_enabled
+          - >-
+            (__wsus_languages__.result.languages | map('lower') | sort)
+            == (wsus_running.updates.languages | map('lower') | sort)
+    #endregion --- [ End: Prove WSUS Accepts Only The Declared Update Languages ] ------------- #
 
 #endregion --- [ End: Configure WSUS on Windows ] --------------------------------------------- #

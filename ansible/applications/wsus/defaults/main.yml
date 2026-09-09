@@ -48,3 +48,12 @@ wsus_defaults:
   content:
     subdir: 'WSUS'
   #endregion --- [ Content placement ] ------------------------------------------------------- #
+
+  #region ------ [ Update languages ] -------------------------------------------------------- #
+  # WHICH LANGUAGES THIS SERVER WILL ACCEPT. A WSUS server installs accepting every language
+  # Microsoft publishes, which on a single-estate server is a permanent cost in disk and sync time
+  # for content nobody will approve. Genuine deployer configuration -- an estate in Quebec wants
+  # 'fr' here -- so it is declared rather than written into the role.
+  updates:
+    languages: ['en']
+  #endregion --- [ Update languages ] -------------------------------------------------------- #
