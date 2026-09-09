@@ -497,22 +497,26 @@
 
     #region ------ [ Process: Grant The WSUS Service Rights On The Content Cache ] ------------ #
     # WSUS serves update files as NETWORK SERVICE, so the cache is only usable if that account can
-    # write beneath it. Post-installation happens to grant this today -- measured on the target --
+    # write beneath it. Set rather than added: win_acl adds an allow and leaves a DENY on the same
+    # identity in place, and Windows evaluates deny first -- measured on a live host, the allow
+    # entry is still printed exactly as before while the account cannot write. The script purges
+    # this identity's explicit entries and writes the declared one, so the result does not depend
+    # on what was there before. Post-installation happens to grant this today -- measured on the target --
     # but the role declares it rather than inheriting it, so the rights survive a WSUS version that
     # stops granting them and are stated where an operator can read them. Inheritable, because the
     # cache is a tree the product creates folders and files inside long after this runs.
 
     - name: 'PROCESS | Grant The WSUS Service Rights On The Content Cache'
 
-      ansible.windows.win_acl:
-        follow: false
-        inherit: 'ContainerInherit, ObjectInherit'
-        path: "{{ __content_dir__ ~ '\\WsusContent' }}"
-        propagation: 'None'
-        rights: 'FullControl'
-        state: 'present'
-        type: 'allow'
-        user: 'NT AUTHORITY\NETWORK SERVICE'
+      ansible.windows.win_powershell:
+        depth: 3
+        error_action: 'stop'
+        parameters:
+          Inheritance: 'ContainerInherit, ObjectInherit'
+          Path: "{{ __content_dir__ ~ '\\WsusContent' }}"
+          Rights: 'FullControl'
+          Sid: 'S-1-5-20'
+        script: "{{ lookup('ansible.builtin.file', 'Set-AclGrant.ps1') }}"
     #endregion --- [ Process: Grant The WSUS Service Rights On The Content Cache ] ------------ #
 
     #region ------ [ Process: Grant Interactive Users Browse Access On The Content Root ] ----- #
@@ -528,15 +532,15 @@
 
     - name: 'PROCESS | Grant Interactive Users Browse Access On The Content Root'
 
-      ansible.windows.win_acl:
-        follow: false
-        inherit: 'ContainerInherit, ObjectInherit'
-        path: "{{ __content_dir__ }}"
-        propagation: 'None'
-        rights: 'ReadAndExecute'
-        state: 'present'
-        type: 'allow'
-        user: 'BUILTIN\Users'
+      ansible.windows.win_powershell:
+        depth: 3
+        error_action: 'stop'
+        parameters:
+          Inheritance: 'ContainerInherit, ObjectInherit'
+          Path: "{{ __content_dir__ }}"
+          Rights: 'ReadAndExecute'
+          Sid: 'S-1-5-32-545'
+        script: "{{ lookup('ansible.builtin.file', 'Set-AclGrant.ps1') }}"
     #endregion --- [ Process: Grant Interactive Users Browse Access On The Content Root ] ----- #
 
     #region ------ [ Process: Ensure The WSUS Services Are Running ] -------------------------- #
@@ -936,22 +940,29 @@
     #endregion --- [ End: Prove No SUSDB File Sits On The System Volume ] --------------------- #
 
     #region ------ [ End: Prove The WSUS Service Holds Rights On The Content Cache ] ---------- #
-    # Asked of the filesystem rather than of the module that wrote it. icacls is the shipped tool
-    # an operator would run, and it needs no PowerShell of ours.
+    # Asked of the security descriptor by SECURITY IDENTIFIER, not by searching icacls output for a
+    # display name. Two reasons, and the second is the one that matters.
     #
-    # This compares a NAME, unlike the database proof above it, which compares a SID. The reason is
-    # honest rather than principled: icacls prints the localised display name and offers no SID
-    # form, so on a non-English Windows this assertion would fail against a correct ACL. The role
-    # already assumes an en-US host elsewhere, and the alternative is a script pair to read one ACE.
+    # S-1-5-20 is NETWORK SERVICE on every Windows in every language; the printed name is not. And
+    # a text search for the allow line cannot see a DENY. A deny on the same identity leaves that
+    # allow line exactly where the search looks for it, the search passes, and Windows applies the
+    # deny first -- so the converge goes green while the account it just granted cannot write.
+    #
+    # effective rather than explicit here: the cache only has to be writable, and it does not
+    # matter to WSUS whether the grant is owned by this role or inherited from the root above it.
 
-    - name: 'END | Read The Access Control List On The Content Cache'
+    - name: 'END | Read What The WSUS Service Holds On The Content Cache'
       changed_when: false
-      register: '__wsus_content_acl__'
+      register: '__wsus_cache_grant__'
 
-      ansible.windows.win_command:
-        argv:
-          - 'C:\Windows\System32\icacls.exe'
-          - "{{ __content_dir__ ~ '\\WsusContent' }}"
+      ansible.windows.win_powershell:
+        depth: 3
+        error_action: 'stop'
+        parameters:
+          Path: "{{ __content_dir__ ~ '\\WsusContent' }}"
+          Rights: 'FullControl'
+          Sid: 'S-1-5-20'
+        script: "{{ lookup('ansible.builtin.file', 'Get-AclGrant.ps1') }}"
 
     # ----------------------------------------------------------------------------------------- #
 
@@ -959,30 +970,37 @@
 
       ansible.builtin.assert:
         fail_msg: >-
-          NETWORK SERVICE does not hold inheritable FullControl on
-          '{{ __content_dir__ }}\WsusContent'. WSUS serves update files as that account, so
-          without it the cache exists and cannot be written. icacls reports:
-          {{ __wsus_content_acl__.stdout | trim }}
+          NETWORK SERVICE (S-1-5-20) cannot write '{{ __content_dir__ }}\WsusContent'. WSUS serves
+          update files as that account, so without it the cache exists and cannot be written.
+          {{ __wsus_cache_grant__.result.msg }}. A deny reported here defeats the grant however
+          the allow entries read: Windows evaluates deny first.
         quiet: true
         that:
-          - >-
-            'NT AUTHORITY\\NETWORK SERVICE:(OI)(CI)(F)' in __wsus_content_acl__.stdout
+          - __wsus_cache_grant__.result.allow_effective
+          - not __wsus_cache_grant__.result.deny_intersects
     #endregion --- [ End: Prove The WSUS Service Holds Rights On The Content Cache ] ---------- #
 
     #region ------ [ End: Prove Browse Access On The Content Root Is Explicit ] --------------- #
-    # icacls marks an inherited entry with (I). The assertion deliberately matches the identity
-    # followed immediately by (OI), which the inherited line -- BUILTIN\Users:(I)(OI)(CI)(RX) --
-    # cannot satisfy. So this proves the role's OWN entry is present, not merely that the rights
-    # are reachable from somewhere up the tree.
+    # explicit, not effective, and that distinction is the whole point of the region above. The
+    # volume root already grants these rights by inheritance; an inherited entry is the parent's to
+    # withdraw, and the role is meant to own what it depends on. allow_explicit is true only for
+    # entries written ON this path.
+    #
+    # By SID again -- S-1-5-32-545 is the local Users group everywhere -- and again the deny check
+    # is what a search of icacls output cannot do.
 
-    - name: 'END | Read The Access Control List On The Content Root'
+    - name: 'END | Read What Interactive Users Hold On The Content Root'
       changed_when: false
-      register: '__wsus_content_root_acl__'
+      register: '__wsus_root_grant__'
 
-      ansible.windows.win_command:
-        argv:
-          - 'C:\Windows\System32\icacls.exe'
-          - "{{ __content_dir__ }}"
+      ansible.windows.win_powershell:
+        depth: 3
+        error_action: 'stop'
+        parameters:
+          Path: "{{ __content_dir__ }}"
+          Rights: 'ReadAndExecute'
+          Sid: 'S-1-5-32-545'
+        script: "{{ lookup('ansible.builtin.file', 'Get-AclGrant.ps1') }}"
 
     # ----------------------------------------------------------------------------------------- #
 
@@ -990,15 +1008,15 @@
 
       ansible.builtin.assert:
         fail_msg: >-
-          '{{ __content_dir__ }}' carries no explicit read-and-execute entry for BUILTIN\Users.
-          Inherited rights do not count here: the parent can withdraw them without this role
-          changing, and an unreadable content root is what makes Explorer stamp a departing
-          administrator's own ACE onto the tree. icacls reports:
-          {{ __wsus_content_root_acl__.stdout | trim }}
+          '{{ __content_dir__ }}' carries no explicit read-and-execute entry for the Users group
+          (S-1-5-32-545), or one is defeated by a deny. Inherited rights do not count here: the
+          parent can withdraw them without this role changing, and an unreadable content root is
+          what makes Explorer stamp a departing administrator's own ACE onto the tree.
+          {{ __wsus_root_grant__.result.msg }}
         quiet: true
         that:
-          - >-
-            'BUILTIN\\Users:(OI)(CI)(RX)' in __wsus_content_root_acl__.stdout
+          - __wsus_root_grant__.result.allow_explicit
+          - not __wsus_root_grant__.result.deny_intersects
     #endregion --- [ End: Prove Browse Access On The Content Root Is Explicit ] --------------- #
 
     #region ------ [ End: Prove WSUS Accepts Only The Declared Update Languages ] ------------- #
