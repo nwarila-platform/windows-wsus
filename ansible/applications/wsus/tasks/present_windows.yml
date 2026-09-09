@@ -435,6 +435,50 @@
           - "CONTENT_DIR={{ __content_dir__ }}"
     #endregion --- [ Process: Complete The Post-Installation Against The SQL Instance ] ------- #
 
+    #region ------ [ Process: Grant The WSUS Service Rights On The Content Cache ] ------------ #
+    # WSUS serves update files as NETWORK SERVICE, so the cache is only usable if that account can
+    # write beneath it. Post-installation happens to grant this today -- measured on the target --
+    # but the role declares it rather than inheriting it, so the rights survive a WSUS version that
+    # stops granting them and are stated where an operator can read them. Inheritable, because the
+    # cache is a tree the product creates folders and files inside long after this runs.
+
+    - name: 'PROCESS | Grant The WSUS Service Rights On The Content Cache'
+
+      ansible.windows.win_acl:
+        follow: false
+        inherit: 'ContainerInherit, ObjectInherit'
+        path: "{{ __content_dir__ ~ '\\WsusContent' }}"
+        propagation: 'None'
+        rights: 'FullControl'
+        state: 'present'
+        type: 'allow'
+        user: 'NT AUTHORITY\NETWORK SERVICE'
+    #endregion --- [ Process: Grant The WSUS Service Rights On The Content Cache ] ------------ #
+
+    #region ------ [ Process: Grant Interactive Users Browse Access On The Content Root ] ----- #
+    # Ratified convention: every interactive user on these servers is an administrator, and a
+    # folder Explorer cannot read makes it offer "Continue", which stamps that administrator's
+    # personal ACE onto the tree and leaves a stale SID behind when they depart. One shared
+    # read-and-execute entry costs nothing and prevents that.
+    #
+    # Written EXPLICITLY though the volume root already grants the same rights by inheritance.
+    # An inherited entry is the parent's to withdraw -- break inheritance here, or re-permission
+    # the volume, and the access vanishes with no change to this role. The role owns what it
+    # depends on.
+
+    - name: 'PROCESS | Grant Interactive Users Browse Access On The Content Root'
+
+      ansible.windows.win_acl:
+        follow: false
+        inherit: 'ContainerInherit, ObjectInherit'
+        path: "{{ __content_dir__ }}"
+        propagation: 'None'
+        rights: 'ReadAndExecute'
+        state: 'present'
+        type: 'allow'
+        user: 'BUILTIN\Users'
+    #endregion --- [ Process: Grant Interactive Users Browse Access On The Content Root ] ----- #
+
     #region ------ [ Process: Ensure The WSUS Services Are Running ] -------------------------- #
     # Post-installation configures the server; it does not guarantee the services that answer for
     # it came back. In this order, because IIS hosts the WSUS endpoints and a WsusService started
@@ -806,5 +850,71 @@
           - __wsus_system_volume_susdb__.files | length == 0
 
     #endregion --- [ End: Prove No SUSDB File Sits On The System Volume ] --------------------- #
+
+    #region ------ [ End: Prove The WSUS Service Holds Rights On The Content Cache ] ---------- #
+    # Asked of the filesystem rather than of the module that wrote it. icacls is the shipped tool
+    # an operator would run, and it needs no PowerShell of ours.
+    #
+    # This compares a NAME, unlike the database proof above it, which compares a SID. The reason is
+    # honest rather than principled: icacls prints the localised display name and offers no SID
+    # form, so on a non-English Windows this assertion would fail against a correct ACL. The role
+    # already assumes an en-US host elsewhere, and the alternative is a script pair to read one ACE.
+
+    - name: 'END | Read The Access Control List On The Content Cache'
+      changed_when: false
+      register: '__wsus_content_acl__'
+
+      ansible.windows.win_command:
+        argv:
+          - 'C:\Windows\System32\icacls.exe'
+          - "{{ __content_dir__ ~ '\\WsusContent' }}"
+
+    # ----------------------------------------------------------------------------------------- #
+
+    - name: 'END | Prove The WSUS Service Holds Rights On The Content Cache'
+
+      ansible.builtin.assert:
+        fail_msg: >-
+          NETWORK SERVICE does not hold inheritable FullControl on
+          '{{ __content_dir__ }}\WsusContent'. WSUS serves update files as that account, so
+          without it the cache exists and cannot be written. icacls reports:
+          {{ __wsus_content_acl__.stdout | trim }}
+        quiet: true
+        that:
+          - >-
+            'NT AUTHORITY\\NETWORK SERVICE:(OI)(CI)(F)' in __wsus_content_acl__.stdout
+    #endregion --- [ End: Prove The WSUS Service Holds Rights On The Content Cache ] ---------- #
+
+    #region ------ [ End: Prove Browse Access On The Content Root Is Explicit ] --------------- #
+    # icacls marks an inherited entry with (I). The assertion deliberately matches the identity
+    # followed immediately by (OI), which the inherited line -- BUILTIN\Users:(I)(OI)(CI)(RX) --
+    # cannot satisfy. So this proves the role's OWN entry is present, not merely that the rights
+    # are reachable from somewhere up the tree.
+
+    - name: 'END | Read The Access Control List On The Content Root'
+      changed_when: false
+      register: '__wsus_content_root_acl__'
+
+      ansible.windows.win_command:
+        argv:
+          - 'C:\Windows\System32\icacls.exe'
+          - "{{ __content_dir__ }}"
+
+    # ----------------------------------------------------------------------------------------- #
+
+    - name: 'END | Prove Browse Access On The Content Root Is Explicit'
+
+      ansible.builtin.assert:
+        fail_msg: >-
+          '{{ __content_dir__ }}' carries no explicit read-and-execute entry for BUILTIN\Users.
+          Inherited rights do not count here: the parent can withdraw them without this role
+          changing, and an unreadable content root is what makes Explorer stamp a departing
+          administrator's own ACE onto the tree. icacls reports:
+          {{ __wsus_content_root_acl__.stdout | trim }}
+        quiet: true
+        that:
+          - >-
+            'BUILTIN\\Users:(OI)(CI)(RX)' in __wsus_content_root_acl__.stdout
+    #endregion --- [ End: Prove Browse Access On The Content Root Is Explicit ] --------------- #
 
 #endregion --- [ End: Configure WSUS on Windows ] --------------------------------------------- #
