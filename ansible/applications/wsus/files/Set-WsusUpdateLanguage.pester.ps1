@@ -175,6 +175,18 @@ Describe 'Set-WsusUpdateLanguage' {
       { & $script:Invoke } | Should -Throw -ExpectedMessage '*did not persist*'
     }
 
+    # A Save that took, followed by a verification that failed, is still a changed host. Reporting
+    # otherwise would tell an operator the server was untouched while its flag is already cleared.
+    # Without this the mutation is invisible: deleting the mid-write assignment leaves the rest of
+    # this suite green.
+    It 'reports the change when the write took and the verification then failed' {
+      $global:FakeSaveDropsLanguages = $true
+
+      { & $script:Invoke } | Should -Throw
+
+      $global:Ansible.Changed | Should -BeTrue
+    }
+
     It 'fails when the server keeps a different language set' {
       $global:FakeSaveDropsLanguages = $true
 

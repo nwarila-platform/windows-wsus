@@ -20,7 +20,7 @@
         set in its own order and casing. Comparing the raw sequences would report a change on
         every converge and rewrite a configuration that already matched.
 
-        After Save() the configuration is re-read from a FRESH handle and compared again. The
+        After Save() the configuration is re-acquired from the server and compared again. The
         WSUS configuration object is a client-side cache: setting a property and calling Save()
         updates the local object whether or not the server accepted it, so the only honest proof
         that a value persisted is to ask the server for it again.
@@ -217,9 +217,14 @@ $CurrentBefore = @(
 # Two independent reasons to write. The flag overrides the list, so a server with the right list
 # and the flag still set is NOT restricted; and a server with the flag clear but the wrong list is
 # restricted to the wrong thing.
-$NeedsChange = $AllEnabledBefore -or (
-  @(Compare-Object -ReferenceObject $CurrentBefore -DifferenceObject $Desired).Count -gt 0
-)
+# The count test comes first for a reason beyond speed. Windows PowerShell 5.1's Compare-Object
+# has no AllowEmptyCollection on -ReferenceObject, so a server with the flag already clear and an
+# empty language list -- restricted to nothing -- would fail the parameter binder rather than
+# compare. -or short-circuits on the flag, but the flag is exactly what is clear in that state.
+$NeedsChange = $AllEnabledBefore -or
+($CurrentBefore.Count -ne $Desired.Count) -or
+($CurrentBefore.Count -gt 0 -and
+@(Compare-Object -ReferenceObject $CurrentBefore -DifferenceObject $Desired).Count -gt 0)
 
 $LanguagesAfter = $CurrentBefore
 $AllEnabledAfter = $AllEnabledBefore
@@ -238,8 +243,9 @@ If ($NeedsChange -and $PSCmdlet.ShouldProcess('WSUS update languages', ('Restric
   # took and a re-read that then failed is still a changed host.
   $Ansible.Changed = $True
 
-  # A FRESH handle. The object above is a client-side cache: it would report the values just
-  # assigned to it whether or not the server kept them.
+  # A freshly acquired configuration object, from the same server handle. The object above is a
+  # client-side cache: it would report the values just assigned to it whether or not the server
+  # kept them.
   $Verify = $Server.GetConfiguration()
   $AllEnabledAfter = [System.Boolean]$Verify.AllUpdateLanguagesEnabled
   $LanguagesAfter = @(
@@ -252,7 +258,9 @@ If ($NeedsChange -and $PSCmdlet.ShouldProcess('WSUS update languages', ('Restric
     Throw 'WSUS still reports AllUpdateLanguagesEnabled after the write; the language restriction did not persist.'
   }
 
-  If (@(Compare-Object -ReferenceObject $LanguagesAfter -DifferenceObject $Desired).Count -gt 0) {
+  If ($LanguagesAfter.Count -ne $Desired.Count -or (
+      $LanguagesAfter.Count -gt 0 -and
+      @(Compare-Object -ReferenceObject $LanguagesAfter -DifferenceObject $Desired).Count -gt 0)) {
     Throw (
       'WSUS reports enabled languages [{0}] after the write, not the declared [{1}].' -f
       ($LanguagesAfter -join ','), ($Desired -join ',')

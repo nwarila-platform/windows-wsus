@@ -84,3 +84,23 @@
       # handed; this one holds the role's own merged configuration to a shape nothing upstream
       # can see, so it is not that class and does not travel with them.
       - (wsus_running.content.drive_letter | upper) != (wsus_running.db.drive_letter | upper)
+
+- name: 'VALIDATE | Require Usable Update Languages'
+  when: (state | default('present') | string | lower | trim) == 'present'
+  vars:
+    __languages__: >-
+      {{ wsus_running.updates.languages | default([], true)
+         | map('trim') | map('lower') | select() | unique | list }}
+  ansible.builtin.assert:
+    fail_msg: >-
+      Refusing to configure: wsus.updates.languages must name at least one update language, as the
+      short codes WSUS uses -- 'en', 'fr'. Guarded here, on the controller, because the guest-side
+      refusal comes too late: the script clears AllUpdateLanguagesEnabled and saves BEFORE it can
+      discover that the server kept none of the codes it was handed, which leaves a WSUS server
+      that synchronises nothing at all. Nothing upstream can see this key, so it is this role's to
+      hold before its first mutation.
+    quiet: true
+    that:
+      - __languages__ | length > 0
+      - __languages__ | select('match', '^[a-z]{2}(-[a-z]{2,8})?$') | list | length
+        == __languages__ | length

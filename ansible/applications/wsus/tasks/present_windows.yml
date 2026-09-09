@@ -435,6 +435,66 @@
           - "CONTENT_DIR={{ __content_dir__ }}"
     #endregion --- [ Process: Complete The Post-Installation Against The SQL Instance ] ------- #
 
+    #region ------ [ Process: Reconcile Where WSUS Keeps Its Content ] ------------------------ #
+    # WSUS records the content location in three places and only wsusutil keeps them together: the
+    # registry holds the ROOT, the server API holds the CACHE one level below it, and IIS holds the
+    # cache again as the physical path that actually serves files to clients.
+    #
+    # The realistic path to disagreement is a re-declaration -- an operator changes the content
+    # drive letter and converges -- which leaves the store where it was while this role now asks
+    # for somewhere else. movecontent is the only supported repair, and it COPIES: -skipcopy is
+    # deliberately absent, because a reconcile that switched the pointers without moving the bytes
+    # would leave a server that reports health and serves nothing.
+    #
+    # The refusal ahead of it covers the state movecontent cannot repair. If the API already names
+    # the right cache while the registry names somewhere else, the two have been edited apart by
+    # hand; moving content again would not reconcile them, and writing the registry directly is
+    # unsupported. That fails closed for an operator rather than guessing.
+
+    - name: 'PROCESS | Read Where WSUS Currently Keeps Its Content'
+      changed_when: false
+      register: '__wsus_content_where__'
+
+      ansible.windows.win_powershell:
+        depth: 3
+        error_action: 'stop'
+        script: "{{ lookup('ansible.builtin.file', 'Get-WsusContentLocation.ps1') }}"
+
+    # ----------------------------------------------------------------------------------------- #
+
+    - name: 'PROCESS | Refuse A Content Location Edited Apart By Hand'
+
+      ansible.builtin.assert:
+        fail_msg: >-
+          WSUS records its content location inconsistently: the API names
+          '{{ __wsus_content_where__.result.api_path }}', which is where this role wants it,
+          but the registry names '{{ __wsus_content_where__.result.registry_path }}' rather
+          than '{{ __content_dir__ }}'. Only wsusutil moves all three together, and it cannot
+          repair this: the two have been edited apart. Writing the registry directly is
+          unsupported, so this refuses rather than guessing. Re-run WSUS post-installation.
+        quiet: true
+        that:
+          - >-
+            (__wsus_content_where__.result.api_path | lower)
+            != ((__content_dir__ ~ '\\WsusContent') | lower)
+            or (__wsus_content_where__.result.registry_path | lower)
+            == (__content_dir__ | lower)
+
+    # ----------------------------------------------------------------------------------------- #
+
+    - name: 'PROCESS | Move The Content Store To The Declared Root'
+      when: >-
+        (__wsus_content_where__.result.api_path | lower)
+        != ((__content_dir__ ~ '\\WsusContent') | lower)
+
+      ansible.windows.win_command:
+        argv:
+          - 'C:\Program Files\Update Services\Tools\wsusutil.exe'
+          - 'movecontent'
+          - "{{ __content_dir__ }}"
+          - 'C:\Windows\Temp\wsus-movecontent.log'
+    #endregion --- [ Process: Reconcile Where WSUS Keeps Its Content ] ------------------------ #
+
     #region ------ [ Process: Grant The WSUS Service Rights On The Content Cache ] ------------ #
     # WSUS serves update files as NETWORK SERVICE, so the cache is only usable if that account can
     # write beneath it. Post-installation happens to grant this today -- measured on the target --
@@ -507,7 +567,8 @@
     # After the services, because the configuration is read and written through the WSUS API rather
     # than the registry, and the API answers only once the server is up.
     #
-    # The script does both halves and verifies from a FRESH server handle: clearing the
+    # The script does both halves and verifies from a freshly acquired configuration object:
+    # clearing the
     # all-languages flag without writing a list leaves the old list, writing a list without
     # clearing the flag leaves the flag overriding it, and the configuration object is a
     # client-side cache that would report either assignment back whether or not it persisted.
@@ -946,8 +1007,13 @@
     # reads the server and reports what it finds without touching it. That costs no second script
     # pair and asks the question after the converge rather than during it.
     #
-    # changed_when false because a read is not a convergence. If the server had drifted, this would
-    # report the need and the assertion below would fail on the state -- which is the point.
+    # Defence in depth, and honest about it: the script already refuses to return without the
+    # server agreeing, so on a converge that got this far the assertion below is expected to hold.
+    # It earns its place by being the only check that survives the script's gate being weakened,
+    # and by normalising the DECLARATION the same way the script does -- trim, lower, unique --
+    # so that declaring ['en', 'EN'] cannot fail a host that is correctly configured.
+    #
+    # changed_when false because a read is not a convergence.
 
     - name: 'END | Re-Read The Update Languages WSUS Accepts'
       changed_when: false
@@ -978,8 +1044,51 @@
         that:
           - not __wsus_languages_proof__.result.all_languages_enabled
           - >-
-            (__wsus_languages_proof__.result.languages | map('lower') | sort)
-            == (wsus_running.updates.languages | map('lower') | sort)
+            (__wsus_languages_proof__.result.languages | map('trim') | map('lower') | unique | sort)
+            == (wsus_running.updates.languages | map('trim') | map('lower') | unique | sort)
     #endregion --- [ End: Prove WSUS Accepts Only The Declared Update Languages ] ------------- #
+
+    #region ------ [ End: Prove All Three Records Of The Content Location Agree ] ------------- #
+    # Re-read after the converge rather than trusting the move's exit code. wsusutil reports
+    # success for the copy; whether all three records ended up naming the same place is a separate
+    # question, and the split brain this region refuses is exactly what a successful-looking run
+    # can leave behind.
+    #
+    # All three are asserted against the DECLARATION, not against each other. Three sources that
+    # agree on the wrong path are consistent and still wrong.
+
+    - name: 'END | Re-Read Where WSUS Keeps Its Content'
+      changed_when: false
+      register: '__wsus_content_where_proof__'
+
+      ansible.windows.win_powershell:
+        depth: 3
+        error_action: 'stop'
+        script: "{{ lookup('ansible.builtin.file', 'Get-WsusContentLocation.ps1') }}"
+
+    # ----------------------------------------------------------------------------------------- #
+
+    - name: 'END | Prove All Three Records Of The Content Location Agree'
+
+      ansible.builtin.assert:
+        fail_msg: >-
+          WSUS does not keep its content where this role declares. Registry names
+          '{{ __wsus_content_where_proof__.result.registry_path }}' against the declared
+          '{{ __content_dir__ }}'; the API names
+          '{{ __wsus_content_where_proof__.result.api_path }}' and IIS serves
+          '{{ __wsus_content_where_proof__.result.iis_path }}', both of which must be the
+          WsusContent directory beneath that root. An empty value means the source did not answer.
+        quiet: true
+        that:
+          - >-
+            (__wsus_content_where_proof__.result.registry_path | lower)
+            == (__content_dir__ | lower)
+          - >-
+            (__wsus_content_where_proof__.result.api_path | lower)
+            == ((__content_dir__ ~ '\\WsusContent') | lower)
+          - >-
+            (__wsus_content_where_proof__.result.iis_path | lower)
+            == ((__content_dir__ ~ '\\WsusContent') | lower)
+    #endregion --- [ End: Prove All Three Records Of The Content Location Agree ] ------------- #
 
 #endregion --- [ End: Configure WSUS on Windows ] --------------------------------------------- #

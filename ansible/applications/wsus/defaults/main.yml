@@ -5,8 +5,10 @@
 # Lowest-precedence configuration for the wsus role. The v3 loader merges the OS overlay in vars/
 # over this map and publishes the result as 'wsus_running'; tasks read only the merged map.
 #
-# WHAT BELONGS HERE: the values a deployer can meaningfully choose. That is the layout inside the
-# volumes this role is given -- and only that.
+# WHAT BELONGS HERE: the values a deployer can meaningfully choose. Two kinds so far -- the layout
+# inside the volumes this role is given, and the settings an estate decides for itself rather than
+# the product deciding for it. Update languages are the second kind: an estate in Quebec declares
+# 'fr' and nothing about WSUS makes that wrong.
 #
 # WHAT DOES NOT: constants wearing a default's clothes. The features WSUS is made of, the flags its
 # post-installation writes, the services that answer for it, the registry keys Windows publishes
