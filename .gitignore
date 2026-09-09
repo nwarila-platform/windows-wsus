@@ -64,8 +64,6 @@
 
 # --- [ allowed: the ansible tree ] --------------------------------------------------------- #
 !/ansible/applications/wsus/defaults/main.yml
-!/ansible/applications/wsus/files/Get-AclGrant.pester.ps1
-!/ansible/applications/wsus/files/Get-AclGrant.ps1
 !/ansible/applications/wsus/files/Get-SqlDatabasePlacement.pester.ps1
 !/ansible/applications/wsus/files/Get-SqlDatabasePlacement.ps1
 !/ansible/applications/wsus/files/Invoke-SusdbAdoption.pester.ps1

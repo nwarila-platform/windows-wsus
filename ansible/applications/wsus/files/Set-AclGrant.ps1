@@ -42,7 +42,7 @@
     .PARAMETER Rights
         The FileSystemRights to grant, as the enum's own names -- 'FullControl'.
 
-    .PARAMETER Inheritance
+    .PARAMETER InheritanceFlags
         The InheritanceFlags for the entry, as the enum's own names --
         'ContainerInherit, ObjectInherit' for a tree, 'None' for the path alone.
 
@@ -124,7 +124,7 @@ Param (
   )]
   [ValidateNotNullOrEmpty()]
   [System.String]
-  $Inheritance
+  $InheritanceFlags
 )
 
 #region ------ [ Script ] -------------------------------------------------------------------- #
@@ -233,15 +233,23 @@ $RequiredValue = [System.Int32][System.Security.AccessControl.FileSystemRights]$
 # needs cannot be constructed off Windows, which is the only reason the shape matters here.
 $SidObject = New-Object -TypeName:'System.Security.Principal.SecurityIdentifier' -ArgumentList:$Sid
 
+# The descriptor is read, reduced to four facts, and -- if it is written -- read and reduced
+# again. The reduction is repeated rather than factored into a helper because the script template
+# treats a script as a single process stage and its anatomy check refuses function-shaped logic.
 $Acl = Get-Acl -Path:$Path
 
 $ExplicitAllow = 0
-$ExplicitDeny = 0
+$InheritedAllow = 0
+$DenyRights = 0
 $InheritedDeny = 0
 $ExplicitCount = 0
-$InheritanceMatches = $False
+$Inheritance = ''
 
 ForEach ($Ace In @($Acl.Access)) {
+  # SID, never the display name. Translate is the supported route from an NTAccount; when the
+  # entry already holds a SID -- what Windows leaves behind for a deleted principal -- Translate
+  # is a no-op and the fallback reads it directly. A well-known identifier does not change with
+  # the installed language, and cannot collide with a different principal of the same name.
   $AceSid = ''
   Try {
     $AceSid = [System.String]$Ace.IdentityReference.Translate(
@@ -257,22 +265,36 @@ ForEach ($Ace In @($Acl.Access)) {
   $IsDeny = ($Ace.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Deny)
 
   If ($Ace.IsInherited) {
-    If ($IsDeny) { $InheritedDeny = $InheritedDeny -bor $AceRights }
+    If ($IsDeny) {
+      $InheritedDeny = $InheritedDeny -bor $AceRights
+      $DenyRights = $DenyRights -bor $AceRights
+    } Else {
+      $InheritedAllow = $InheritedAllow -bor $AceRights
+    }
     Continue
   }
 
   $ExplicitCount++
   If ($IsDeny) {
-    $ExplicitDeny = $ExplicitDeny -bor $AceRights
+    $DenyRights = $DenyRights -bor $AceRights
   } Else {
     $ExplicitAllow = $ExplicitAllow -bor $AceRights
-    If ([System.String]$Ace.InheritanceFlags -eq $Inheritance) { $InheritanceMatches = $True }
+    If ([System.String]::IsNullOrEmpty($Inheritance)) {
+      $Inheritance = [System.String]$Ace.InheritanceFlags
+    }
   }
 }
 
+# Coverage for an allow -- an entry carrying more than was asked for still grants it. Intersection
+# for a deny -- one right inside the set is enough, because Windows evaluates deny first.
+$AllowExplicit = (($ExplicitAllow -band $RequiredValue) -eq $RequiredValue)
+$DenyIntersects = (($DenyRights -band $RequiredValue) -ne 0)
+$InheritanceMatches = ($Inheritance -eq $InheritanceFlags)
+
 # Refused rather than reported converged. An inherited deny defeats the grant and cannot be
-# removed from here -- only from the parent that carries it -- so writing the allow and returning
-# success would report access this script did not deliver.
+# removed from here -- only from the parent carrying it -- so writing the allow and returning
+# success would report access this script did not deliver. Refused in check mode too: a host that
+# cannot converge should say so when asked, not only when written to.
 If (($InheritedDeny -band $RequiredValue) -ne 0) {
   Throw (
     'An inherited deny on {0} withholds part of {1} from {2}. It cannot be removed from this path; the parent carrying it must be repaired.' -f
@@ -280,24 +302,19 @@ If (($InheritedDeny -band $RequiredValue) -ne 0) {
   )
 }
 
-# Already correct means all three: the rights are covered, the entry carries the declared
-# inheritance, and no explicit deny is standing against it.
-$AlreadyCorrect = (
-  (($ExplicitAllow -band $RequiredValue) -eq $RequiredValue) -and
-  $InheritanceMatches -and
-  (($ExplicitDeny -band $RequiredValue) -eq 0)
-)
-
+# Already correct means all three: the rights are covered by an entry written ON this path, that
+# entry carries the declared inheritance, and no deny stands against it.
+$AlreadyCorrect = ($AllowExplicit -and $InheritanceMatches -and (-not $DenyIntersects))
 $Purged = 0
 
 If (-not $AlreadyCorrect -and $PSCmdlet.ShouldProcess($Path, ('Set {0} for {1}' -f $Rights, $Sid))) {
-  # Purge before add. This is what separates the script from win_acl: every explicit entry for the
-  # identity goes, including a deny that would otherwise survive an added allow.
+  # Purge before add. This is what separates the script from an additive grant: every explicit
+  # entry for the identity goes, including a deny that would otherwise survive an added allow.
   $Purged = $ExplicitCount
   $Acl.PurgeAccessRules($SidObject)
 
   $Rule = New-Object -TypeName:'System.Security.AccessControl.FileSystemAccessRule' -ArgumentList:@(
-    $SidObject, $Rights, $Inheritance, 'None', 'Allow'
+    $SidObject, $Rights, $InheritanceFlags, 'None', 'Allow'
   )
   $Acl.AddAccessRule($Rule)
 
@@ -307,10 +324,12 @@ If (-not $AlreadyCorrect -and $PSCmdlet.ShouldProcess($Path, ('Set {0} for {1}' 
   $Ansible.Changed = $True
 
   # Read the descriptor back. Set-Acl reports nothing about what the filesystem kept, and a
-  # descriptor written to a path whose owner refuses the change is a silent no-op.
+  # descriptor written to a path that refuses the change is a silent no-op.
   $After = Get-Acl -Path:$Path
-  $AfterAllow = 0
-  $AfterDeny = 0
+  $ExplicitAllow = 0
+  $InheritedAllow = 0
+  $DenyRights = 0
+  $Inheritance = ''
   ForEach ($Ace In @($After.Access)) {
     $AceSid = ''
     Try {
@@ -321,14 +340,23 @@ If (-not $AlreadyCorrect -and $PSCmdlet.ShouldProcess($Path, ('Set {0} for {1}' 
       $AceSid = [System.String]$Ace.IdentityReference.Value
     }
     If ($AceSid -ne $Sid) { Continue }
+    $AceRights = [System.Int32]$Ace.FileSystemRights
     If ($Ace.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Deny) {
-      $AfterDeny = $AfterDeny -bor [System.Int32]$Ace.FileSystemRights
+      $DenyRights = $DenyRights -bor $AceRights
+    } ElseIf ($Ace.IsInherited) {
+      $InheritedAllow = $InheritedAllow -bor $AceRights
     } Else {
-      $AfterAllow = $AfterAllow -bor [System.Int32]$Ace.FileSystemRights
+      $ExplicitAllow = $ExplicitAllow -bor $AceRights
+      If ([System.String]::IsNullOrEmpty($Inheritance)) {
+        $Inheritance = [System.String]$Ace.InheritanceFlags
+      }
     }
   }
 
-  If ((($AfterAllow -band $RequiredValue) -ne $RequiredValue) -or (($AfterDeny -band $RequiredValue) -ne 0)) {
+  $AllowExplicit = (($ExplicitAllow -band $RequiredValue) -eq $RequiredValue)
+  $DenyIntersects = (($DenyRights -band $RequiredValue) -ne 0)
+
+  If ((-not $AllowExplicit) -or $DenyIntersects) {
     Throw ('The access control list on {0} does not grant {1} to {2} after the write.' -f $Path, $Rights, $Sid)
   }
 }

@@ -106,11 +106,11 @@ BeforeAll {
 
   $script:Invoke = {
     & $script:ScriptPath -Path 'F:\WSUS\WsusContent' -Sid 'S-1-5-20' -Rights 'FullControl' `
-      -Inheritance 'ContainerInherit, ObjectInherit'
+      -InheritanceFlags 'ContainerInherit, ObjectInherit'
   }
   $script:InvokeWhatIf = {
     & $script:ScriptPath -Path 'F:\WSUS\WsusContent' -Sid 'S-1-5-20' -Rights 'FullControl' `
-      -Inheritance 'ContainerInherit, ObjectInherit' -WhatIf
+      -InheritanceFlags 'ContainerInherit, ObjectInherit' -WhatIf
   }
 }
 
