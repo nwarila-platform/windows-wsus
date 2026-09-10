@@ -35,6 +35,18 @@
           successful deployment proof.
         quiet: true
 
+    # The same argument, for the host that does the proving. Without this a run whose client never
+    # appeared would skip both client plays, report success, and prove only that the server can be
+    # built -- which is the half that was never in doubt.
+    - name: 'INVENTORY | Require At Least One Filtered Client'
+      ansible.builtin.assert:
+        that: groups['wsus_clients'] | default([]) | length >= 1
+        fail_msg: >-
+          Refusing to configure: the 'wsus_clients' inventory group is empty. The dynamic EC2
+          inventory found no running instance tagged Function=wsus_client for this run, so nothing
+          would ask the WSUS server for an update and the run would prove only half of itself.
+        quiet: true
+
     # The site roles template their bucket names from the account id, so a wrong one surfaces as a
     # download failure on the guest minutes later. Refuse it here, before anything is dialled.
     - name: 'INVENTORY | Require The Deploying Account'
@@ -82,14 +94,29 @@
     #endregion --- [ Roles: Remote Client ] --------------------------------------------------- #
 
     #region ------ [ Roles: Domain Member ] --------------------------------------------------- #
-    # Wraps the platform's join mechanism and defaults the site's realm, account and secret. Only
-    # two things are this repository's to say: the account it deploys into, and where a WSUS
-    # server is filed -- its own OU, not the deployment servers'.
+    # Wraps the platform's join mechanism and defaults the site's realm, account and secret. Three
+    # things are this repository's to say: the account it deploys into, where a WSUS server is
+    # filed -- its own OU, not the deployment servers' -- and which of this host's addresses it
+    # publishes in the realm's DNS.
+    #
+    # THE VPC ADDRESS, deliberately, and this host is the one where the choice has consequences.
+    # It is multi-homed -- a VPC interface and a tunnel adapter -- and left to itself Windows
+    # registers whatever its resolver leads it to, which on a member that reaches the realm across
+    # a tunnel is the tunnel address. The client this deployment builds to prove the server sits in
+    # the same VPC and reaches it on the private address; a name resolving to the tunnel instead
+    # would send it the long way round, to a port the security group admits from this subnet
+    # alone.
+    #
+    # The cost is real and belongs to the estate rather than to this run: on-prem clients reach
+    # this server by its tunnel address today, and once it publishes only the VPC address they
+    # cannot resolve it until pfSense routes the AWS CIDR over the tunnel. That sequencing is the
+    # site's to complete before this server serves anyone but its own VPC.
     - role: 'domain_member'
       vars:
         domain_member:
           password: { bucket: "{{ aws_account_id | default('') }}-ansible" }
           computer_ou: 'OU=WSUS,OU=Domain Servers,DC=tcn,DC=trinitytechnicalservices,DC=com'
+          registration_address: "{{ aws_private_ip_address }}"
     #endregion --- [ Roles: Domain Member ] --------------------------------------------------- #
 
     #region ------ [ Roles: Windows Disk Manager ] -------------------------------------------- #
@@ -142,7 +169,114 @@
             drive_letter: 'E'
           content:
             drive_letter: 'F'
+          firewall:
+            # The two networks this server serves, and nothing else. 10.0.0.0/16 is this account's
+            # VPC, which holds the client this deployment builds; 10.69.0.0/16 is the lab the VPN
+            # tunnel reaches, which holds the upstream and the estate's own machines.
+            #
+            # The tunnel is why this list matters rather than merely agreeing with the security
+            # group: traffic arriving through it is decapsulated inside the guest, past every group
+            # rule, so the host firewall is the only thing that can scope it.
+            admitted_networks: '10.0.0.0/16,10.69.0.0/16'
+          sync:
+            # The lab WSUS this POC mirrors, reached over the OpenVPN tunnel this host joins in
+            # the play above. An address rather than a name because the guest resolves through the
+            # domain's DNS and this upstream is not a domain member.
+            upstream_server: '10.69.112.6'
+          tls:
+            certificate:
+              # Account-scoped, and only the pipeline knows the account. Every fetch from it runs
+              # on the controller; this guest has no route to S3.
+              bucket: "{{ aws_account_id | default('') }}-ansible"
     #endregion --- [ Roles: WSUS ] ------------------------------------------------------------ #
   #endregion --- [ Roles ] -------------------------------------------------------------------- #
 
 #endregion --- [ Play: WSUS ] ----------------------------------------------------------------- #
+
+#region ------ [ Play: Configure The Client Guest ] ------------------------------------------- #
+# The client this deployment exists to convince. A WSUS server that reports itself healthy proves
+# that WSUS is configured; only a machine that asks it for updates, across the firewall rules as
+# written, proves that WSUS works.
+#
+# The same four roles the server gets, minus the disk manager: a client separates nothing, so it
+# has no data volumes to lay out.
+
+- name: 'PLAY | Configure The Client Guest (ephemeral AWS)'
+  hosts: 'wsus_clients'
+  any_errors_fatal: true
+
+  #region ------ [ Roles ] -------------------------------------------------------------------- #
+  roles:
+
+    #region ------ [ Roles: Host Readiness ] -------------------------------------------------- #
+    # Declared, not detected, for the reason the server's copy records: a failed probe reads as
+    # "no platform" and skips the EC2Launch wait that the rename-and-reboot below depends on.
+    - role: 'host_readiness'
+      vars:
+        host_readiness_platform: 'aws'
+    #endregion --- [ Roles: Host Readiness ] -------------------------------------------------- #
+
+    #region ------ [ Roles: OS Bootstrap ] ---------------------------------------------------- #
+    # Pass it NO vars: role params outrank the connection scoping it relies on.
+    - role: 'os_bootstrap'
+    #endregion --- [ Roles: OS Bootstrap ] ---------------------------------------------------- #
+
+    #region ------ [ Roles: Remote Client ] --------------------------------------------------- #
+    # The tunnel, because the directory this machine joins is on the other side of it.
+    - role: 'remote_client'
+    #endregion --- [ Roles: Remote Client ] --------------------------------------------------- #
+
+    #region ------ [ Roles: Domain Member ] --------------------------------------------------- #
+    # This machine MUST be in scope of the domain's Windows Update policy, because that policy is
+    # what points it at the server under test -- the role checks that pointing rather than doing
+    # it. Domain Servers because it is a Windows Server, and because it is the one organisational
+    # unit this repository can show exists: the WSUS server's own unit nests inside it. A DN
+    # guessed from a tree nobody here has seen fails the join, which is a confusing way to learn
+    # about an OU.
+    - role: 'domain_member'
+      vars:
+        domain_member:
+          password: { bucket: "{{ aws_account_id | default('') }}-ansible" }
+          computer_ou: 'OU=Domain Servers,DC=tcn,DC=trinitytechnicalservices,DC=com'
+          # Its VPC address, for the same reason the server publishes one: this machine is
+          # multi-homed too, and nothing here depends on it being reachable by name from anywhere.
+          # It is declared rather than omitted because the framework refuses an empty value -- a
+          # converge that left registration as it found it would report success while the name
+          # stayed wrong.
+          registration_address: "{{ aws_private_ip_address }}"
+    #endregion --- [ Roles: Domain Member ] --------------------------------------------------- #
+  #endregion --- [ Roles ] -------------------------------------------------------------------- #
+
+#endregion --- [ Play: Configure The Client Guest ] ------------------------------------------- #
+
+#region ------ [ Play: Prove The Client ] ----------------------------------------------------- #
+# Its own play, on the same reasoning the server's product gets one: the roles above bring a host
+# into existence and into the directory, and this is the thing that host exists to do.
+
+- name: 'PLAY | Prove The Client Takes Updates From WSUS (ephemeral AWS)'
+  hosts: 'wsus_clients'
+  any_errors_fatal: true
+
+  #region ------ [ Roles ] -------------------------------------------------------------------- #
+  roles:
+
+    #region ------ [ Roles: WSUS Client ] ----------------------------------------------------- #
+    # The URL is the certificate's subject, not an address, and it has to be: the server presents
+    # a certificate for that name, so a client dialling an IP would fail the handshake no matter
+    # which address were right.
+    #
+    # WHICH address that name resolves to is worth watching on the first run. This server is
+    # multi-homed -- a VPC interface and a tunnel adapter -- and Windows registers what it has in
+    # DNS. The route this deployment sanctions is the VPC one, and the server's security group
+    # admits 8530 and 8531 from this subnet alone; a name that resolved to the tunnel address
+    # instead would send the client the long way round. If that happens, the fix is to stop the
+    # tunnel adapter registering rather than to widen the firewall.
+    - role: 'wsus_client'
+      vars:
+        wsus_client:
+          server:
+            url: 'https://tcnaw-wsus01.tcn.trinitytechnicalservices.com:8531'
+    #endregion --- [ Roles: WSUS Client ] ----------------------------------------------------- #
+  #endregion --- [ Roles ] -------------------------------------------------------------------- #
+
+#endregion --- [ Play: Prove The Client ] ----------------------------------------------------- #

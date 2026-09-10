@@ -5,8 +5,10 @@
 # Lowest-precedence configuration for the wsus role. The v3 loader merges the OS overlay in vars/
 # over this map and publishes the result as 'wsus_running'; tasks read only the merged map.
 #
-# WHAT BELONGS HERE: the values a deployer can meaningfully choose. That is the layout inside the
-# volumes this role is given -- and only that.
+# WHAT BELONGS HERE: the values a deployer can meaningfully choose. Two kinds so far -- the layout
+# inside the volumes this role is given, and the settings an estate decides for itself rather than
+# the product deciding for it. Update languages are the second kind: an estate in Quebec declares
+# 'fr' and nothing about WSUS makes that wrong.
 #
 # WHAT DOES NOT: constants wearing a default's clothes. The features WSUS is made of, the flags its
 # post-installation writes, the services that answer for it, the registry keys Windows publishes
@@ -48,3 +50,129 @@ wsus_defaults:
   content:
     subdir: 'WSUS'
   #endregion --- [ Content placement ] ------------------------------------------------------- #
+
+  #region ------ [ Update languages ] -------------------------------------------------------- #
+  # WHICH LANGUAGES THIS SERVER WILL ACCEPT. A WSUS server installs accepting every language
+  # Microsoft publishes, which on a single-estate server is a permanent cost in disk and sync time
+  # for content nobody will approve. Genuine deployer configuration -- an estate in Quebec wants
+  # 'fr' here -- so it is declared rather than written into the role.
+  updates:
+    languages: ['en']
+  #endregion --- [ Update languages ] -------------------------------------------------------- #
+
+  #region ------ [ Upstream source ] --------------------------------------------------------- #
+  # WHERE THIS SERVER GETS ITS UPDATES. A WSUS server installs pointed at Microsoft Update, and a
+  # downstream server is the estate declaring it would rather approve once upstream and mirror the
+  # result than approve the same update on every server.
+  #
+  # WHICH upstream is a property of the deployment, exactly as the drive letters are, so
+  # upstream_server is published by the play and deliberately absent here -- validate.yml refuses a
+  # run that omits it, and the script refuses an empty one, because a defaulted upstream would
+  # silently point a production server at whatever the last deployer's lab was.
+  #
+  # The rest are genuine deployer choices with a defensible default. 8530 is the port WSUS itself
+  # listens on, so an upstream that has not been re-pointed is reachable there. The link is plain
+  # HTTP by default because turning it on requires the upstream to be serving SSL, which is the
+  # upstream's property and not something this role can arrange. replica true is the mirror
+  # topology the port and the upstream imply: approvals are made once, upstream, and inherited.
+  sync:
+    # HOW LONG TO WAIT for the catalogue, and then for the files behind it. Deployer values because
+    # they are a property of the link and of what the upstream holds, not of this role: a downstream
+    # of a small curated upstream converges in minutes, and one of a full Microsoft mirror does not.
+    #
+    # These run SEQUENTIALLY inside one CI step, so their sum is the number that matters -- and it
+    # has to leave room for everything else in that step, which now includes building a second
+    # Windows guest. The worst case is THREE waits, not two: a synchronisation already in flight is
+    # polled to a full stop under timeout_seconds before a new one starts, so 75 minutes is the
+    # ceiling and 45 the ordinary path. On a fresh bed nothing is in flight and the stop-poll never
+    # fires. Generous by a wide margin for a curated upstream measured at 66 MB across one approved
+    # update; three hours would not be generous, it would be a step killed by its caller before the
+    # script could say what went wrong.
+    content_timeout_seconds: 900
+    replica: true
+    timeout_seconds: 1800
+    upstream_port: 8530
+    upstream_use_ssl: false
+  #endregion --- [ Upstream source ] --------------------------------------------------------- #
+
+  #region ------ [ Who may reach this server ] ----------------------------------------------- #
+  # WHICH NETWORKS THE HOST ITSELF ADMITS. Measured on a live server: WSUS opens two firewall rules
+  # of its own at post-installation, both named 'WSUS', for TCP 8530 and 8531, with program Any,
+  # service Any and remote address ANY. That is the whole internet admitted to the update service.
+  #
+  # This is not duplicated network control. The AWS security group cannot see traffic that arrives
+  # over the VPN tunnel at all -- it sees only the UDP envelope, and the payload is decapsulated
+  # INSIDE the guest, past every group rule. So for everything reaching this server from the lab,
+  # the host firewall is not defence in depth, it is the only defence there is.
+  #
+  # admitted_networks is a property of the deployment -- which networks exist and which of them
+  # this server serves -- so it is published by the play and deliberately absent here, exactly as
+  # the drive letters are. validate.yml refuses a run that omits it. A default would be the worst
+  # of both: either wide enough to be useless or narrow enough to lock out an estate silently.
+  firewall:
+    # WSUS serves metadata over TLS and update payloads over plain HTTP, on adjacent ports. The
+    # HTTPS port is wsus.tls.port and is NOT repeated here: one server has one HTTPS port, and two
+    # declarations of it would be two places to disagree.
+    http_port: 8530
+  #endregion --- [ Who may reach this server ] ----------------------------------------------- #
+
+  #region ------ [ Client-facing TLS ] ------------------------------------------------------- #
+  # WHETHER CLIENTS TALK TO THIS SERVER OVER HTTPS, and with which certificate. Genuine deployer
+  # configuration: a server with no certificate to serve cannot converge with this on, and an
+  # estate that terminates TLS somewhere else does not want it.
+  #
+  # Everything under 'certificate' is ONE artifact described from several angles -- the name it is
+  # valid for, the objects it is delivered as, the digests those objects must match, and the
+  # thumbprint the listener is pinned to. They are declared together because they change together:
+  # rotating the certificate that clients trust is a single coherent edit here, and any one of
+  # them left behind produces a refusal rather than a server serving the wrong identity.
+  #
+  # The bucket is deliberately absent, as the drive letters are. Only the pipeline knows which
+  # account it is running in, so validate.yml refuses a run that omits it.
+  #
+  # The digests are what make the delivery trustworthy. The target has no outbound HTTPS of its
+  # own -- measured in terraform/aws.tfvars, whose only egress rule is the VPN tunnel -- so both
+  # objects are fetched on the CONTROLLER and the target never holds an S3 credential.
+  tls:
+    enabled: true
+    port: 8531
+    site_name: 'WSUS Administration'
+
+    certificate:
+      dns_name: 'tcnaw-wsus01.tcn.trinitytechnicalservices.com'
+      object: 'applications/windows-wsus/tls/tcnaw-wsus01.tcn.trinitytechnicalservices.com.pfx'
+      password_object: 'applications/windows-wsus/tls/tcnaw-wsus01.tcn.trinitytechnicalservices.com.pfx.password'
+      password_sha256: '0ba43689e6f79a59fcf2ce0bfad2a868042d4e4eae92506b84ccb38f1bea6d59'
+
+      # The SAME certificate, public half only, because this server has to trust it as well as
+      # serve it. Once wsusutil records UsingSSL=1, WSUS's own API calls go over HTTPS to this
+      # machine and .NET validates what it is presented; a self-signed certificate is its own trust
+      # anchor, so without this in Root every converge AFTER the first fails on its first read of
+      # the WSUS API -- which is the second run, the one that is supposed to be the proof.
+      #
+      # Delivered as its own object rather than re-using the PFX, so the private key never enters
+      # the Root store.
+      public_object: 'applications/windows-wsus/tls/tcnaw-wsus01.tcn.trinitytechnicalservices.com.cer'
+      public_sha256: '3afd03b1f19b0f28b8a221f52cd68bddc04a2fe6c3e6df99f67343c7604b2e3e'
+
+      sha256: '473880d30d30fd3f6fc32b9aedd6e9fd410d9a63b31c0152d993d9ed0a585e16'
+      thumbprint: '8760E9DA2B79D7FCFB5C8DADD72628649029B348'
+
+    # WHICH DIRECTORIES REFUSE PLAIN HTTP. Vendor-fixed rather than a preference: these five are
+    # the endpoints a client authenticates and reports through, and Microsoft's own instructions
+    # name these five and stop.
+    #
+    # The site serves more than five, and every one of the others is deliberately absent. Measured:
+    # Content, Inventory and ReportingWebService on both images available here, and Selfupdate on
+    # the RTM one but NOT on the patched AMI -- SelfUpdate's presence tracks the WSUS patch level,
+    # not the OS version. Requiring SSL on Content breaks content delivery and on SelfUpdate breaks
+    # legacy self-update; Reporting and Inventory are simply not endpoints the vendor asks to be
+    # secured. Naming the five rather than deriving the list from what is installed is also what
+    # makes this indifferent to which of the others a given image happens to ship.
+    secured_paths:
+      - 'ApiRemoting30'
+      - 'ClientWebService'
+      - 'DssAuthWebService'
+      - 'ServerSyncWebService'
+      - 'SimpleAuthWebService'
+  #endregion --- [ Client-facing TLS ] ------------------------------------------------------- #

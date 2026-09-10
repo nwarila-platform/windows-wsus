@@ -14,10 +14,10 @@
 # forbids the materialization step that would otherwise produce it.
 #
 # --check against a host that has never converged does not complete: win_file predicts the
-# directories rather than creating them, and win_acl needs a path that exists even to predict
-# against. That is the ordinary limit of check mode on tasks that depend on an earlier task's
-# side effect, not something this role can repair without carrying conditionals for a path the
-# lifecycle never runs. --check against a converged host reads and proves normally.
+# directories rather than creating them, and the access-control actor reads a descriptor from a
+# path that does not exist yet. That is the ordinary limit of check mode on tasks that depend on
+# an earlier task's side effect, not something this role can repair without carrying conditionals
+# for a path the lifecycle never runs. --check against a converged host reads normally.
 #
 # ============================================================================================= #
 ---
@@ -185,6 +185,24 @@
     __desired_data__: "{{ wsus_running.db.drive_letter }}:\\{{ wsus_running.db.data_subdir }}"
     __desired_log__: "{{ wsus_running.db.drive_letter }}:\\{{ wsus_running.db.log_subdir }}"
     __content_dir__: "{{ wsus_running.content.drive_letter }}:\\{{ wsus_running.content.subdir }}"
+    # The two client-facing rules, written in the shape Windows writes its own: the name carries
+    # the product and the direction, the description ends in the protocol and port, and both say
+    # WSUS rather than IIS so the reason the port is open is on the rule itself.
+    __firewall_rules__:
+      - name: 'Windows Server Update Services (HTTP Traffic-In)'
+        port: "{{ wsus_running.firewall.http_port }}"
+        description: >-
+          An inbound rule to allow client computers to download approved update payloads from
+          Windows Server Update Services (WSUS). WSUS serves payloads over plain HTTP by design;
+          they are Microsoft-signed and the client verifies them.
+          [TCP {{ wsus_running.firewall.http_port }}]
+
+      - name: 'Windows Server Update Services (HTTPS Traffic-In)'
+        port: "{{ wsus_running.tls.port }}"
+        description: >-
+          An inbound rule to allow client computers to retrieve update metadata from, authenticate
+          to, and report installation status to Windows Server Update Services (WSUS) over TLS.
+          [TCP {{ wsus_running.tls.port }}]
     __wsus_machine_name__: "{{ __wsus_computer_name__.value }}"
     # The four completion flags post-installation writes, each reaching 2 only when its component
     # finishes. Measured on this image: after the features install and before post-installation,
@@ -259,11 +277,16 @@
     #endregion --- [ Process: Create The Database Directories On The Data Volume ] ------------ #
 
     #region ------ [ Process: Grant The Instance FullControl On The Database Directories ] ---- #
-    # The per-service account, which Windows resolves to a SID derived from the service NAME
-    # rather than from the machine -- so the entry this writes is the one a REPLACEMENT operating
-    # system reading the same volume would also resolve, which is what lets the data volume outlive
-    # the host. END compares that SID rather than this name, because a renamed or localised
-    # principal would satisfy a name comparison while granting nothing.
+    # The per-service account, whose SID Windows derives from the service NAME rather than from the
+    # machine -- so the entry this writes is the one a REPLACEMENT operating system reading the same
+    # volume would also resolve, which is what lets the data volume outlive the host. Passed as the
+    # SID the placement read already resolved, because a name comparison would be satisfied by a
+    # renamed or localised principal that grants nothing.
+    #
+    # Set rather than added, for the same reason the content paths are: an additive grant leaves a
+    # DENY on the same identity standing, and Windows evaluates deny first -- so the allow would be
+    # written, the task would report ok on every later run, and SUSDB still could not grow. That is
+    # the one thing two clean runs cannot prove here, so the actor removes it instead.
 
     - name: 'PROCESS | Grant The Instance FullControl On The Database Directories'
       loop:
@@ -272,15 +295,15 @@
       loop_control:
         label: "{{ item }}"
 
-      ansible.windows.win_acl:
-        follow: false
-        inherit: 'ContainerInherit, ObjectInherit'
-        path: "{{ item }}"
-        propagation: 'None'
-        rights: 'FullControl'
-        state: 'present'
-        type: 'allow'
-        user: 'NT SERVICE\MSSQLSERVER'
+      ansible.windows.win_powershell:
+        depth: 3
+        error_action: 'stop'
+        parameters:
+          InheritanceFlags: 'ContainerInherit, ObjectInherit'
+          Path: "{{ item }}"
+          Rights: 'FullControl'
+          Sid: "{{ __wsus_placement__.result.service_sid }}"
+        script: "{{ lookup('ansible.builtin.file', 'Set-AclGrant.ps1') }}"
     #endregion --- [ Process: Grant The Instance FullControl On The Database Directories ] ---- #
 
     #region ------ [ Process: Pin The Instance Default Data And Log Directories ] ------------- #
@@ -455,6 +478,561 @@
 
     #endregion --- [ Process: Ensure The WSUS Services Are Running ] -------------------------- #
 
+    #region ------ [ Process: Serve WSUS To Its Clients Over HTTPS ] -------------------------- #
+    # FIRST of the regions that talk to the WSUS API, and the position is load-bearing. Once
+    # wsusutil records UsingSSL=1, every later bare Get-WsusServer dials this machine over HTTPS and
+    # validates the certificate it is presented -- so the trust anchor this region installs has to
+    # already be there when they run. Putting this last instead would work on run one, when they
+    # still speak HTTP, and leave a host that had lost its anchor unable to converge again: every
+    # run's first API read would fail before reaching the region that repairs it.
+    #
+    # It also removes an asymmetry that would otherwise make the two runs different things. Here,
+    # run one and run two both drive the API over the same transport; last, run one would use HTTP
+    # and run two HTTPS, and only run two would exercise the path the estate actually uses.
+    #
+    # Everything it needs -- the WSUS site, the Setup key, the services -- exists by this point.
+    #
+    # The delivery is controller-side and the target never holds an S3 credential. That is not a
+    # preference: measured in terraform/aws.tfvars, this guest's only egress rule is the VPN
+    # tunnel, so it has no route to S3 at all. All three objects -- the certificate, its password
+    # and the public half this machine has to trust -- are fetched here, verified here, and handed
+    # over the existing connection.
+    #
+    # Wrapped in its own block so the staging directories are removed on the way out whether this
+    # converged, refused or threw. A PFX left on either side is a private key left on disk.
+    #
+    # The password stays in the register that fetched it, which carries no_log, rather than being
+    # cleared afterwards. Clearing it would need set_fact, which this repository does not use, and
+    # the controller is an ephemeral runner whose process ends with the play.
+
+    - name: 'PROCESS | Deliver And Install The WSUS TLS Certificate'
+      when: wsus_running.tls.enabled | bool
+      vars:
+        __tls__: "{{ wsus_running.tls }}"
+        __tls_cert__: "{{ wsus_running.tls.certificate }}"
+
+      # Begin The 'TLS' Block
+      block:
+
+        # become is off explicitly on every controller task. The framework chassis turns become on
+        # for every task, and these run on the CONTROLLER, where elevation buys nothing and a
+        # runner that cannot sudo without a password would fail the play on a task never needing
+        # root.
+        - name: 'PROCESS | Create A Staging Directory For The TLS Delivery On The Controller'
+          become: false
+          changed_when: false
+          check_mode: false
+          delegate_to: 'localhost'
+          register: '__wsus_tls_controller__'
+
+          ansible.builtin.tempfile:
+            prefix: 'windows-wsus-tls-'
+            state: 'directory'
+
+        - name: 'PROCESS | Restrict The Controller Staging Directory'
+          become: false
+          changed_when: false
+          check_mode: false
+          delegate_to: 'localhost'
+
+          ansible.builtin.file:
+            mode: '0700'
+            path: "{{ __wsus_tls_controller__.path }}"
+            state: 'directory'
+
+        # check_mode is off for the reason the framework's own S3 fetch records: s3_object supports
+        # check mode by RETURNING EARLY, so under --check the register exists and the field the
+        # next task reads does not, and the digest check dies on a template error instead of its
+        # own message. Running the fetch for real under --check costs a read this task already
+        # declares changeless, and buys the most useful thing --check can say here -- that the
+        # objects exist and still match the digests pinned in defaults.
+        - name: 'PROCESS | Fetch The TLS Certificate To The Controller'
+          become: false
+          changed_when: false
+          check_mode: false
+          delegate_to: 'localhost'
+
+        # The module probes the BUCKET before the object, and that probe is authorized by a
+        # bucket-level grant this deployment deliberately does not hold: reading two pinned keys
+        # must not imply the right to see the bucket. Skipping the probe is the module's documented
+        # answer for exactly that policy shape. A missing object still fails loudly -- the key check
+        # uses head_object, which the object-level grant does authorize.
+          amazon.aws.s3_object:
+            bucket: "{{ __tls_cert__.bucket }}"
+            ceph: false
+            debug_botocore_endpoint_logs: false
+            dest: "{{ __wsus_tls_controller__.path }}/certificate.pfx"
+            dualstack: false
+            encrypt: true
+            encryption_mode: 'AES256'
+            expiry: 600
+            ignore_nonexistent_bucket: true
+            mode: 'get'
+            object: "{{ __tls_cert__.object }}"
+            overwrite: 'different'
+            permission: [ 'private' ]
+            prefix: ''
+            purge_tags: true
+            retries: 0
+            sig_v4: true
+            validate_bucket_name: true
+            validate_certs: true
+
+        - name: 'PROCESS | Fetch The TLS Certificate Password To The Controller'
+          become: false
+          changed_when: false
+          check_mode: false
+          delegate_to: 'localhost'
+          no_log: true
+          register: '__wsus_tls_password__'
+
+        # The module probes the BUCKET before the object, and that probe is authorized by a
+        # bucket-level grant this deployment deliberately does not hold: reading two pinned keys
+        # must not imply the right to see the bucket. Skipping the probe is the module's documented
+        # answer for exactly that policy shape. A missing object still fails loudly -- the key check
+        # uses head_object, which the object-level grant does authorize.
+          amazon.aws.s3_object:
+            bucket: "{{ __tls_cert__.bucket }}"
+            ceph: false
+            debug_botocore_endpoint_logs: false
+            dualstack: false
+            encrypt: true
+            encryption_mode: 'AES256'
+            expiry: 600
+            ignore_nonexistent_bucket: true
+            mode: 'getstr'
+            object: "{{ __tls_cert__.password_object }}"
+            overwrite: 'different'
+            permission: [ 'private' ]
+            prefix: ''
+            purge_tags: true
+            retries: 0
+            sig_v4: true
+            validate_bucket_name: true
+            validate_certs: true
+
+        - name: 'PROCESS | Fetch The Server Trust Anchor To The Controller'
+          become: false
+          changed_when: false
+          check_mode: false
+          delegate_to: 'localhost'
+
+          amazon.aws.s3_object:
+            bucket: "{{ __tls_cert__.bucket }}"
+            ceph: false
+            debug_botocore_endpoint_logs: false
+            dest: "{{ __wsus_tls_controller__.path }}/trust-anchor.cer"
+            dualstack: false
+            encrypt: true
+            encryption_mode: 'AES256'
+            expiry: 600
+            ignore_nonexistent_bucket: true
+            mode: 'get'
+            object: "{{ __tls_cert__.public_object }}"
+            overwrite: 'different'
+            permission: [ 'private' ]
+            prefix: ''
+            purge_tags: true
+            retries: 0
+            sig_v4: true
+            validate_bucket_name: true
+            validate_certs: true
+
+        - name: 'PROCESS | Read The Delivered Trust Anchor Digest'
+          become: false
+          changed_when: false
+          check_mode: false
+          delegate_to: 'localhost'
+          register: '__wsus_tls_anchor__'
+
+          ansible.builtin.stat:
+            checksum_algorithm: 'sha256'
+            path: "{{ __wsus_tls_controller__.path }}/trust-anchor.cer"
+
+        - name: 'PROCESS | Read The Delivered Certificate Digest'
+          become: false
+          changed_when: false
+          check_mode: false
+          delegate_to: 'localhost'
+          register: '__wsus_tls_delivered__'
+
+          ansible.builtin.stat:
+            checksum_algorithm: 'sha256'
+            path: "{{ __wsus_tls_controller__.path }}/certificate.pfx"
+
+        # Deliberately NOT no_log: assert reports the expression text and our message, never the
+        # value, so a mismatch stays diagnosable without exposing the password. Both objects are
+        # held to their pinned digest because an unverified private key is not one this server
+        # should present, and an unverified password only fails later and less clearly.
+        - name: 'PROCESS | Verify The TLS Delivery Against Its Pinned Digests'
+
+          ansible.builtin.assert:
+            fail_msg: >-
+              The TLS delivery does not match the digests pinned in defaults. Refusing to import a
+              certificate, or unlock one with a password, that is not the artifact this role was
+              told to install.
+            quiet: true
+            that:
+              - __wsus_tls_delivered__.stat.exists
+              - __wsus_tls_delivered__.stat.checksum == __tls_cert__.sha256
+              - __wsus_tls_password__.contents | hash('sha256') == __tls_cert__.password_sha256
+              - __wsus_tls_anchor__.stat.exists
+              - __wsus_tls_anchor__.stat.checksum == __tls_cert__.public_sha256
+
+        # Unique per run, so a failed or concurrent run cannot leave PFX bytes for the next one to
+        # find and reuse.
+        - name: 'PROCESS | Create A Staging Directory For The TLS Delivery On The Target'
+          changed_when: false
+          check_mode: false
+          register: '__wsus_tls_target__'
+
+          ansible.windows.win_tempfile:
+            prefix: 'windows-wsus-tls-'
+            state: 'directory'
+
+        # changed_when false because delivering the artifact is not convergence. Only the import
+        # and the listener below may report a change.
+        - name: 'PROCESS | Copy The Certificate To The Target'
+          changed_when: false
+          check_mode: false
+
+          ansible.windows.win_copy:
+            dest: "{{ __wsus_tls_target__.path }}\\certificate.pfx"
+            src: "{{ __wsus_tls_controller__.path }}/certificate.pfx"
+
+        # key_exportable false so the private key cannot be taken back off the machine that serves
+        # it. key_storage machine because HTTP.SYS presents this certificate as the machine, not as
+        # whichever account happened to import it.
+        - name: 'PROCESS | Import The Certificate Into The Machine Store'
+          no_log: true
+
+          ansible.windows.win_certificate_store:
+            key_exportable: false
+            key_storage: 'machine'
+            password: "{{ __wsus_tls_password__.contents }}"
+            path: "{{ __wsus_tls_target__.path }}\\certificate.pfx"
+            state: 'present'
+            store_location: 'LocalMachine'
+            store_name: 'My'
+
+        - name: 'PROCESS | Copy The Trust Anchor To The Target'
+          changed_when: false
+          check_mode: false
+
+          ansible.windows.win_copy:
+            dest: "{{ __wsus_tls_target__.path }}\\trust-anchor.cer"
+            src: "{{ __wsus_tls_controller__.path }}/trust-anchor.cer"
+
+        # Root as well as My, and load-bearing rather than tidy. Once wsusutil records UsingSSL=1,
+        # WSUS's own API calls go over HTTPS to this machine and .NET validates what it is
+        # presented; a self-signed certificate is its own trust anchor, so without this every
+        # converge AFTER the first fails on its first read of the WSUS API -- which is the second
+        # run, the one that is supposed to be the proof.
+        #
+        # The public half, not the PFX, so the private key never enters the Root store. No password
+        # and no key_storage, because there is no key in this file.
+        - name: 'PROCESS | Install The Certificate As A Trust Anchor For This Server'
+          register: '__wsus_tls_anchor_import__'
+
+          ansible.windows.win_certificate_store:
+            path: "{{ __wsus_tls_target__.path }}\\trust-anchor.cer"
+            state: 'present'
+            store_location: 'LocalMachine'
+            store_name: 'Root'
+
+        # The digest proves the anchor is the object that was declared. It does NOT prove that
+        # object is the public half of the certificate the listener presents -- a consistent
+        # public_object and public_sha256 naming some OTHER valid certificate passes every check
+        # above, puts an unrelated anchor in Root, and leaves the next API call unable to build the
+        # chain it is shown. The store reports what it imported, so the two are tied together here.
+        #
+        # Skipped under --check because the import it reads is the thing check mode suppressed.
+        - name: 'PROCESS | Prove The Anchor Is The Certificate The Listener Will Present'
+          when: not ansible_check_mode
+
+          ansible.builtin.assert:
+            fail_msg: >-
+              The trust anchor installed into LocalMachine\Root is not the certificate this server
+              is pinned to present. Refusing to continue: the listener would come up with a chain
+              this machine cannot build, and every WSUS API call after it would fail on a
+              certificate error rather than on anything that names WSUS.
+            quiet: true
+            that:
+              - (__tls_cert__.thumbprint | upper)
+                in (__wsus_tls_anchor_import__.thumbprints | default([], true) | map('upper') | list)
+
+        # One script for all three, because a server holding any two of them serves nobody and
+        # reads as configured. Explained in the script's own header.
+        - name: 'PROCESS | Serve WSUS Over HTTPS With The Pinned Certificate'
+
+          ansible.windows.win_powershell:
+            depth: 3
+            error_action: 'stop'
+            parameters:
+              DnsName: "{{ __tls_cert__.dns_name }}"
+              Port: "{{ __tls__.port }}"
+              SecuredPath: "{{ __tls__.secured_paths }}"
+              SiteName: "{{ __tls__.site_name }}"
+              Thumbprint: "{{ __tls_cert__.thumbprint }}"
+              WsusUtilPath: 'C:\Program Files\Update Services\Tools\wsusutil.exe'
+            script: "{{ lookup('ansible.builtin.file', 'Set-WsusHttpsListener.ps1') }}"
+
+      # Runs whether the block converged, refused or threw. Each is guarded on its own register
+      # having been set, because a failure early enough leaves the later ones undefined.
+      always:
+
+        # The CONTROLLER copy goes first, and the order is the whole point. Both copies hold the
+        # private key, but only one of these two tasks can be stopped by an unreachable guest --
+        # so the one that cannot is done first. Removing the target first and losing the
+        # connection would leave the runner's copy behind with nothing left to remove it, while a
+        # target that cannot be reached fails this task loudly instead of silently.
+        - name: 'PROCESS | Remove The TLS Delivery From The Controller'
+          become: false
+          changed_when: false
+          check_mode: false
+          delegate_to: 'localhost'
+          when: (__wsus_tls_controller__ | default({})).path | default('') | length > 0
+
+          ansible.builtin.file:
+            path: "{{ __wsus_tls_controller__.path }}"
+            state: 'absent'
+
+        - name: 'PROCESS | Remove The TLS Delivery From The Target'
+          changed_when: false
+          check_mode: false
+          when: (__wsus_tls_target__ | default({})).path | default('') | length > 0
+
+          ansible.windows.win_file:
+            path: "{{ __wsus_tls_target__.path }}"
+            state: 'absent'
+    #endregion --- [ Process: Serve WSUS To Its Clients Over HTTPS ] -------------------------- #
+
+    #region ------ [ Process: Admit Only The Estate To The Update Service ] ------------------- #
+    # WSUS opens two firewall rules of its own at post-installation. Measured on a live server:
+    # both named 'WSUS', inbound, TCP 8530 and TCP 8531, with program Any, service Any and remote
+    # address ANY. That is the entire internet admitted to the update service.
+    #
+    # This is NOT the security group repeated. A group cannot see traffic that arrives over the VPN
+    # tunnel: it sees a UDP envelope on 1194, and the payload is decapsulated inside the guest past
+    # every group rule. For everything reaching this server from the lab, the host firewall is not
+    # defence in depth -- it is the only defence there is.
+    #
+    # SCOPED THREE WAYS. To the ports WSUS serves; to System, because the listener is HTTP.SYS in
+    # kernel mode and the sockets belong to PID 4 rather than to w3wp.exe -- measured, and the same
+    # program Windows names in its own built-in IIS rules; and to the networks the estate actually
+    # occupies, which is the control the group cannot provide.
+    #
+    # NOT scoped to a service, and that is a limit rather than an omission. A service filter
+    # matches traffic owned by a named service, and HTTP.SYS answers these ports from the kernel --
+    # measured, PID 4 -- so no service owns them. Naming one would match nothing and close the port
+    # to the very clients the rule exists to admit. Windows' own IIS rules leave it unset for the
+    # same reason, and so do the two WSUS installs of its own.
+    #
+    # The network list is given in CIDR and Windows stores it in dotted-mask form -- 10.0.0.0/16
+    # becomes 10.0.0.0/255.255.0.0. Measured that this does NOT churn: the COM object normalises on
+    # ASSIGNMENT, so the module compares a normalised stored value against a normalised new one and
+    # finds them equal. Declaring the mask form here would be the same rule and a worse comment.
+    #
+    # Written in the shape Windows writes its own rules -- '<Product> (<PROTOCOL> Traffic-In)', a
+    # group, and a description ending '[TCP <port>]' -- but saying WSUS things rather than IIS
+    # things, so an administrator reading the rule list learns why the port is open and not merely
+    # that something web-shaped wanted it.
+    #
+    # ADDED BEFORE THE VENDOR'S ARE REMOVED. Windows evaluates every matching allow, so during the
+    # overlap the wider rule simply wins and the service never stops answering. Removing first
+    # would leave a window where a client is refused for no reason anyone would later find.
+
+    - name: 'PROCESS | Admit Only The Estate To The Update Service'
+      loop: "{{ __firewall_rules__ }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+      community.windows.win_firewall_rule:
+        action: 'allow'
+        description: "{{ item.description }}"
+        direction: 'in'
+        enabled: true
+        group: 'Windows Server Update Services (WSUS)'
+        localport: "{{ item.port }}"
+        name: "{{ item.name }}"
+        profiles: [ 'domain', 'private', 'public' ]
+        program: 'System'
+        protocol: 'tcp'
+        remoteip: "{{ wsus_running.firewall.admitted_networks }}"
+        state: 'present'
+
+    # Both of the vendor's rules share one display name, which is not something a declarative
+    # module can address one at a time -- so the name is removed, and the two scoped rules above
+    # are what remains admitting the ports.
+    - name: 'PROCESS | Remove The Unscoped Rules WSUS Opened For Itself'
+
+      community.windows.win_firewall_rule:
+        direction: 'in'
+        name: 'WSUS'
+        state: 'absent'
+    #endregion --- [ Process: Admit Only The Estate To The Update Service ] ------------------- #
+
+    #region ------ [ Process: Reconcile Where WSUS Keeps Its Content ] ------------------------ #
+    # WSUS records where its content lives in three places -- the registry root, the API cache one
+    # level below it, and the IIS Content virtual directory that actually serves files -- and only
+    # wsusutil movecontent updates them together. The realistic path to disagreement is a
+    # re-declaration: an operator changes the content drive letter and converges, leaving the store
+    # where it was while this role now asks for somewhere else.
+    #
+    # After the services, because the script asks the WSUS API where the content is and the API
+    # answers only once the server is up. Reading a stopped server as an empty answer would compare
+    # as "wrong place" and start copying a populated store, so the script refuses that read rather
+    # than guessing -- but the ordering is what keeps the refusal from firing on every reboot.
+    #
+    # One task, not a read and a decision and a command. The script owns the whole concern: it
+    # refuses the split brain movecontent cannot repair, moves when the API names the wrong cache,
+    # and checks all three records against the declaration afterwards.
+
+    - name: 'PROCESS | Reconcile Where WSUS Keeps Its Content'
+
+      ansible.windows.win_powershell:
+        depth: 3
+        error_action: 'stop'
+        parameters:
+          ContentRoot: "{{ __content_dir__ }}"
+          MoveLogPath: 'C:\Windows\Temp\wsus-movecontent.log'
+          WsusUtilPath: 'C:\Program Files\Update Services\Tools\wsusutil.exe'
+        script: "{{ lookup('ansible.builtin.file', 'Set-WsusContentLocation.ps1') }}"
+    #endregion --- [ Process: Reconcile Where WSUS Keeps Its Content ] ------------------------ #
+
+    #region ------ [ Process: Grant The WSUS Service Rights On The Content Cache ] ------------ #
+    # WSUS serves update files as NETWORK SERVICE, so the cache is only usable if that account can
+    # write beneath it. Set rather than added: win_acl adds an allow and leaves a DENY on the same
+    # identity in place, and Windows evaluates deny first -- measured on a live host, the allow
+    # entry is still printed exactly as before while the account cannot write. The script purges
+    # this identity's explicit entries and writes the declared one, so the result does not depend
+    # on what was there before. Post-installation happens to grant this today -- measured on the target --
+    # but the role declares it rather than inheriting it, so the rights survive a WSUS version that
+    # stops granting them and are stated where an operator can read them. Inheritable, because the
+    # cache is a tree the product creates folders and files inside long after this runs.
+
+    - name: 'PROCESS | Grant The WSUS Service Rights On The Content Cache'
+
+      ansible.windows.win_powershell:
+        depth: 3
+        error_action: 'stop'
+        parameters:
+          InheritanceFlags: 'ContainerInherit, ObjectInherit'
+          Path: "{{ __content_dir__ ~ '\\WsusContent' }}"
+          Rights: 'FullControl'
+          Sid: 'S-1-5-20'
+        script: "{{ lookup('ansible.builtin.file', 'Set-AclGrant.ps1') }}"
+    #endregion --- [ Process: Grant The WSUS Service Rights On The Content Cache ] ------------ #
+
+    #region ------ [ Process: Grant Interactive Users Browse Access On The Content Root ] ----- #
+    # Ratified convention: every interactive user on these servers is an administrator, and a
+    # folder Explorer cannot read makes it offer "Continue", which stamps that administrator's
+    # personal ACE onto the tree and leaves a stale SID behind when they depart. One shared
+    # read-and-execute entry costs nothing and prevents that.
+    #
+    # Written EXPLICITLY though the volume root already grants the same rights by inheritance.
+    # An inherited entry is the parent's to withdraw -- break inheritance here, or re-permission
+    # the volume, and the access vanishes with no change to this role. The role owns what it
+    # depends on.
+
+    - name: 'PROCESS | Grant Interactive Users Browse Access On The Content Root'
+
+      ansible.windows.win_powershell:
+        depth: 3
+        error_action: 'stop'
+        parameters:
+          InheritanceFlags: 'ContainerInherit, ObjectInherit'
+          Path: "{{ __content_dir__ }}"
+          Rights: 'ReadAndExecute'
+          Sid: 'S-1-5-32-545'
+        script: "{{ lookup('ansible.builtin.file', 'Set-AclGrant.ps1') }}"
+    #endregion --- [ Process: Grant Interactive Users Browse Access On The Content Root ] ----- #
+
+    #region ------ [ Process: Restrict The Update Languages WSUS Will Accept ] ---------------- #
+    # A WSUS server installs with every language Microsoft publishes enabled, so a synchronisation
+    # would pull metadata and binaries for all of them. On a server that patches one estate that is
+    # a permanent cost in disk and sync time for content nobody will ever approve.
+    #
+    # After the services, because the configuration is read and written through the WSUS API rather
+    # than the registry, and the API answers only once the server is up.
+    #
+    # The script does both halves and verifies from a freshly acquired configuration object:
+    # clearing the
+    # all-languages flag without writing a list leaves the old list, writing a list without
+    # clearing the flag leaves the flag overriding it, and the configuration object is a
+    # client-side cache that would report either assignment back whether or not it persisted.
+
+    - name: 'PROCESS | Restrict The Update Languages WSUS Will Accept'
+
+      ansible.windows.win_powershell:
+        depth: 3
+        error_action: 'stop'
+        parameters:
+          Language: "{{ wsus_running.updates.languages }}"
+        script: "{{ lookup('ansible.builtin.file', 'Set-WsusUpdateLanguage.ps1') }}"
+    #endregion --- [ Process: Restrict The Update Languages WSUS Will Accept ] ---------------- #
+
+    #region ------ [ Process: Point This Server At Its Upstream WSUS Source ] ----------------- #
+    # A WSUS server installs pointed at Microsoft Update. Leaving it there on a downstream means
+    # every server in the estate approves the same update independently and pulls the same bytes
+    # from the internet, which is the cost a downstream topology exists to remove.
+    #
+    # After the languages, because both are written through the same configuration object and the
+    # API only answers once the server is up. Order between them does not matter to the product;
+    # keeping the two API writes adjacent is what makes that obvious.
+    #
+    # All five values are one act. Recording the upstream without clearing SyncFromMicrosoftUpdate
+    # leaves the address in the console and Microsoft Update as the actual source -- a server that
+    # reads as configured and is not -- so the script writes and verifies the five together, and
+    # stops any synchronisation in flight first, because a sync mid-run is still talking to the old
+    # source and saving underneath it lands the server in a state neither configuration describes.
+    #
+    # The booleans arrive as booleans: Ansible templates a bare '{{ bool }}' back to a real bool
+    # and win_powershell serialises it as JSON true/false, so PowerShell binds it directly. That is
+    # load-bearing -- had it arrived as the string 'False', [System.Boolean] would have made it
+    # true, because every non-empty string casts true.
+
+    - name: 'PROCESS | Point This Server At Its Upstream WSUS Source'
+      register: '__wsus_upstream__'
+
+      ansible.windows.win_powershell:
+        depth: 3
+        error_action: 'stop'
+        parameters:
+          Replica: "{{ wsus_running.sync.replica }}"
+          UpstreamPort: "{{ wsus_running.sync.upstream_port }}"
+          UpstreamServer: "{{ wsus_running.sync.upstream_server }}"
+          UseSsl: "{{ wsus_running.sync.upstream_use_ssl }}"
+        script: "{{ lookup('ansible.builtin.file', 'Set-WsusUpstream.ps1') }}"
+    #endregion --- [ Process: Point This Server At Its Upstream WSUS Source ] ----------------- #
+
+    #region ------ [ Process: Bring The Catalogue And Its Content Down From The Upstream ] ---- #
+    # Pointing a server at an upstream fetches nothing. Until a synchronisation completes this
+    # server offers its clients an empty catalogue -- and a client that asks an empty server
+    # reports "no updates required" and looks exactly like success. That silence is the failure
+    # this region exists to remove, and it is the only one in the role a client can see.
+    #
+    # Force is the upstream actor's OWN change report rather than a fingerprint recomputed here.
+    # The question is "does the catalogue on disk come from the source we are now pointed at", and
+    # the task that re-pointed the server has already answered it. The contract reached the same
+    # answer by hashing five values into a registry marker; this reaches it by asking the task
+    # that knows.
+    #
+    # default({}) because under --check the module reports what it would do without a result, and
+    # a run that cannot read the flag should decline to force rather than fail reading it.
+
+    - name: 'PROCESS | Bring The Catalogue And Its Content Down From The Upstream'
+
+      ansible.windows.win_powershell:
+        depth: 3
+        error_action: 'stop'
+        parameters:
+          ContentTimeoutSeconds: "{{ wsus_running.sync.content_timeout_seconds }}"
+          Force: "{{ (__wsus_upstream__.result | default({})).changed | default(false) }}"
+          TimeoutSeconds: "{{ wsus_running.sync.timeout_seconds }}"
+        script: "{{ lookup('ansible.builtin.file', 'Invoke-WsusSynchronisation.ps1') }}"
+    #endregion --- [ Process: Bring The Catalogue And Its Content Down From The Upstream ] ---- #
+
 #endregion --- [ Process: Configure WSUS on Windows ] ----------------------------------------- #
 
 
@@ -464,8 +1042,6 @@
   vars:
     __desired_data__: "{{ wsus_running.db.drive_letter }}:\\{{ wsus_running.db.data_subdir }}"
     __desired_log__: "{{ wsus_running.db.drive_letter }}:\\{{ wsus_running.db.log_subdir }}"
-    __content_dir__: "{{ wsus_running.content.drive_letter }}:\\{{ wsus_running.content.subdir }}"
-    __wsus_machine_name__: "{{ __wsus_computer_name__.value }}"
 
   # Begin The 'End' Block
   block:
@@ -478,14 +1054,14 @@
     # A restarted instance reports Running before it accepts connections, so opening the
     # connection can throw for a few seconds after PROCESS. Retrying covers that, and with it
     # every other throw this read can raise -- a host missing the service or the settings key
-    # spends the full minute before failing. What it does NOT cover is a wrong answer: an engine
-    # that responds and names the wrong directory returns successfully, and the asserts below
-    # fail it on the first attempt.
+    # spends the full minute before failing.
+    #
     # Reading successfully is not the same as the engine being up. win_reboot returns at the
     # logon prompt, before the auto-start services have finished, and the script reports a
-    # Start Pending instance as a clean read with placement_read false -- which would fail two
-    # asserts below on a host that is converging correctly. `and` short-circuits, so a genuinely
-    # failed read never dereferences .result.
+    # Start Pending instance as a clean read with placement_read false. The until condition
+    # therefore requires placement_read as well as success, so the retry covers a half-started
+    # engine rather than accepting its answer. `and` short-circuits, so a genuinely failed read
+    # never dereferences .result.
     - name: 'END | Re-Read Where This Instance Creates Databases'
       register: '__wsus_placement_proof__'
       retries: 12
@@ -507,244 +1083,6 @@
         script: "{{ lookup('ansible.builtin.file', 'Get-SqlDatabasePlacement.ps1') }}"
 
     #endregion --- [ End: Re-Read The Engine ] ------------------------------------------------ #
-
-    #region ------ [ End: Prove The Instance Survives A Reboot ] ------------------------------ #
-    # Automatic AND Running, because either alone is a host that stops serving updates: Running but
-    # Manual dies at the next reboot with nothing to restart it, Automatic but stopped is already
-    # not serving.
-
-    - name: 'END | Prove The Instance Is Automatic And Running'
-
-      ansible.builtin.assert:
-        fail_msg: >-
-          Expected 'MSSQLSERVER' Running and Automatic; found
-          {{ __wsus_placement_proof__.result.service_state }} and
-          {{ __wsus_placement_proof__.result.service_start_mode }}. A host that reboots must come
-          back serving updates without an operator.
-        quiet: true
-        that:
-          - __wsus_placement_proof__.result.service_state == 'Running'
-          - __wsus_placement_proof__.result.service_start_mode == 'Auto'
-
-    #endregion --- [ End: Prove The Instance Survives A Reboot ] ------------------------------ #
-
-    #region ------ [ End: Prove The Database Lands On The Data Volume ] ----------------------- #
-    # The whole point of the action: wsusutil postinstall creates SUSDB wherever the instance's
-    # default directories point, so this is what keeps application state off the system volume.
-
-    - name: 'END | Prove The Instance Places Databases On The Data Volume'
-
-      ansible.builtin.assert:
-        fail_msg: >-
-          Expected the instance to create databases in '{{ __desired_data__ }}' and
-          '{{ __desired_log__ }}'; it creates them in
-          '{{ __wsus_placement_proof__.result.effective_data }}' and
-          '{{ __wsus_placement_proof__.result.effective_log }}'. A database created now would land
-          where the engine reports, not where this role was told to put it.
-        quiet: true
-        that: [ __wsus_placement_proof__.result.placement_valid ]
-
-    #endregion --- [ End: Prove The Database Lands On The Data Volume ] ----------------------- #
-
-    #region ------ [ End: Prove The ACE This Role Writes Is On Both Directories ] ------------- #
-    # This proves the explicit inheritable service-SID ACE this role owns, not effective access.
-    # Inheritable, because the engine creates files and subdirectories beneath these paths and an
-    # ACE that stops at the folder grants them nothing. The deny scan is a bounded guard on that
-    # same SID -- deny wins over allow in Windows -- and cannot see a deny reaching the service
-    # through a group or its dynamic logon SID. Whether the engine can actually write is proven
-    # where it matters, by the action that creates the database.
-
-    - name: 'END | Prove The Instance Holds Inheritable Rights On Both Directories'
-
-      ansible.builtin.assert:
-        fail_msg: >-
-          Expected '{{ __desired_data__ }}' and '{{ __desired_log__ }}' to grant
-          {{ __wsus_placement_proof__.result.service_sid }} inheritable FullControl with nothing
-          denying it back. Granted: data={{ __wsus_placement_proof__.result.data_acl_granted }},
-          log={{ __wsus_placement_proof__.result.log_acl_granted }}. Denied:
-          data={{ __wsus_placement_proof__.result.data_acl_denied }},
-          log={{ __wsus_placement_proof__.result.log_acl_denied }}.
-        quiet: true
-        that:
-          - __wsus_placement_proof__.result.data_acl_granted
-          - __wsus_placement_proof__.result.log_acl_granted
-          - not __wsus_placement_proof__.result.data_acl_denied
-          - not __wsus_placement_proof__.result.log_acl_denied
-
-    #endregion --- [ End: Prove The ACE This Role Writes Is On Both Directories ] ------------- #
-
-    #region ------ [ End: Prove Every Requested Feature Is Installed ] ------------------------ #
-    # Re-read rather than trusting what the install reported, because a feature transaction that
-    # asked for a reboot has not finished until the host has taken it.
-
-    # One call per name: win_feature_info takes a single name or wildcard, not a list, and a
-    # comma-joined string reaches Get-WindowsFeature as one pattern that matches nothing at all.
-    - name: 'END | Re-Read Which WSUS Features Are Installed'
-      loop: ['UpdateServices-Services', 'UpdateServices-DB', 'Web-Http-Logging']
-      loop_control:
-        label: "{{ item }}"
-      register: '__wsus_features_proof__'
-
-      ansible.windows.win_feature_info:
-        name: "{{ item }}"
-
-    # ----------------------------------------------------------------------------------------- #
-
-    - name: 'END | Prove Every Requested Feature Is Installed'
-      vars:
-        __required__: ['UpdateServices-Services', 'UpdateServices-DB', 'Web-Http-Logging']
-        __returned__: >-
-          {{ __wsus_features_proof__.results | map(attribute='features') | flatten
-             | map(attribute='name') | list }}
-        __installed__: >-
-          {{ __wsus_features_proof__.results | map(attribute='features') | flatten
-             | selectattr('installed') | map(attribute='name') | list }}
-
-      ansible.builtin.assert:
-        fail_msg: >-
-          Expected {{ __required__ | join(', ') }} installed. Returned by the
-          host: {{ __returned__ | join(', ') | default('none', true) }}. Installed:
-          {{ __installed__ | join(', ') | default('none', true) }}.
-        quiet: true
-        that:
-          # A name the host does not return is not an answer -- it is a question never asked,
-          # which a mistyped feature name would produce and which must not read as success.
-          - __required__ | difference(__returned__) | length == 0
-          - __required__ | difference(__installed__) | length == 0
-    #endregion --- [ End: Prove Every Requested Feature Is Installed ] ------------------------ #
-
-    #region ------ [ End: Prove Every Component Finished ] ------------------------------------ #
-    # Read back rather than trusting the command's exit code: post-installation reports success
-    # for work it completed against defaults nobody wanted, so the proof is which backend and
-    # which content root it actually recorded.
-
-    - name: 'END | Re-Read The Post-Installation Completion Flags'
-      register: '__wsus_postinstall_proof__'
-
-      ansible.windows.win_reg_stat:
-        path: 'HKLM:\SOFTWARE\Microsoft\Update Services\Server\Setup\Installed Role Services'
-
-    # ----------------------------------------------------------------------------------------- #
-
-    - name: 'END | Prove Every Component Finished'
-      vars:
-        __postinstall_flags__:
-          - 'UpdateServices-API'
-          - 'UpdateServices-Database'
-          - 'UpdateServices-Services'
-          - 'UpdateServices-UI'
-        __values__: >-
-          {{ __postinstall_flags__
-             | map('extract', __wsus_postinstall_proof__.properties | default({}), 'value')
-             | map('default', 0) | list }}
-
-      ansible.builtin.assert:
-        fail_msg: >-
-          Expected every post-installation component to report 2. Read
-          {{ __postinstall_flags__ | zip(__values__) | map('join', '=') | join(', ') }}.
-          A component short of 2 did not finish, and the next converge repeats the action.
-        quiet: true
-        that:
-          - __values__ | select('ne', 2) | list | length == 0
-    #endregion --- [ End: Prove Every Component Finished ] ------------------------------------ #
-
-    #region ------ [ End: Prove What Post-Installation Recorded ] ----------------------------- #
-    - name: 'END | Re-Read The Post-Installation Setup Values'
-      register: '__wsus_setup_proof__'
-
-      ansible.windows.win_reg_stat:
-        path: 'HKLM:\SOFTWARE\Microsoft\Update Services\Server\Setup'
-
-    # ----------------------------------------------------------------------------------------- #
-
-    # The backend is the half no exit code can speak for. The feature install seeds this value
-    # with the Windows Internal Database instance, so a post-installation that ignored
-    # SQL_INSTANCE_NAME leaves a server this host cannot serve from and reports success doing it.
-    - name: 'END | Prove WSUS Records The SQL Instance And The Declared Content Root'
-      vars:
-        __recorded_server__: "{{ __wsus_setup_proof__.properties.SqlServerName.value | default('') }}"
-        __recorded_content__: "{{ __wsus_setup_proof__.properties.ContentDir.value | default('') }}"
-
-      ansible.builtin.assert:
-        fail_msg: >-
-          Expected WSUS to record SQL server '{{ __wsus_machine_name__ }}' and content root
-          '{{ __content_dir__ }}'. It records server '{{ __recorded_server__ }}' and content
-          '{{ __recorded_content__ }}'. A server that is not this machine means post-installation
-          fell back to the backend the feature install seeded rather than the one it was given.
-        quiet: true
-        that:
-          - (__recorded_server__ | lower) == (__wsus_machine_name__ | lower)
-          # WSUS records the content root with a trailing separator, which the declared root has
-          # no reason to carry. Measured on core 2.21.2: only this doubled spelling reaches the
-          # regex as one literal backslash, in a `that` conditional and in a double-quoted
-          # template alike; the single form strips nothing in either.
-          - (__recorded_content__ | lower | regex_replace('\\\\+$', ''))
-            == (__content_dir__ | lower)
-    #endregion --- [ End: Prove What Post-Installation Recorded ] ----------------------------- #
-
-    #region ------ [ End: Prove The Engine Has SUSDB Attached On The Declared Volume ] -------- #
-    # The claim the whole ordering exists to make: SUSDB was CREATED on the data volume, not
-    # moved there afterwards. Post-installation chose these paths itself, from the defaults the
-    # placement region pinned before the feature existed. Asked of the ENGINE, because files at
-    # the expected paths survive a detach and a SUSDB attached from somewhere else leaves exactly
-    # that picture -- only sys.master_files says which files the database is attached FROM. It
-    # says nothing about the database's health: the catalog lists files for an OFFLINE database
-    # too, and proving it serviceable is contract row 37's job, not this one's.
-
-    - name: 'END | Prove The Engine Has SUSDB Attached On The Declared Volume'
-
-      ansible.builtin.assert:
-        fail_msg: >-
-          Expected the engine to have SUSDB attached from '{{ __desired_data__ }}\SUSDB.mdf' and
-          '{{ __desired_log__ }}\SUSDB_log.ldf', and from nothing else. It reports
-          {{ __wsus_placement_proof__.result.susdb_file_count }} file(s):
-          '{{ __wsus_placement_proof__.result.susdb_data_path | default('nothing', true) }}' and
-          '{{ __wsus_placement_proof__.result.susdb_log_path | default('nothing', true) }}'. A
-          database anywhere else was created before the engine was pinned, and moving it is the
-          unsupported path this ordering exists to avoid.
-        quiet: true
-        that:
-          - >-
-            (__wsus_placement_proof__.result.susdb_data_path | lower)
-            == (__desired_data__ ~ '\SUSDB.mdf') | lower
-          - >-
-            (__wsus_placement_proof__.result.susdb_log_path | lower)
-            == (__desired_log__ ~ '\SUSDB_log.ldf') | lower
-          - __wsus_placement_proof__.result.susdb_file_count == 2
-    #endregion --- [ End: Prove The Engine Has SUSDB Attached On The Declared Volume ] -------- #
-
-    #region ------ [ End: Prove The Content Cache Exists Beneath The Declared Root ] ---------- #
-    # The recorded root is not the store. WSUS writes into a cache directory beneath it, created
-    # by post-installation, and a root that exists with no cache under it is a host that recorded
-    # the right answer and cannot serve a single file.
-
-    - name: 'END | Read The Content Cache Post-Installation Created'
-      register: '__wsus_content_cache__'
-
-      ansible.windows.win_stat:
-        # The proof needs the path, never the contents. Left at its default, get_size enumerates
-        # every file beneath the directory to total them -- on a populated update store that is
-        # the whole cache, read every converge, to answer a question about the directory itself.
-        checksum_algorithm: 'sha1'
-        follow: false
-        get_checksum: false
-        get_size: false
-        path: "{{ __content_dir__ ~ '\\WsusContent' }}"
-
-    # ----------------------------------------------------------------------------------------- #
-
-    - name: 'END | Prove The Content Cache Exists Beneath The Declared Root'
-
-      ansible.builtin.assert:
-        fail_msg: >-
-          Expected post-installation to have created
-          '{{ __content_dir__ }}\WsusContent'. It is not there, so nothing has anywhere to put
-          update files even though the recorded content root is correct.
-        quiet: true
-        that:
-          - __wsus_content_cache__.stat.exists
-          - __wsus_content_cache__.stat.isdir
-    #endregion --- [ End: Prove The Content Cache Exists Beneath The Declared Root ] ---------- #
 
     #region ------ [ End: Prove SUSDB Can Actually Serve ] ------------------------------------ #
     # Decision 23 cut the adoption actor's gates to ONLINE alone and named this the boundary that

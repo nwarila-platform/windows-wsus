@@ -7,19 +7,27 @@
 #
 #   * AWS credentials are issued only to this workflow at refs/heads/main, by both the workflow
 #     guard below and the OIDC trust; feature-branch workflow code never reaches AWS.
-#   * Reachability: direct SSH to a subnet-assigned public IPv4, admitted by two groups. The
-#     framework adds one scoped to the runner's validated public IPv4 at runtime; the interface
-#     carries a second, committed in terraform/aws.tfvars, opening tcp/22 to the whole IPv4
-#     space for the development cycle so an operator can reach a held guest. This configuration
-#     creates no EIP and has no NAT. The playbook performs the bounded direct-SSH readiness
-#     check because readiness_gate remains disabled.
-#   * AWS credentials are exchanged before provisioning and refreshed before eligible teardown.
-#     The initial 7,800-second session covers normal deployment work; the teardown refresh uses a
-#     modest 3,600-second session so long holds do not reach destroy with expired credentials.
-#     The 330-minute job budget includes a four-hour hold plus measured-path margin and stays below
-#     the runner's 360-minute execution limit. It is not a teardown guarantee: abnormal delay can
-#     exhaust the job budget before destroy and strand paid resources. That risk is accepted for
-#     this temporary proof bed.
+#   * Reachability: direct SSH to a subnet-assigned public IPv4, admitted by ONE run-scoped group
+#     the framework attaches at apply. It carries the runner's validated public IPv4, and an
+#     operator's own address as well, resolved at run time from an organisation secret naming a
+#     host rather than from anything committed or recorded with the run. Nothing in
+#     terraform/aws.tfvars opens tcp/22 any more: the committed rule that opened it to the whole
+#     IPv4 space was a development-cycle allowance and has been removed, so this repository no
+#     longer records who may reach the estate or from where. This configuration creates no EIP and
+#     has no NAT. The playbook performs the bounded direct-SSH readiness check because
+#     readiness_gate remains disabled.
+#   * AWS credentials are exchanged before provisioning and refreshed before EACH long AWS-using
+#     phase -- the idempotence proof, the optional operating-system swap, and teardown. The
+#     7,800-second session is the deploy role's MaxSessionDuration and cannot be lengthened, and it
+#     does NOT cover the whole pre-hold path now that this lifecycle builds two Windows guests: a
+#     slow but permitted run would otherwise reach a later phase with it expired. The teardown
+#     refresh uses a modest 3,600-second session so long holds do not reach destroy expired.
+#     The 330-minute job budget stays below the runner's 360-minute execution limit. It no longer
+#     accommodates the longest hold: this lifecycle now builds TWO Windows guests sequentially, so
+#     the converge path costs roughly 150 minutes of it and a 240-minute hold would not fit. Choose
+#     120 or less until the two-guest path has been measured. It is not a teardown guarantee
+#     either: abnormal delay can exhaust the budget before destroy and strand paid resources. That
+#     risk is accepted for this temporary proof bed.
 #   * One fixed state key; this workflow's concurrency group prevents overlapping applies and
 #     never cancels a live lifecycle. A later lifecycle can clean predecessor state before apply;
 #     no age-gated reaper exists for a run killed before destroy.
@@ -79,8 +87,9 @@ jobs:
     needs: main-ref
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
-    # The 330-minute budget leaves measured-path margin around a 240-minute hold and remains below
-    # the runner's 360-minute execution limit; a timeout can still strand resources before teardown.
+    # The 330-minute budget remains below the runner's 360-minute execution limit. With two Windows
+    # guests built sequentially the converge path takes roughly 150 minutes of it, so a 240-minute
+    # hold no longer fits; a timeout can still strand resources before teardown.
     timeout-minutes: 330
     permissions:
       id-token: write
@@ -235,6 +244,35 @@ jobs:
           echo "RUNNER_IP=${runner_ip}" >> "${GITHUB_ENV}"
           echo 'runner public IPv4 validated'
 
+      # A HOSTNAME rather than an address, resolved at run time. An address supplied as a dispatch
+      # input is recorded unmasked in the run's parameters and kept with it; a dynamic name held as
+      # an organisation secret is not, which is the whole reason the framework's own variable
+      # documentation gives for never committing one. An unset secret grants nobody anything and is
+      # the normal case. A secret that is set and will not resolve DOES fail, because the
+      # alternative is a host that silently cannot be reached by the person who asked for it.
+      - name: Resolve the operator address for direct access
+        env:
+          DEBUG_HOSTNAME: ${{ secrets.AWS_DEBUG_HOSTNAME }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DEBUG_HOSTNAME}" ]; then
+            echo 'no operator hostname configured; this run grants no direct access'
+            exit 0
+          fi
+          # `|| true` so the check below is the ONE gate: a name that does not resolve and a name
+          # that resolves to something that is not an address fail the same way to a reader, and
+          # without it the first kills the step on pipefail before this message can explain itself.
+          # The check proves the SHAPE of an address, not that it is routable.
+          debug_ip="$(getent ahostsv4 "${DEBUG_HOSTNAME}" | awk '{ print $1; exit }' || true)"
+          ipv4_octet='(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])'
+          if [[ ! "${debug_ip}" =~ ^${ipv4_octet}\.${ipv4_octet}\.${ipv4_octet}\.${ipv4_octet}$ ]]; then
+            echo "::error::The operator hostname did not resolve to a bare IPv4 address."
+            exit 1
+          fi
+          echo "::add-mask::${debug_ip}"
+          echo "DEBUG_IP=${debug_ip}" >> "${GITHUB_ENV}"
+          echo 'operator IPv4 resolved and validated'
+
       - name: Terraform init
         id: tf-init
         working-directory: .frameworks/aws-terraform-framework/terraform
@@ -268,6 +306,11 @@ jobs:
 
       # The environment and deployment identity are individual -var flags — the highest-
       # precedence source, so the tfvars cannot override who this fresh deployment says it is.
+      #
+      # debug_ip reaches the flag ONLY when the resolve step above set it. The framework's variable
+      # takes an address or null and refuses an empty string, so the :+ expansion is what keeps a
+      # blank from arriving as one. Committed rules used to open tcp/22 to the whole internet for
+      # this; this grants one person one address, for one run, from a name nothing here records.
       - name: Terraform apply
         id: tf-apply
         timeout-minutes: 15
@@ -281,7 +324,8 @@ jobs:
             -var "repository=${GITHUB_REPOSITORY}" \
             -var "repository_id=${GITHUB_REPOSITORY_ID}" \
             -var "commit_sha=$(git -C "${GITHUB_WORKSPACE}" rev-parse HEAD)" \
-            -var "run_id=${GITHUB_RUN_ID}"
+            -var "run_id=${GITHUB_RUN_ID}" \
+            ${DEBUG_IP:+-var "debug_ip=${DEBUG_IP}"}
 
       # This repo's roles overlay onto the pinned framework tree. A framework-TRACKED role
       # path is refused so an overlay can never replace framework-owned code.
@@ -314,8 +358,30 @@ jobs:
       # Readiness, host preparation, guest storage and the WSUS role all live in the playbook.
       # The EC2 inventory plugin filters live instances to this repository and run before exposing
       # one target.
+      # The FIRST long phase needs the refresh too, and most of all. The initial session is 130
+      # minutes and this step alone may take 110 of them -- leaving twenty for predecessor destroy
+      # and apply, each of which allows fifteen on its own. The playbook keeps making controller-
+      # side AWS calls throughout: the tunnel profile and join secret come from S3, the disk role
+      # resolves volumes through EC2, and the client's plays run LAST, after the server's
+      # synchronisation waits. A run that is slow but entirely permitted would fail there with
+      # ExpiredToken, with both Windows guests already built and paid for.
+      - name: Refresh AWS credentials before the first converge
+        if: always() && steps.tf-apply.outcome == 'success'
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ env.DEPLOY_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+          allowed-account-ids: ${{ secrets.AWS_ACCOUNT_ID }}
+          role-session-name: aws-deploy-${{ github.run_id }}-converge
+          role-duration-seconds: 7800
+
+      # 110 rather than 60, because this step now builds TWO Windows guests SEQUENTIALLY. Ansible
+      # runs plays in order, and the client's readiness, bootstrap, tunnel and domain join are
+      # their own plays that begin only after the server's product is finished -- so the guest
+      # preparation cost is paid twice, and on top of it sit the WSUS install, the TLS work, a
+      # catalogue synchronisation with its content, and the client's own update install.
       - name: Run the WSUS playbook
-        timeout-minutes: 60
+        timeout-minutes: 110
         working-directory: .frameworks/ansible-framework
         env:
           ANSIBLE_CONFIG: ${{ github.workspace }}/.frameworks/ansible-framework/ansible.cfg
@@ -336,8 +402,26 @@ jobs:
       # run again and the step fails if any managed host reports changed>0 -- the standard proof
       # that every task's change detection is honest. A role that re-reports a change would bounce
       # its service on every run, so this is a hard gate, not a warning.
+      # 40 rather than 30 for the same reason, though this run does no work on either host: it is
+      # two full inventories, two connection setups and two playbook passes.
+      # The OIDC session is 7,800 seconds and the role's MaxSessionDuration is exactly that, so it
+      # cannot simply be lengthened. It is issued before framework setup, predecessor destroy and
+      # apply, and the first converge may now take 110 minutes of what remains -- which leaves a
+      # slow but entirely permitted run arriving here with expired credentials, to fail on a
+      # dynamic inventory lookup with ExpiredToken rather than on anything real. Refreshed
+      # immediately before each long AWS-using phase instead.
+      - name: Refresh AWS credentials before the idempotence proof
+        if: always() && steps.tf-apply.outcome == 'success'
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ env.DEPLOY_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+          allowed-account-ids: ${{ secrets.AWS_ACCOUNT_ID }}
+          role-session-name: aws-deploy-${{ github.run_id }}-proof
+          role-duration-seconds: 7800
+
       - name: Prove the converge is idempotent (second run is a no-op)
-        timeout-minutes: 30
+        timeout-minutes: 40
         working-directory: .frameworks/ansible-framework
         env:
           ANSIBLE_CONFIG: ${{ github.workspace }}/.frameworks/ansible-framework/ansible.cfg
@@ -363,6 +447,23 @@ jobs:
       # system property, and it is also the only state in which the WSUS role ever meets an
       # existing SUSDB: every lifecycle destroys its volumes at the end, so nothing else this
       # repository can build leaves a database behind to be adopted.
+      # The operator grant is repeated here for the same reason every other -var is: this is a
+      # full apply, and a variable absent from it is a variable terraform computes as null. Left
+      # out, this second apply would quietly withdraw the access the first one granted, in the
+      # middle of the run the person asked for it.
+      # Again, because the swap path adds a full apply and a second 60-minute converge on top of
+      # everything above it. A credential that was fresh at the idempotence proof need not be by
+      # the time terraform is asked to replace a volume.
+      - name: Refresh AWS credentials before the operating-system swap
+        if: always() && inputs.os_swap && steps.tf-apply.outcome == 'success'
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ env.DEPLOY_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+          allowed-account-ids: ${{ secrets.AWS_ACCOUNT_ID }}
+          role-session-name: aws-deploy-${{ github.run_id }}-os-swap
+          role-duration-seconds: 7800
+
       - name: Replace the OS drive, keeping the data volumes (refresh_serial bump)
         if: inputs.os_swap
         timeout-minutes: 15
@@ -377,7 +478,8 @@ jobs:
             -var "repository_id=${GITHUB_REPOSITORY_ID}" \
             -var "commit_sha=$(git -C "${GITHUB_WORKSPACE}" rev-parse HEAD)" \
             -var "run_id=${GITHUB_RUN_ID}" \
-            -var "refresh_serial=1"
+            -var "refresh_serial=1" \
+            ${DEBUG_IP:+-var "debug_ip=${DEBUG_IP}"}
 
       # The operating system is new, so this pays a first converge's costs again and gets a first
       # converge's budget. The disk role adopts each reattached volume untouched -- it classifies a

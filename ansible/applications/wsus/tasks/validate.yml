@@ -84,3 +84,146 @@
       # handed; this one holds the role's own merged configuration to a shape nothing upstream
       # can see, so it is not that class and does not travel with them.
       - (wsus_running.content.drive_letter | upper) != (wsus_running.db.drive_letter | upper)
+
+- name: 'VALIDATE | Require Usable Update Languages'
+  when: (state | default('present') | string | lower | trim) == 'present'
+  vars:
+    __languages__: >-
+      {{ wsus_running.updates.languages | default([], true)
+         | map('trim') | map('lower') | select() | unique | list }}
+  ansible.builtin.assert:
+    fail_msg: >-
+      Refusing to configure: wsus.updates.languages must name at least one update language, as the
+      short codes WSUS uses -- 'en', 'fr'. Guarded here, on the controller, because the guest-side
+      refusal comes too late: the script clears AllUpdateLanguagesEnabled and saves BEFORE it can
+      discover that the server kept none of the codes it was handed, which leaves a WSUS server
+      that synchronises nothing at all. Nothing upstream can see this key, so it is this role's to
+      hold before its first mutation.
+    quiet: true
+    that:
+      - __languages__ | length > 0
+      - __languages__ | select('match', '^[a-z]{2}(-[a-z]{2,8})?$') | list | length
+        == __languages__ | length
+
+# The script refuses an empty upstream before it writes anything, so this is not that refusal
+# repeated. It is the one the guest cannot make: Save() accepts any string as an upstream name, so
+# a malformed one persists cleanly and is only discovered when a synchronisation fails against it
+# -- hours later, on a server that reports itself configured. The controller is the last place a
+# wrong value is cheap. The flags are held to real booleans rather than coerced, because 'no' and
+# 'false' and a typo all coerce to false and only one of them was meant.
+- name: 'VALIDATE | Require A Usable Upstream Source'
+  when: (state | default('present') | string | lower | trim) == 'present'
+  vars:
+    # One grammar for both forms a WSUS upstream is written as -- a DNS name or an IPv4 literal --
+    # because WSUS stores and dials whichever it was given.
+    __host__: '^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*$'
+    __upstream__: "{{ wsus_running.sync.upstream_server | default('', true) | trim }}"
+    __port__: "{{ wsus_running.sync.upstream_port | default('', true) }}"
+  ansible.builtin.assert:
+    fail_msg: >-
+      Refusing to configure: the upstream source is malformed. wsus.sync.upstream_server must name
+      the downstream's parent as a DNS name or an IPv4 literal, at most 255 characters, and is
+      deliberately never defaulted -- a defaulted upstream points a server at whatever the last
+      deployer's lab was. wsus.sync.upstream_port must be a whole number in 1-65535.
+      wsus.sync.upstream_use_ssl and wsus.sync.replica must each be a real boolean, written true or
+      false, because a quoted string coerces silently and only one spelling was meant.
+      wsus.sync.timeout_seconds and wsus.sync.content_timeout_seconds must each be at least 60
+      seconds; the script refuses anything above six hours.
+    quiet: true
+    that:
+      - __upstream__ is match(__host__)
+      - __upstream__ | length <= 255
+      - __port__ is match('^[0-9]+$')
+      - (__port__ | int) >= 1
+      - (__port__ | int) <= 65535
+      - wsus_running.sync.upstream_use_ssl is boolean
+      - wsus_running.sync.replica is boolean
+      - wsus_running.sync.timeout_seconds | default(0, true) | int >= 60
+      - wsus_running.sync.content_timeout_seconds | default(0, true) | int >= 60
+
+# The one control that can scope traffic arriving over the VPN tunnel, since a security group sees
+# only the UDP envelope and never the decapsulated payload. Held to a shape rather than to being
+# non-empty because every wrong shape fails the same silent way: netsh accepts what it is given,
+# the rule is created admitting something other than the estate, and nothing reports it until a
+# client cannot reach the server or the wrong network can.
+- name: 'VALIDATE | Require The Networks This Server Admits'
+  when: (state | default('present') | string | lower | trim) == 'present'
+  vars:
+    # Octet and prefix RANGES, not digit counts. '999.999.999.999/99' matches a count-based
+    # pattern and is not an address; it would reach the firewall module, create a rule admitting
+    # something nobody meant, and report success. 0-255 four times, then 0-32.
+    __octet__: '(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])'
+    __prefix__: '(3[0-2]|[12]?[0-9])'
+    __cidr__: "{{ '^' ~ __octet__ ~ '(\\.' ~ __octet__ ~ '){3}/' ~ __prefix__ ~ '$' }}"
+    __networks__: >-
+      {{ wsus_running.firewall.admitted_networks | default('', true) | split(',') | map('trim') | select() | list }}
+  ansible.builtin.assert:
+    fail_msg: >-
+      Refusing to configure: wsus.firewall.admitted_networks must name at least one network in
+      CIDR form, comma-separated for several -- '10.0.0.0/16,10.69.0.0/16'. It is deliberately
+      never defaulted: which networks exist and which of them this server serves is a property of
+      the deployment, and a default would be either wide enough to be useless or narrow enough to
+      lock out an estate silently. wsus.firewall.http_port must be a whole number in 1-65535.
+    quiet: true
+    that:
+      - __networks__ | length > 0
+      - __networks__ | select('match', __cidr__) | list | length == __networks__ | length
+      - wsus_running.firewall.http_port | default('', true) is match('^[0-9]+$')
+      - (wsus_running.firewall.http_port | int) >= 1
+      - (wsus_running.firewall.http_port | int) <= 65535
+
+# Ungated, and deliberately separate from the declaration below. Every other TLS guard is gated on
+# this flag, so a flag that is not a boolean disables its own validation: 'fase' coerces to false
+# with a deprecation warning, the whole TLS region is skipped, and the play succeeds with the server
+# still serving plain HTTP. A gate has to be checked by something outside the gate.
+- name: 'VALIDATE | Require The TLS Gate To Be A Real Boolean'
+  when: (state | default('present') | string | lower | trim) == 'present'
+  ansible.builtin.assert:
+    fail_msg: >-
+      Refusing to configure: wsus.tls.enabled must be a real boolean, written true or false. A
+      quoted string coerces silently, and because every other TLS check is gated on this value, a
+      typo here would switch off its own validation and leave the server on plain HTTP.
+    quiet: true
+    that:
+      - wsus_running.tls.enabled is boolean
+
+# Held on the controller because every one of these is cheap here and expensive later. A wrong
+# digest is a refusal before anything is delivered; a wrong thumbprint is a refusal after the
+# certificate is already in the machine store; a missing bucket is a task failure four regions in,
+# on a host that has already been changed. Nothing upstream can see this key, so it is this role's
+# to hold before its first mutation.
+- name: 'VALIDATE | Require A Usable TLS Declaration'
+  when:
+    - (state | default('present') | string | lower | trim) == 'present'
+    - wsus_running.tls.enabled | bool
+  vars:
+    __host__: '^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*$'
+    __cert__: "{{ wsus_running.tls.certificate }}"
+    __port__: "{{ wsus_running.tls.port | default('', true) }}"
+  ansible.builtin.assert:
+    fail_msg: >-
+      Refusing to configure: the TLS declaration is malformed. wsus.tls.certificate.bucket must
+      name the S3 bucket holding the delivery and is deliberately never defaulted, because only
+      the pipeline knows which account it runs in. object, password_object and public_object must
+      each be a non-empty key, and sha256, password_sha256 and public_sha256 each sixty-four
+      hexadecimal characters -- an object is trusted only once it matches the digest pinned here. thumbprint must be forty
+      hexadecimal characters, naming the exact certificate the listener is pinned to rather than
+      whichever one happens to carry the right subject. dns_name must be the name clients reach
+      this server by, and wsus.tls.port a whole number in 1-65535. wsus.tls.secured_paths must
+      name at least one directory, and wsus.tls.site_name the IIS site WSUS installed.
+    quiet: true
+    that:
+      - __cert__.bucket | default('', true) | length > 0
+      - __cert__.object | default('', true) | length > 0
+      - __cert__.password_object | default('', true) | length > 0
+      - __cert__.sha256 | default('', true) is match('^[0-9a-f]{64}$')
+      - __cert__.password_sha256 | default('', true) is match('^[0-9a-f]{64}$')
+      - __cert__.public_object | default('', true) | length > 0
+      - __cert__.public_sha256 | default('', true) is match('^[0-9a-f]{64}$')
+      - __cert__.thumbprint | default('', true) is match('^[0-9A-Fa-f]{40}$')
+      - __cert__.dns_name | default('', true) | trim is match(__host__)
+      - __port__ is match('^[0-9]+$')
+      - (__port__ | int) >= 1
+      - (__port__ | int) <= 65535
+      - wsus_running.tls.secured_paths | default([], true) | length > 0
+      - wsus_running.tls.site_name | default('', true) | length > 0

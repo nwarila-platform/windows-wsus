@@ -52,7 +52,7 @@ all_systems = [
     # Server, so this base is not the STIG one. Server 2025 rather than the target's 2022 because
     # OpenSSH Server ships installed only from 2025, and the framework's user_data starts sshd
     # rather than installing it; on 2022 that bootstrap aborts and nothing can reach the guest.
-    ami     = "ami-0ac1b4c911759cc2e"
+    ami = "ami-0ac1b4c911759cc2e"
     # OS-DRIVE REPLACEMENT (immutable-OS pattern). refresh=true makes this host swap-eligible:
     # bumping the framework's refresh_serial (0 -> 1 -> ...) replaces the OS instance while the
     # three data volumes, which are standalone resources rather than inline block devices, detach
@@ -144,25 +144,45 @@ all_systems = [
         interface_type  = null
         private_ip      = null
         security_groups = []
-        # Deliberate temporary development-cycle allowance: SSH from the whole IPv4 space, split
-        # into two halves because the framework refuses a zero-length prefix; remove when the
-        # cycle ends.
+        # NO SSH RULE HERE, and its absence is the point. Reaching this host is a RUN-SCOPED grant
+        # the framework attaches at apply: the runner's own address, plus a human's when the
+        # pipeline resolves one from the organisation secret naming their host. Neither is
+        # committed, so this file never publishes who may reach the estate or from where. What
+        # stood here was tcp/22 open to the whole IPv4 space, described in its own comment as a
+        # temporary development-cycle allowance to be removed when the cycle ended. It has.
         ingress = [
+          # The client this deployment builds to prove itself, reaching the WSUS HTTPS endpoint.
+          # Scoped to the subnet rather than to the client's security group because a group id
+          # does not exist until apply and cannot be named here; the subnet is one /19 in one
+          # private subnet in one availability zone, which is the tightest source this file can
+          # express.
+          #
+          # BOTH ports, and the pair is not sloppiness. WSUS splits its client traffic: metadata,
+          # authentication and reporting go over TLS on 8531, and update PAYLOADS go over plain
+          # HTTP on 8530. That split is the vendor's, not this deployment's -- measured on a live
+          # server, the Content virtual directory carries no SSL requirement while the five
+          # client-facing services do, which is what makes payloads reachable on 8530 and only
+          # there.
+          #
+          # Encrypting those payloads would buy nothing: they are Microsoft-signed and public, and
+          # the client verifies the signature regardless. Admitting only 8531 produces the worst
+          # failure a proof can have -- a client that scans successfully over TLS, correctly
+          # reports the updates it needs, and cannot download one of them.
           {
-            description                  = "SSH from first half of IPv4"
+            description                  = "WSUS metadata over HTTPS from the client subnet"
             ip_protocol                  = "tcp"
-            from_port                    = 22
-            to_port                      = 22
-            cidr_ipv4                    = "0.0.0.0/1"
+            from_port                    = 8531
+            to_port                      = 8531
+            cidr_ipv4                    = "10.0.128.0/19"
             prefix_list_id               = null
             referenced_security_group_id = null
           },
           {
-            description                  = "SSH from second half of IPv4"
+            description                  = "WSUS update payloads over HTTP from the client subnet"
             ip_protocol                  = "tcp"
-            from_port                    = 22
-            to_port                      = 22
-            cidr_ipv4                    = "128.0.0.0/1"
+            from_port                    = 8530
+            to_port                      = 8530
+            cidr_ipv4                    = "10.0.128.0/19"
             prefix_list_id               = null
             referenced_security_group_id = null
           }
@@ -178,6 +198,135 @@ all_systems = [
             from_port                    = 1194
             to_port                      = 1194
             cidr_ipv4                    = "0.0.0.0/0"
+            prefix_list_id               = null
+            referenced_security_group_id = null
+          }
+        ]
+        tags = {}
+      }
+    ]
+
+    # No Elastic IP: the subnet auto-assigns the launch-time public IPv4 used for direct SSH.
+    associate_public_ip = false
+  },
+
+  # ------------------------------------------------------------------------------------------- #
+  # The client this deployment exists to convince. A WSUS server that reports itself healthy
+  # proves that WSUS is configured; only a machine that asks it for updates, over the firewall
+  # rules as written, proves that WSUS WORKS. This host is that machine, and it is built by the
+  # same lifecycle so it is never stale and never hand-maintained.
+  # ------------------------------------------------------------------------------------------- #
+  {
+    region            = "us_east_1"
+    hostname          = "tcnaw-wsusc01"
+    availability_zone = "us-east-1c"
+    subnet_id         = "subnet-03a855e712be7b399"
+    key_name          = "nwarila-ec2-key"
+
+    iam_instance_profile = "nwarila-ec2-profile"
+    aws_kms_alias        = "aws/ebs"
+
+    # Windows_Server-2025-English-Full-Base-2026.08.12, owner 801119661308 -- the same build and
+    # the same publication date as the server's image, so any difference between the two hosts is
+    # a difference this deployment made rather than one the images arrived with. Base, not the SQL
+    # image: a client has no database, and the SQL edition would bill a licence for an engine that
+    # would never be started.
+    ami = "ami-04fca11ec6cc2ddab"
+
+    # No OS-drive replacement. The server carries refresh = true because a database has to be
+    # shown outliving its operating system; a client holds nothing worth preserving, so a swap
+    # here would prove nothing and could only fail.
+    refresh = false
+
+    # t3.medium, not the server's t3.xlarge. Without a SQL Server licence there is no SKU floor to
+    # clear, and a Windows Update client's work is a handful of HTTPS calls and one install.
+    instance_type = "t3.medium"
+
+    connection_type = "ssh"
+    readiness_user  = null
+
+    readiness_gate             = false
+    readiness_command          = null
+    readiness_script_dir       = null
+    readiness_private_key_path = null
+    imds_hop_limit             = 1
+    set_state                  = null
+
+    # The Function tag is what puts this host in its own inventory group and therefore its own
+    # play. The server's tag stays 'wsus'; nothing that configures a WSUS server may run here.
+    tags = {
+      Function = "wsus_client"
+      Backup   = false
+    }
+
+    root_block_device = {
+      delete_on_termination = true
+      iops                  = null
+      tags                  = {}
+      throughput            = null
+      volume_type           = "gp3"
+      # Larger than the Base image's native root, because this machine's whole purpose is to
+      # download and install what WSUS offers it and an update that cannot land proves nothing.
+      volume_size = "50"
+    }
+
+    # None. Every disk on the server exists to separate a database, a content store and a web root
+    # that grow independently; a client separates nothing.
+    ebs_block_devices = []
+
+    ami_block_device_overrides = []
+
+    network_interfaces = [
+      {
+        description     = "tcnaw-wsusc01 CI firewall"
+        interface_type  = null
+        private_ip      = null
+        security_groups = []
+        # EMPTY, and correctly so: this machine offers no service to anything. It reaches out to
+        # WSUS and to the directory, and listens for nobody. Ansible arrives over the run-scoped
+        # grant the framework attaches for the runner, and a human over the address the pipeline
+        # resolves for them -- both at apply time, neither committed here.
+        ingress = []
+        # THREE rules, and what is absent from them is the point of this host.
+        #
+        # The tunnel, because this machine joins the same directory the server does and the domain
+        # controllers are on the other side of it.
+        #
+        # WSUS twice, scoped to this subnet: 8531 for the metadata, authentication and reporting
+        # WSUS serves over TLS, and 8530 for the update payloads it serves over plain HTTP. The
+        # split is the vendor's. Encrypting a Microsoft-signed public payload buys nothing, and
+        # allowing only 8531 would produce a client that scans perfectly and downloads nothing.
+        #
+        # And NOTHING to the internet on 80 or 443. A domain policy tells this machine not to reach
+        # Microsoft, but a policy value is a statement of intent the machine itself could
+        # contradict. With no egress to Microsoft at all,
+        # anything this client installs came from the WSUS server this deployment built, and the
+        # proof stops depending on a policy setting being honoured.
+        egress = [
+          {
+            description                  = "OpenVPN tunnel out"
+            ip_protocol                  = "udp"
+            from_port                    = 1194
+            to_port                      = 1194
+            cidr_ipv4                    = "0.0.0.0/0"
+            prefix_list_id               = null
+            referenced_security_group_id = null
+          },
+          {
+            description                  = "WSUS metadata over HTTPS"
+            ip_protocol                  = "tcp"
+            from_port                    = 8531
+            to_port                      = 8531
+            cidr_ipv4                    = "10.0.128.0/19"
+            prefix_list_id               = null
+            referenced_security_group_id = null
+          },
+          {
+            description                  = "WSUS update payloads over HTTP"
+            ip_protocol                  = "tcp"
+            from_port                    = 8530
+            to_port                      = 8530
+            cidr_ipv4                    = "10.0.128.0/19"
             prefix_list_id               = null
             referenced_security_group_id = null
           }
