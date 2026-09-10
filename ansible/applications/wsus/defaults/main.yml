@@ -80,11 +80,14 @@ wsus_defaults:
     # they are a property of the link and of what the upstream holds, not of this role: a downstream
     # of a small curated upstream converges in minutes, and one of a full Microsoft mirror does not.
     #
-    # These two run SEQUENTIALLY and both sit inside one CI step, so their sum is the number that
-    # matters -- and it has to leave room for everything else in that step, which now includes
-    # building a second Windows guest. Forty-five minutes for a curated upstream measured at 66 MB
-    # across one approved update is generous by a wide margin; three hours would not be generous,
-    # it would be a step killed by its caller before the script could say what went wrong.
+    # These run SEQUENTIALLY inside one CI step, so their sum is the number that matters -- and it
+    # has to leave room for everything else in that step, which now includes building a second
+    # Windows guest. The worst case is THREE waits, not two: a synchronisation already in flight is
+    # polled to a full stop under timeout_seconds before a new one starts, so 75 minutes is the
+    # ceiling and 45 the ordinary path. On a fresh bed nothing is in flight and the stop-poll never
+    # fires. Generous by a wide margin for a curated upstream measured at 66 MB across one approved
+    # update; three hours would not be generous, it would be a step killed by its caller before the
+    # script could say what went wrong.
     content_timeout_seconds: 900
     replica: true
     timeout_seconds: 1800

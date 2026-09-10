@@ -68,6 +68,11 @@ BeforeAll {
     If ($global:FakeNeedingFiles -gt 0 -and -not $global:FakeContentStalls) {
       $global:FakeNeedingFiles = 0
       $global:FakeDownloaded = $global:FakeTotalBytes
+      # A server that reports its failures only as the queue drains -- the snapshot the wait exits
+      # with, which a check placed before the sleep would never see.
+      If ($global:FakeErrorsAppearOnPoll -gt 0) {
+        $global:FakeServerErrors = $global:FakeErrorsAppearOnPoll
+      }
     }
   }
 
@@ -85,7 +90,8 @@ BeforeAll {
 
     # UpdatesNeedingFilesCount is what says whether the server HAS its files.
     # GetContentDownloadProgress says only what is downloading right now, which reads zero on a
-    # finished server, an unstarted one and a failed one alike.
+    # finished server, an unstarted one and a failed one alike -- so the script does not report it,
+    # and this stub keeps it only because the script may still read it while deciding.
     $Server | Add-Member -MemberType ScriptMethod -Name 'GetStatus' -Value {
       Return [PSCustomObject]@{
         UpdatesNeedingFilesCount     = $global:FakeNeedingFiles
@@ -184,6 +190,7 @@ Describe 'Invoke-WsusSynchronisation' {
     $global:FakeDownloaded = 69881768
     $global:FakeNeedingFiles = 0
     $global:FakeServerErrors = 0
+    $global:FakeErrorsAppearOnPoll = 0
     $global:FakeContentStalls = $false
     $global:FakeStopTicks = 2
     $global:FakeStopTicksLeft = 0
@@ -323,6 +330,27 @@ Describe 'Invoke-WsusSynchronisation' {
       $global:FakeNeedingFiles = 4
       $global:FakeServerErrors = 2
       $global:FakeContentStalls = $true
+
+      { & $script:Invoke } | Should -Throw -ExpectedMessage '*cannot download*'
+    }
+
+    # The two counts are INDEPENDENT. An update in Failed or LicenseAgreementFailed state is an
+    # error that is not outstanding work, so a server can report errors while needing no files --
+    # and a check that lived only inside the wait loop would never run, because the loop is entered
+    # only when files ARE outstanding.
+    It 'refuses errors the server reports even when nothing is outstanding' {
+      $global:FakeNeverSynced = $false
+      $global:FakeNeedingFiles = 0
+      $global:FakeServerErrors = 3
+
+      { & $script:Invoke } | Should -Throw -ExpectedMessage '*cannot download*'
+    }
+
+    # And on the snapshot the wait exits with, which is the other way past a check that only ran
+    # before the sleep.
+    It 'refuses errors that appear on the last poll of the wait' {
+      $global:FakeNeedingFiles = 2
+      $global:FakeErrorsAppearOnPoll = 5
 
       { & $script:Invoke } | Should -Throw -ExpectedMessage '*cannot download*'
     }

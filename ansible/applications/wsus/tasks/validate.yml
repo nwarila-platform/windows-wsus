@@ -141,15 +141,6 @@
       - wsus_running.sync.timeout_seconds | default(0, true) | int >= 60
       - wsus_running.sync.content_timeout_seconds | default(0, true) | int >= 60
 
-# Held on the controller because every one of these is cheap here and expensive later. A wrong
-# digest is a refusal before anything is delivered; a wrong thumbprint is a refusal after the
-# certificate is already in the machine store; a missing bucket is a task failure four regions in,
-# on a host that has already been changed. Nothing upstream can see this key, so it is this role's
-# to hold before its first mutation.
-# Ungated, and deliberately separate from the declaration below. Every other TLS guard is gated on
-# this flag, so a flag that is not a boolean disables its own validation: 'fase' coerces to false
-# with a deprecation warning, the whole TLS region is skipped, and the play succeeds with the server
-# still serving plain HTTP. A gate has to be checked by something outside the gate.
 # The one control that can scope traffic arriving over the VPN tunnel, since a security group sees
 # only the UDP envelope and never the decapsulated payload. Held to a shape rather than to being
 # non-empty because every wrong shape fails the same silent way: netsh accepts what it is given,
@@ -158,10 +149,14 @@
 - name: 'VALIDATE | Require The Networks This Server Admits'
   when: (state | default('present') | string | lower | trim) == 'present'
   vars:
-    __cidr__: '^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$'
+    # Octet and prefix RANGES, not digit counts. '999.999.999.999/99' matches a count-based
+    # pattern and is not an address; it would reach the firewall module, create a rule admitting
+    # something nobody meant, and report success. 0-255 four times, then 0-32.
+    __octet__: '(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])'
+    __prefix__: '(3[0-2]|[12]?[0-9])'
+    __cidr__: "{{ '^' ~ __octet__ ~ '(\\.' ~ __octet__ ~ '){3}/' ~ __prefix__ ~ '$' }}"
     __networks__: >-
       {{ wsus_running.firewall.admitted_networks | default('', true) | split(',') | map('trim') | select() | list }}
-    __ports__: "{{ [wsus_running.firewall.http_port | default('', true)] }}"
   ansible.builtin.assert:
     fail_msg: >-
       Refusing to configure: wsus.firewall.admitted_networks must name at least one network in
@@ -177,6 +172,10 @@
       - (wsus_running.firewall.http_port | int) >= 1
       - (wsus_running.firewall.http_port | int) <= 65535
 
+# Ungated, and deliberately separate from the declaration below. Every other TLS guard is gated on
+# this flag, so a flag that is not a boolean disables its own validation: 'fase' coerces to false
+# with a deprecation warning, the whole TLS region is skipped, and the play succeeds with the server
+# still serving plain HTTP. A gate has to be checked by something outside the gate.
 - name: 'VALIDATE | Require The TLS Gate To Be A Real Boolean'
   when: (state | default('present') | string | lower | trim) == 'present'
   ansible.builtin.assert:
@@ -188,6 +187,11 @@
     that:
       - wsus_running.tls.enabled is boolean
 
+# Held on the controller because every one of these is cheap here and expensive later. A wrong
+# digest is a refusal before anything is delivered; a wrong thumbprint is a refusal after the
+# certificate is already in the machine store; a missing bucket is a task failure four regions in,
+# on a host that has already been changed. Nothing upstream can see this key, so it is this role's
+# to hold before its first mutation.
 - name: 'VALIDATE | Require A Usable TLS Declaration'
   when:
     - (state | default('present') | string | lower | trim) == 'present'

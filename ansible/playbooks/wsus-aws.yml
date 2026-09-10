@@ -228,11 +228,11 @@
 
 #endregion --- [ Play: Configure The Client Guest ] ------------------------------------------- #
 
-#region ------ [ Play: The Client ] ----------------------------------------------------------- #
+#region ------ [ Play: Prove The Client ] ----------------------------------------------------- #
 # Its own play, on the same reasoning the server's product gets one: the roles above bring a host
 # into existence and into the directory, and this is the thing that host exists to do.
 
-- name: 'PLAY | Point The Client At WSUS (ephemeral AWS)'
+- name: 'PLAY | Prove The Client Takes Updates From WSUS (ephemeral AWS)'
   hosts: 'wsus_clients'
   any_errors_fatal: true
 
@@ -247,9 +247,9 @@
     # WHICH address that name resolves to is worth watching on the first run. This server is
     # multi-homed -- a VPC interface and a tunnel adapter -- and Windows registers what it has in
     # DNS. The route this deployment sanctions is the VPC one, and the server's security group
-    # admits 8531 from this subnet alone; a name that resolved to the tunnel address instead would
-    # send the client the long way round. If that happens, the fix is to stop the tunnel adapter
-    # registering rather than to widen the firewall.
+    # admits 8530 and 8531 from this subnet alone; a name that resolved to the tunnel address
+    # instead would send the client the long way round. If that happens, the fix is to stop the
+    # tunnel adapter registering rather than to widen the firewall.
     - role: 'wsus_client'
       vars:
         wsus_client:
@@ -258,4 +258,4 @@
     #endregion --- [ Roles: WSUS Client ] ----------------------------------------------------- #
   #endregion --- [ Roles ] -------------------------------------------------------------------- #
 
-#endregion --- [ Play: The Client ] ----------------------------------------------------------- #
+#endregion --- [ Play: Prove The Client ] ----------------------------------------------------- #

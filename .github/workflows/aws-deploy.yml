@@ -381,6 +381,22 @@ jobs:
       # its service on every run, so this is a hard gate, not a warning.
       # 40 rather than 30 for the same reason, though this run does no work on either host: it is
       # two full inventories, two connection setups and two playbook passes.
+      # The OIDC session is 7,800 seconds and the role's MaxSessionDuration is exactly that, so it
+      # cannot simply be lengthened. It is issued before framework setup, predecessor destroy and
+      # apply, and the first converge may now take 110 minutes of what remains -- which leaves a
+      # slow but entirely permitted run arriving here with expired credentials, to fail on a
+      # dynamic inventory lookup with ExpiredToken rather than on anything real. Refreshed
+      # immediately before each long AWS-using phase instead.
+      - name: Refresh AWS credentials before the idempotence proof
+        if: always() && steps.tf-apply.outcome == 'success'
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ env.DEPLOY_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+          allowed-account-ids: ${{ secrets.AWS_ACCOUNT_ID }}
+          role-session-name: aws-deploy-${{ github.run_id }}-proof
+          role-duration-seconds: 7800
+
       - name: Prove the converge is idempotent (second run is a no-op)
         timeout-minutes: 40
         working-directory: .frameworks/ansible-framework
@@ -412,6 +428,19 @@ jobs:
       # full apply, and a variable absent from it is a variable terraform computes as null. Left
       # out, this second apply would quietly withdraw the access the first one granted, in the
       # middle of the run the person asked for it.
+      # Again, because the swap path adds a full apply and a second 60-minute converge on top of
+      # everything above it. A credential that was fresh at the idempotence proof need not be by
+      # the time terraform is asked to replace a volume.
+      - name: Refresh AWS credentials before the operating-system swap
+        if: always() && inputs.os_swap && steps.tf-apply.outcome == 'success'
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ env.DEPLOY_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+          allowed-account-ids: ${{ secrets.AWS_ACCOUNT_ID }}
+          role-session-name: aws-deploy-${{ github.run_id }}-os-swap
+          role-duration-seconds: 7800
+
       - name: Replace the OS drive, keeping the data volumes (refresh_serial bump)
         if: inputs.os_swap
         timeout-minutes: 15

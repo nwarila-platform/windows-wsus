@@ -41,8 +41,12 @@
         How long to wait for the synchronisation itself to reach a terminal state.
 
     .OUTPUTS
-        One object carrying changed, check_mode, content_bytes, msg, needing_files, result and
-        update_count.
+        One object carrying changed, check_mode, msg, needing_files, result and update_count.
+
+        Deliberately NOT a downloaded byte count. GetContentDownloadProgress reports the updates
+        currently DOWNLOADING, so by the time this has finished waiting it reads zero -- and a
+        field that is structurally always zero is worse than no field, because a reader believes
+        it.
 #>
 
 [CmdletBinding(SupportsShouldProcess)]
@@ -313,7 +317,8 @@ If ($NeedsSync -and $PSCmdlet.ShouldProcess($Server.Name, 'Synchronise from the 
 # read zero on a server that has finished, on a server that has not started, and on a server whose
 # download failed -- three states with nothing in common. Waiting on it would return instantly
 # from an empty queue and report a catalogue whose files never arrived. The byte counters are kept
-# for what they honestly are: telemetry.
+# for what they honestly are: telemetry -- and not reported at all, because read after the wait
+# they are zero every time and a number that is always zero invites a reader to conclude something.
 #
 # UpdatesWithServerErrorsCount is checked too, because a download that will never succeed leaves
 # UpdatesNeedingFilesCount above zero forever, and waiting the full deadline for it is a slow way
@@ -324,20 +329,33 @@ If ($NeedsSync -and $PSCmdlet.ShouldProcess($Server.Name, 'Synchronise from the 
 # metadata and useless in practice.
 $Status = $Server.GetStatus()
 $NeedingFiles = [System.Int32]$Status.UpdatesNeedingFilesCount
+$ServerErrors = [System.Int32]$Status.UpdatesWithServerErrorsCount
+
+# EVERY snapshot, not only the ones taken inside the wait. The two counts are independent: a server
+# can report updates it cannot download while needing no files at all -- an update in Failed or
+# LicenseAgreementFailed state is an error that is not outstanding work -- and a loop entered only
+# when files are outstanding would never look. Checked before the wait, on every poll inside it,
+# and therefore on the snapshot the wait exits with.
+If ($ServerErrors -gt 0) {
+  Throw (
+    'The server reports {0} update(s) it cannot download. Waiting for content that will never arrive would only delay this.' -f $ServerErrors
+  )
+}
 
 If (($Synchronised -or ($NeedingFiles -gt 0)) -and $PSCmdlet.ShouldProcess($Server.Name, 'Wait for the update content to arrive')) {
   $ContentDeadline = (Get-Date).AddSeconds($ContentTimeoutSeconds)
 
   While (((Get-Date) -lt $ContentDeadline) -and ($NeedingFiles -gt 0)) {
-    If ([System.Int32]$Status.UpdatesWithServerErrorsCount -gt 0) {
-      Throw (
-        'The server reports {0} update(s) it cannot download. Waiting for content that will never arrive would only delay this.' -f $Status.UpdatesWithServerErrorsCount
-      )
-    }
-
     Start-Sleep -Seconds 10
     $Status = $Server.GetStatus()
     $NeedingFiles = [System.Int32]$Status.UpdatesNeedingFilesCount
+    $ServerErrors = [System.Int32]$Status.UpdatesWithServerErrorsCount
+
+    If ($ServerErrors -gt 0) {
+      Throw (
+        'The server reports {0} update(s) it cannot download. Waiting for content that will never arrive would only delay this.' -f $ServerErrors
+      )
+    }
   }
 
   If ($NeedingFiles -gt 0) {
@@ -347,13 +365,11 @@ If (($Synchronised -or ($NeedingFiles -gt 0)) -and $PSCmdlet.ShouldProcess($Serv
   }
 }
 
-$Progress = $Server.GetContentDownloadProgress()
 #endregion --- [ The bytes the catalogue points at ] ----------------------------------------- #
 
 $Result = [PSCustomObject]@{
   changed       = [System.Boolean]$NeedsSync
   check_mode    = [System.Boolean]$Ansible.CheckMode
-  content_bytes = [System.Int64]$Progress.DownloadedBytes
   msg           = 'synchronisation {0}, {1} updates, {2} still needing files' -f $LastResult, $Server.GetUpdateCount(), $NeedingFiles
   needing_files = [System.Int32]$NeedingFiles
   result        = [System.String]$LastResult
