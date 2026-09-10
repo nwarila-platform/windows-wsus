@@ -94,14 +94,29 @@
     #endregion --- [ Roles: Remote Client ] --------------------------------------------------- #
 
     #region ------ [ Roles: Domain Member ] --------------------------------------------------- #
-    # Wraps the platform's join mechanism and defaults the site's realm, account and secret. Only
-    # two things are this repository's to say: the account it deploys into, and where a WSUS
-    # server is filed -- its own OU, not the deployment servers'.
+    # Wraps the platform's join mechanism and defaults the site's realm, account and secret. Three
+    # things are this repository's to say: the account it deploys into, where a WSUS server is
+    # filed -- its own OU, not the deployment servers' -- and which of this host's addresses it
+    # publishes in the realm's DNS.
+    #
+    # THE VPC ADDRESS, deliberately, and this host is the one where the choice has consequences.
+    # It is multi-homed -- a VPC interface and a tunnel adapter -- and left to itself Windows
+    # registers whatever its resolver leads it to, which on a member that reaches the realm across
+    # a tunnel is the tunnel address. The client this deployment builds to prove the server sits in
+    # the same VPC and reaches it on the private address; a name resolving to the tunnel instead
+    # would send it the long way round, to a port the security group admits from this subnet
+    # alone.
+    #
+    # The cost is real and belongs to the estate rather than to this run: on-prem clients reach
+    # this server by its tunnel address today, and once it publishes only the VPC address they
+    # cannot resolve it until pfSense routes the AWS CIDR over the tunnel. That sequencing is the
+    # site's to complete before this server serves anyone but its own VPC.
     - role: 'domain_member'
       vars:
         domain_member:
           password: { bucket: "{{ aws_account_id | default('') }}-ansible" }
           computer_ou: 'OU=WSUS,OU=Domain Servers,DC=tcn,DC=trinitytechnicalservices,DC=com'
+          registration_address: "{{ aws_private_ip_address }}"
     #endregion --- [ Roles: Domain Member ] --------------------------------------------------- #
 
     #region ------ [ Roles: Windows Disk Manager ] -------------------------------------------- #
@@ -223,6 +238,12 @@
         domain_member:
           password: { bucket: "{{ aws_account_id | default('') }}-ansible" }
           computer_ou: 'OU=Domain Servers,DC=tcn,DC=trinitytechnicalservices,DC=com'
+          # Its VPC address, for the same reason the server publishes one: this machine is
+          # multi-homed too, and nothing here depends on it being reachable by name from anywhere.
+          # It is declared rather than omitted because the framework refuses an empty value -- a
+          # converge that left registration as it found it would report success while the name
+          # stayed wrong.
+          registration_address: "{{ aws_private_ip_address }}"
     #endregion --- [ Roles: Domain Member ] --------------------------------------------------- #
   #endregion --- [ Roles ] -------------------------------------------------------------------- #
 
