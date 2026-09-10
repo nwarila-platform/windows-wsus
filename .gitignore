@@ -72,8 +72,12 @@
 !/ansible/applications/wsus/files/Set-AclGrant.ps1
 !/ansible/applications/wsus/files/Set-WsusContentLocation.pester.ps1
 !/ansible/applications/wsus/files/Set-WsusContentLocation.ps1
+!/ansible/applications/wsus/files/Set-WsusHttpsListener.pester.ps1
+!/ansible/applications/wsus/files/Set-WsusHttpsListener.ps1
 !/ansible/applications/wsus/files/Set-WsusUpdateLanguage.pester.ps1
 !/ansible/applications/wsus/files/Set-WsusUpdateLanguage.ps1
+!/ansible/applications/wsus/files/Set-WsusUpstream.pester.ps1
+!/ansible/applications/wsus/files/Set-WsusUpstream.ps1
 !/ansible/applications/wsus/meta/main.yml
 !/ansible/applications/wsus/tasks/clean_windows.yml
 !/ansible/applications/wsus/tasks/main.yml

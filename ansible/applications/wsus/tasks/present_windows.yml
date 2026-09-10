@@ -560,6 +560,234 @@
         script: "{{ lookup('ansible.builtin.file', 'Set-WsusUpdateLanguage.ps1') }}"
     #endregion --- [ Process: Restrict The Update Languages WSUS Will Accept ] ---------------- #
 
+    #region ------ [ Process: Point This Server At Its Upstream WSUS Source ] ----------------- #
+    # A WSUS server installs pointed at Microsoft Update. Leaving it there on a downstream means
+    # every server in the estate approves the same update independently and pulls the same bytes
+    # from the internet, which is the cost a downstream topology exists to remove.
+    #
+    # After the languages, because both are written through the same configuration object and the
+    # API only answers once the server is up. Order between them does not matter to the product;
+    # keeping the two API writes adjacent is what makes that obvious.
+    #
+    # All five values are one act. Recording the upstream without clearing SyncFromMicrosoftUpdate
+    # leaves the address in the console and Microsoft Update as the actual source -- a server that
+    # reads as configured and is not -- so the script writes and verifies the five together, and
+    # stops any synchronisation in flight first, because a sync mid-run is still talking to the old
+    # source and saving underneath it lands the server in a state neither configuration describes.
+    #
+    # The booleans arrive as booleans: Ansible templates a bare '{{ bool }}' back to a real bool
+    # and win_powershell serialises it as JSON true/false, so PowerShell binds it directly. That is
+    # load-bearing -- had it arrived as the string 'False', [System.Boolean] would have made it
+    # true, because every non-empty string casts true.
+
+    - name: 'PROCESS | Point This Server At Its Upstream WSUS Source'
+
+      ansible.windows.win_powershell:
+        depth: 3
+        error_action: 'stop'
+        parameters:
+          Replica: "{{ wsus_running.sync.replica }}"
+          UpstreamPort: "{{ wsus_running.sync.upstream_port }}"
+          UpstreamServer: "{{ wsus_running.sync.upstream_server }}"
+          UseSsl: "{{ wsus_running.sync.upstream_use_ssl }}"
+        script: "{{ lookup('ansible.builtin.file', 'Set-WsusUpstream.ps1') }}"
+    #endregion --- [ Process: Point This Server At Its Upstream WSUS Source ] ----------------- #
+
+    #region ------ [ Process: Serve WSUS To Its Clients Over HTTPS ] ------------------------------ #
+    # Last of the PROCESS regions, because every part of it needs a WSUS that is already installed,
+    # already knows where its content lives, and already knows where its updates come from. TLS is
+    # how clients reach that server, not part of building it.
+    #
+    # The delivery is controller-side and the target never holds an S3 credential. That is not a
+    # preference: measured in terraform/aws.tfvars, this guest's only egress rule is the VPN
+    # tunnel, so it has no route to S3 at all. Both objects are fetched here, verified here, and
+    # handed over the existing connection.
+    #
+    # Wrapped in its own block so the staging directories are removed on the way out whether this
+    # converged, refused or threw. A PFX left on either side is a private key left on disk.
+    #
+    # The password stays in the register that fetched it, which carries no_log, rather than being
+    # cleared afterwards. Clearing it would need set_fact, which this repository does not use, and
+    # the controller is an ephemeral runner whose process ends with the play.
+
+    - name: 'PROCESS | Deliver And Install The WSUS TLS Certificate'
+      when: wsus_running.tls.enabled | bool
+      vars:
+        __tls__: "{{ wsus_running.tls }}"
+        __tls_cert__: "{{ wsus_running.tls.certificate }}"
+
+      # Begin The 'TLS' Block
+      block:
+
+        # become is off explicitly on every controller task. The framework chassis turns become on
+        # for every task, and these run on the CONTROLLER, where elevation buys nothing and a
+        # runner that cannot sudo without a password would fail the play on a task never needing
+        # root.
+        - name: 'PROCESS | Create A Staging Directory For The TLS Delivery On The Controller'
+          become: false
+          changed_when: false
+          check_mode: false
+          delegate_to: 'localhost'
+          register: '__wsus_tls_controller__'
+
+          ansible.builtin.tempfile:
+            prefix: 'windows-wsus-tls-'
+            state: 'directory'
+
+        - name: 'PROCESS | Restrict The Controller Staging Directory'
+          become: false
+          changed_when: false
+          check_mode: false
+          delegate_to: 'localhost'
+
+          ansible.builtin.file:
+            mode: '0700'
+            path: "{{ __wsus_tls_controller__.path }}"
+            state: 'directory'
+
+        # check_mode is off for the reason the framework's own S3 fetch records: s3_object supports
+        # check mode by RETURNING EARLY, so under --check the register exists and the field the
+        # next task reads does not, and the digest check dies on a template error instead of its
+        # own message. Running the fetch for real under --check costs a read this task already
+        # declares changeless, and buys the most useful thing --check can say here -- that the
+        # objects exist and still match the digests pinned in defaults.
+        - name: 'PROCESS | Fetch The TLS Certificate To The Controller'
+          become: false
+          changed_when: false
+          check_mode: false
+          delegate_to: 'localhost'
+
+          amazon.aws.s3_object:
+            bucket: "{{ __tls_cert__.bucket }}"
+            dest: "{{ __wsus_tls_controller__.path }}/certificate.pfx"
+            mode: 'get'
+            object: "{{ __tls_cert__.object }}"
+            overwrite: 'different'
+            sig_v4: true
+            validate_bucket_name: true
+            validate_certs: true
+
+        - name: 'PROCESS | Fetch The TLS Certificate Password To The Controller'
+          become: false
+          changed_when: false
+          check_mode: false
+          delegate_to: 'localhost'
+          no_log: true
+          register: '__wsus_tls_password__'
+
+          amazon.aws.s3_object:
+            bucket: "{{ __tls_cert__.bucket }}"
+            mode: 'getstr'
+            object: "{{ __tls_cert__.password_object }}"
+            sig_v4: true
+            validate_bucket_name: true
+            validate_certs: true
+
+        - name: 'PROCESS | Read The Delivered Certificate Digest'
+          become: false
+          changed_when: false
+          check_mode: false
+          delegate_to: 'localhost'
+          register: '__wsus_tls_delivered__'
+
+          ansible.builtin.stat:
+            checksum_algorithm: 'sha256'
+            path: "{{ __wsus_tls_controller__.path }}/certificate.pfx"
+
+        # Deliberately NOT no_log: assert reports the expression text and our message, never the
+        # value, so a mismatch stays diagnosable without exposing the password. Both objects are
+        # held to their pinned digest because an unverified private key is not one this server
+        # should present, and an unverified password only fails later and less clearly.
+        - name: 'PROCESS | Verify The TLS Delivery Against Its Pinned Digests'
+
+          ansible.builtin.assert:
+            fail_msg: >-
+              The TLS delivery does not match the digests pinned in defaults. Refusing to import a
+              certificate, or unlock one with a password, that is not the artifact this role was
+              told to install.
+            quiet: true
+            that:
+              - __wsus_tls_delivered__.stat.exists
+              - __wsus_tls_delivered__.stat.checksum == __tls_cert__.sha256
+              - __wsus_tls_password__.contents | hash('sha256') == __tls_cert__.password_sha256
+
+        # Unique per run, so a failed or concurrent run cannot leave PFX bytes for the next one to
+        # find and reuse.
+        - name: 'PROCESS | Create A Staging Directory For The TLS Delivery On The Target'
+          changed_when: false
+          check_mode: false
+          register: '__wsus_tls_target__'
+
+          ansible.windows.win_tempfile:
+            prefix: 'windows-wsus-tls-'
+            state: 'directory'
+
+        # changed_when false because delivering the artifact is not convergence. Only the import
+        # and the listener below may report a change.
+        - name: 'PROCESS | Copy The Certificate To The Target'
+          changed_when: false
+          check_mode: false
+
+          ansible.windows.win_copy:
+            dest: "{{ __wsus_tls_target__.path }}\\certificate.pfx"
+            src: "{{ __wsus_tls_controller__.path }}/certificate.pfx"
+
+        # key_exportable false so the private key cannot be taken back off the machine that serves
+        # it. key_storage machine because HTTP.SYS presents this certificate as the machine, not as
+        # whichever account happened to import it.
+        - name: 'PROCESS | Import The Certificate Into The Machine Store'
+          no_log: true
+
+          ansible.windows.win_certificate_store:
+            key_exportable: false
+            key_storage: 'machine'
+            password: "{{ __wsus_tls_password__.contents }}"
+            path: "{{ __wsus_tls_target__.path }}\\certificate.pfx"
+            state: 'present'
+            store_location: 'LocalMachine'
+            store_name: 'My'
+
+        # One script for all three, because a server holding any two of them serves nobody and
+        # reads as configured. Explained in the script's own header.
+        - name: 'PROCESS | Serve WSUS Over HTTPS With The Pinned Certificate'
+
+          ansible.windows.win_powershell:
+            depth: 3
+            error_action: 'stop'
+            parameters:
+              DnsName: "{{ __tls_cert__.dns_name }}"
+              Port: "{{ __tls__.port }}"
+              SecuredPath: "{{ __tls__.secured_paths }}"
+              SiteName: "{{ __tls__.site_name }}"
+              Thumbprint: "{{ __tls_cert__.thumbprint }}"
+              WsusUtilPath: 'C:\Program Files\Update Services\Tools\wsusutil.exe'
+            script: "{{ lookup('ansible.builtin.file', 'Set-WsusHttpsListener.ps1') }}"
+
+      # Runs whether the block converged, refused or threw. Each is guarded on its own register
+      # having been set, because a failure early enough leaves the later ones undefined.
+      always:
+
+        - name: 'CLEANUP | Remove The TLS Delivery From The Target'
+          changed_when: false
+          check_mode: false
+          when: (__wsus_tls_target__ | default({})).path | default('') | length > 0
+
+          ansible.windows.win_file:
+            path: "{{ __wsus_tls_target__.path }}"
+            state: 'absent'
+
+        - name: 'CLEANUP | Remove The TLS Delivery From The Controller'
+          become: false
+          changed_when: false
+          check_mode: false
+          delegate_to: 'localhost'
+          when: (__wsus_tls_controller__ | default({})).path | default('') | length > 0
+
+          ansible.builtin.file:
+            path: "{{ __wsus_tls_controller__.path }}"
+            state: 'absent'
+    #endregion --- [ Process: Serve WSUS To Its Clients Over HTTPS ] ------------------------------ #
+
 #endregion --- [ Process: Configure WSUS on Windows ] ----------------------------------------- #
 
 

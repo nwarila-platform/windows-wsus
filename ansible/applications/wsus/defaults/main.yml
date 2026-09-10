@@ -59,3 +59,67 @@ wsus_defaults:
   updates:
     languages: ['en']
   #endregion --- [ Update languages ] -------------------------------------------------------- #
+
+  #region ------ [ Upstream source ] --------------------------------------------------------- #
+  # WHERE THIS SERVER GETS ITS UPDATES. A WSUS server installs pointed at Microsoft Update, and a
+  # downstream server is the estate declaring it would rather approve once upstream and mirror the
+  # result than approve the same update on every server.
+  #
+  # WHICH upstream is a property of the deployment, exactly as the drive letters are, so
+  # upstream_server is published by the play and deliberately absent here -- validate.yml refuses a
+  # run that omits it, and the script refuses an empty one, because a defaulted upstream would
+  # silently point a production server at whatever the last deployer's lab was.
+  #
+  # The rest are genuine deployer choices with a defensible default. 8530 is the port WSUS itself
+  # listens on, so an upstream that has not been re-pointed is reachable there. The link is plain
+  # HTTP by default because turning it on requires the upstream to be serving SSL, which is the
+  # upstream's property and not something this role can arrange. replica true is the mirror
+  # topology the port and the upstream imply: approvals are made once, upstream, and inherited.
+  sync:
+    replica: true
+    upstream_port: 8530
+    upstream_use_ssl: false
+  #endregion --- [ Upstream source ] --------------------------------------------------------- #
+
+  #region ------ [ Client-facing TLS ] ------------------------------------------------------- #
+  # WHETHER CLIENTS TALK TO THIS SERVER OVER HTTPS, and with which certificate. Genuine deployer
+  # configuration: a server with no certificate to serve cannot converge with this on, and an
+  # estate that terminates TLS somewhere else does not want it.
+  #
+  # Everything under 'certificate' is ONE artifact described from several angles -- the name it is
+  # valid for, the objects it is delivered as, the digests those objects must match, and the
+  # thumbprint the listener is pinned to. They are declared together because they change together:
+  # rotating the certificate that clients trust is a single coherent edit here, and any one of
+  # them left behind produces a refusal rather than a server serving the wrong identity.
+  #
+  # The bucket is deliberately absent, as the drive letters are. Only the pipeline knows which
+  # account it is running in, so validate.yml refuses a run that omits it.
+  #
+  # The digests are what make the delivery trustworthy. The target has no outbound HTTPS of its
+  # own -- measured in terraform/aws.tfvars, whose only egress rule is the VPN tunnel -- so both
+  # objects are fetched on the CONTROLLER and the target never holds an S3 credential.
+  tls:
+    enabled: true
+    port: 8531
+    site_name: 'WSUS Administration'
+
+    certificate:
+      dns_name: 'tcnaw-wsus01.tcn.trinitytechnicalservices.com'
+      object: 'applications/windows-wsus/tls/tcnaw-wsus01.tcn.trinitytechnicalservices.com.pfx'
+      password_object: 'applications/windows-wsus/tls/tcnaw-wsus01.tcn.trinitytechnicalservices.com.pfx.password'
+      password_sha256: '0ba43689e6f79a59fcf2ce0bfad2a868042d4e4eae92506b84ccb38f1bea6d59'
+      sha256: '473880d30d30fd3f6fc32b9aedd6e9fd410d9a63b31c0152d993d9ed0a585e16'
+      thumbprint: '8760E9DA2B79D7FCFB5C8DADD72628649029B348'
+
+    # WHICH DIRECTORIES REFUSE PLAIN HTTP. Vendor-fixed rather than a preference: these five are
+    # the endpoints a client authenticates and reports through. Measured on a live server, the
+    # site also serves Content and Selfupdate, and both are deliberately absent -- requiring SSL
+    # on them breaks content delivery and legacy self-update, which is why Microsoft's own
+    # instructions name these five and stop.
+    secured_paths:
+      - 'ApiRemoting30'
+      - 'ClientWebService'
+      - 'DssAuthWebService'
+      - 'ServerSyncWebService'
+      - 'SimpleAuthWebService'
+  #endregion --- [ Client-facing TLS ] ------------------------------------------------------- #

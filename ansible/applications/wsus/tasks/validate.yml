@@ -104,3 +104,74 @@
       - __languages__ | length > 0
       - __languages__ | select('match', '^[a-z]{2}(-[a-z]{2,8})?$') | list | length
         == __languages__ | length
+
+# The script refuses an empty upstream before it writes anything, so this is not that refusal
+# repeated. It is the one the guest cannot make: Save() accepts any string as an upstream name, so
+# a malformed one persists cleanly and is only discovered when a synchronisation fails against it
+# -- hours later, on a server that reports itself configured. The controller is the last place a
+# wrong value is cheap. The flags are held to real booleans rather than coerced, because 'no' and
+# 'false' and a typo all coerce to false and only one of them was meant.
+- name: 'VALIDATE | Require A Usable Upstream Source'
+  when: (state | default('present') | string | lower | trim) == 'present'
+  vars:
+    # One grammar for both forms a WSUS upstream is written as -- a DNS name or an IPv4 literal --
+    # because WSUS stores and dials whichever it was given.
+    __host__: '^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*$'
+    __upstream__: "{{ wsus_running.sync.upstream_server | default('', true) | trim }}"
+    __port__: "{{ wsus_running.sync.upstream_port | default('', true) }}"
+  ansible.builtin.assert:
+    fail_msg: >-
+      Refusing to configure: the upstream source is malformed. wsus.sync.upstream_server must name
+      the downstream's parent as a DNS name or an IPv4 literal, at most 255 characters, and is
+      deliberately never defaulted -- a defaulted upstream points a server at whatever the last
+      deployer's lab was. wsus.sync.upstream_port must be a whole number in 1-65535.
+      wsus.sync.upstream_use_ssl and wsus.sync.replica must each be a real boolean, written true or
+      false, because a quoted string coerces silently and only one spelling was meant.
+    quiet: true
+    that:
+      - __upstream__ is match(__host__)
+      - __upstream__ | length <= 255
+      - __port__ is match('^[0-9]+$')
+      - (__port__ | int) >= 1
+      - (__port__ | int) <= 65535
+      - wsus_running.sync.upstream_use_ssl is boolean
+      - wsus_running.sync.replica is boolean
+
+# Held on the controller because every one of these is cheap here and expensive later. A wrong
+# digest is a refusal before anything is delivered; a wrong thumbprint is a refusal after the
+# certificate is already in the machine store; a missing bucket is a task failure four regions in,
+# on a host that has already been changed. Nothing upstream can see this key, so it is this role's
+# to hold before its first mutation.
+- name: 'VALIDATE | Require A Usable TLS Declaration'
+  when:
+    - (state | default('present') | string | lower | trim) == 'present'
+    - wsus_running.tls.enabled | bool
+  vars:
+    __host__: '^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*$'
+    __cert__: "{{ wsus_running.tls.certificate }}"
+    __port__: "{{ wsus_running.tls.port | default('', true) }}"
+  ansible.builtin.assert:
+    fail_msg: >-
+      Refusing to configure: the TLS declaration is malformed. wsus.tls.certificate.bucket must
+      name the S3 bucket holding the delivery and is deliberately never defaulted, because only
+      the pipeline knows which account it runs in. object and password_object must each be a
+      non-empty key, and sha256 and password_sha256 each sixty-four hexadecimal characters --
+      an object is trusted only once it matches the digest pinned here. thumbprint must be forty
+      hexadecimal characters, naming the exact certificate the listener is pinned to rather than
+      whichever one happens to carry the right subject. dns_name must be the name clients reach
+      this server by, and wsus.tls.port a whole number in 1-65535. wsus.tls.secured_paths must
+      name at least one directory, and wsus.tls.site_name the IIS site WSUS installed.
+    quiet: true
+    that:
+      - __cert__.bucket | default('', true) | length > 0
+      - __cert__.object | default('', true) | length > 0
+      - __cert__.password_object | default('', true) | length > 0
+      - __cert__.sha256 | default('', true) is match('^[0-9a-f]{64}$')
+      - __cert__.password_sha256 | default('', true) is match('^[0-9a-f]{64}$')
+      - __cert__.thumbprint | default('', true) is match('^[0-9A-Fa-f]{40}$')
+      - __cert__.dns_name | default('', true) | trim is match(__host__)
+      - __port__ is match('^[0-9]+$')
+      - (__port__ | int) >= 1
+      - (__port__ | int) <= 65535
+      - wsus_running.tls.secured_paths | default([], true) | length > 0
+      - wsus_running.tls.site_name | default('', true) | length > 0

@@ -142,6 +142,16 @@
             drive_letter: 'E'
           content:
             drive_letter: 'F'
+          sync:
+            # The lab WSUS this POC mirrors, reached over the OpenVPN tunnel this host joins in
+            # the play above. An address rather than a name because the guest resolves through the
+            # domain's DNS and this upstream is not a domain member.
+            upstream_server: '10.69.112.6'
+          tls:
+            certificate:
+              # Account-scoped, and only the pipeline knows the account. Every fetch from it runs
+              # on the controller; this guest has no route to S3.
+              bucket: "{{ aws_account_id | default('') }}-ansible"
     #endregion --- [ Roles: WSUS ] ------------------------------------------------------------ #
   #endregion --- [ Roles ] -------------------------------------------------------------------- #
 

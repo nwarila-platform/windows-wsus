@@ -2,23 +2,17 @@
   "Version": "2012-10-17",
   "Statement": [
     {
-      "Sid": "ReadWriteTheStateObject",
-      "Effect": "Allow",
-      "Action": [
-        "s3:GetObject",
-        "s3:PutObject"
-      ],
-      "Resource": "arn:aws:s3:::<account-id>-terraform/nwarila-platform/windows-wsus/aws-poc.tfstate"
-    },
-    {
-      "Sid": "ReadWriteDeleteTheLockObject",
+      "Sid": "ReadWriteOnlyTheStateFileAndItsLock",
       "Effect": "Allow",
       "Action": [
         "s3:GetObject",
         "s3:PutObject",
         "s3:DeleteObject"
       ],
-      "Resource": "arn:aws:s3:::<account-id>-terraform/nwarila-platform/windows-wsus/aws-poc.tfstate.tflock"
+      "Resource": [
+        "arn:aws:s3:::<account-id>-terraform/nwarila-platform/windows-wsus/aws-poc.tfstate",
+        "arn:aws:s3:::<account-id>-terraform/nwarila-platform/windows-wsus/aws-poc.tfstate.tflock"
+      ]
     },
     {
       "Sid": "ListOnlyThoseTwoKeys",
@@ -35,13 +29,37 @@
       }
     },
     {
-      "Sid": "ReadOnlyTheNetworkAndDirectoryArtifacts",
+      "Sid": "ReadAppRepoByExactPathOnlyNoListing",
+      "Effect": "Allow",
+      "Action": "s3:GetObject",
+      "Resource": "arn:aws:s3:::<account-id>-apprepo/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceAccount": "<account-id>"
+        }
+      }
+    },
+    {
+      "Sid": "ReadOnlyTheDomainJoinAndOpenVpnCredentials",
       "Effect": "Allow",
       "Action": "s3:GetObject",
       "Resource": [
-        "arn:aws:s3:::<account-id>-apprepo/OpenVPN.net/OpenVPN Community/*/OpenVPN_Community_amd64.msi",
-        "arn:aws:s3:::<account-id>-ansible/host_roles/remote_client/aws-ec2-test.ovpn",
-        "arn:aws:s3:::<account-id>-ansible/host_roles/domain_member/svc-domainjoin-password.txt"
+        "arn:aws:s3:::<account-id>-ansible/host_roles/domain_member/svc-domainjoin-password.txt",
+        "arn:aws:s3:::<account-id>-ansible/host_roles/remote_client/aws-ec2-test.ovpn"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceAccount": "<account-id>"
+        }
+      }
+    },
+    {
+      "Sid": "ReadOnlyTheWsusTlsCertificateAndItsPassword",
+      "Effect": "Allow",
+      "Action": "s3:GetObject",
+      "Resource": [
+        "arn:aws:s3:::<account-id>-ansible/applications/windows-wsus/tls/tcnaw-wsus01.tcn.trinitytechnicalservices.com.pfx",
+        "arn:aws:s3:::<account-id>-ansible/applications/windows-wsus/tls/tcnaw-wsus01.tcn.trinitytechnicalservices.com.pfx.password"
       ],
       "Condition": {
         "StringEquals": {
