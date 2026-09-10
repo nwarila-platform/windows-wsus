@@ -6,66 +6,51 @@
 # vars/ over this map and publishes the result as 'wsus_client_running'; tasks read only the
 # merged map.
 #
-# WHAT BELONGS HERE: the values a deployer can meaningfully choose -- which server a machine
-# reports to, how it is allowed to behave once it does, and which certificate it must trust to
-# reach that server over TLS.
-#
-# WHAT DOES NOT: constants wearing a default's clothes. The registry paths Windows Update policy
-# lives under, the names of the values in them, and the name of the Windows Update service are
-# fixed by the product. They are written where they are used.
+# THIS ROLE CONFIGURES NOTHING. It triggers a Windows Update synchronisation against the WSUS
+# server this deployment built, and verifies that it worked. Group Policy owns what a machine is
+# told about WSUS -- the server it reports to, and the certificate it must trust -- so every value
+# here is an EXPECTATION the role checks, never a setting it writes. A role that wrote them would
+# be a second owner of keys Group Policy rewrites at its own convenience, and would lose
+# intermittently.
 #
 # =========================================================================================== #
 ---
 
 wsus_client_defaults:
 
-  #region ------ [ Which server ] ------------------------------------------------------------ #
-  # WHERE THIS MACHINE TAKES ITS UPDATES FROM, as the URL clients dial -- scheme, host and port.
-  # A property of the deployment, so it is published by the play and deliberately absent here;
-  # validate.yml refuses a run that omits it. Defaulting it would point a machine at whatever the
-  # last deployer's lab was, which is the one mistake nobody notices until patching stops.
+  #region ------ [ Which server policy should have named ] ----------------------------------- #
+  # WHAT THE MACHINE SHOULD ALREADY HAVE BEEN TOLD, as the URL clients dial -- scheme, host and
+  # port. A property of the deployment, so it is published by the play and deliberately absent
+  # here; validate.yml refuses a run that omits it.
   #
-  # ONE url, written to BOTH the update service and the statistics server. They address the same
-  # WSUS site: the statistics server is where clients POST detection and installation results,
-  # which WSUS serves from the same site and port as the client web service. Splitting them only
-  # makes sense in topologies that offload reporting elsewhere, and a MISMATCH is the classic
-  # cause of clients that appear in the console and never report status. Encoding it as one value
-  # makes that mismatch unrepresentable.
+  # Checked, not written. If Group Policy has not reached this machine, or reached it with a
+  # different server, that is what this value exists to surface -- because the alternative is a
+  # scan that succeeds against nothing and reports "no updates required", which is
+  # indistinguishable from success.
   server: {}
-  #endregion --- [ Which server ] ------------------------------------------------------------ #
+  #endregion --- [ Which server policy should have named ] ----------------------------------- #
 
-  #region ------ [ How the machine behaves once pointed ] ------------------------------------ #
-  # 4 is download and install on a schedule, which is what makes a machine actually take what the
-  # server approved. The other documented options -- 2 notify only, 3 download then notify, 5 let
-  # a local administrator choose -- are genuine estate decisions, so this is declared rather than
-  # written into the role.
+  #region ------ [ Which anchor policy should have delivered ] ------------------------------- #
+  # The WSUS server presents a self-signed certificate, so a client that cannot chain it fails
+  # every scan with a transport error naming TLS and never mentioning WSUS. Group Policy delivers
+  # that anchor; this is the thumbprint it should have delivered.
   #
-  # allow_internet_locations false is the setting most often missed and the one that makes a test
-  # conclusive rather than suggestive. With it false, Windows Update and Defender cannot reach
-  # Microsoft directly, so anything this machine installs came from WSUS and nowhere else. With it
-  # true, a machine can update itself from Microsoft while WSUS delivers nothing, and look healthy.
-  updates:
-    allow_internet_locations: false
-    auto_update_option: 4
-  #endregion --- [ How the machine behaves once pointed ] ------------------------------------ #
-
-  #region ------ [ Trusting the server ] ----------------------------------------------------- #
-  # A client will not talk to an HTTPS endpoint whose certificate it cannot chain, and the POC
-  # server presents a self-signed certificate, so the client is given that certificate as a trust
-  # anchor. The PUBLIC certificate only: the client needs to verify the server, never to be it,
-  # so the private key stays where it is served from and never reaches a client.
-  #
-  # enabled is a real choice rather than a formality: an estate whose WSUS presents a certificate
-  # the machines already chain -- one issued by the domain's own authority -- wants this off, and
-  # a WSUS served over plain HTTP has nothing to trust.
-  #
-  # Pinned by digest on the delivered object, which is what decides the bytes that become an
-  # anchor -- a trust anchor is the last thing that should be taken on faith. There is deliberately
-  # no thumbprint here: the digest already determines the thumbprint, and a second pin that nothing
-  # reads is a claim rather than a check.
-  # The bucket is absent because only the pipeline knows which account it runs in.
+  # Checked in BOTH stores, because they are different mechanisms: a Group Policy deployment lands
+  # under Policies\Microsoft\SystemCertificates, and a locally installed certificate under
+  # Microsoft\SystemCertificates. Windows honours either, so either satisfies this.
   certificate:
-    enabled: true
-    object: 'applications/windows-wsus/tls/tcnaw-wsus01.tcn.trinitytechnicalservices.com.cer'
-    sha256: '3afd03b1f19b0f28b8a221f52cd68bddc04a2fe6c3e6df99f67343c7604b2e3e'
-  #endregion --- [ Trusting the server ] ----------------------------------------------------- #
+    thumbprint: '8760E9DA2B79D7FCFB5C8DADD72628649029B348'
+  #endregion --- [ Which anchor policy should have delivered ] ------------------------------- #
+
+  #region ------ [ What to take ] ------------------------------------------------------------ #
+  # EVERY category, because the point is to take what the SERVER approved rather than to have an
+  # opinion here. The module's own default names three categories and excludes Definition Updates,
+  # which is exactly what this deployment approves -- a default left alone would find nothing and
+  # report success.
+  #
+  # No reboot: the run has to report what happened, and a machine that reboots mid-task reports
+  # nothing. reboot_required comes back in the result instead, for a human to act on.
+  updates:
+    categories: ['*']
+    reboot: false
+  #endregion --- [ What to take ] ------------------------------------------------------------ #

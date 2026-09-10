@@ -203,23 +203,17 @@
     #endregion --- [ Roles: Remote Client ] --------------------------------------------------- #
 
     #region ------ [ Roles: Domain Member ] --------------------------------------------------- #
-    # NO computer_ou, and that is a decision rather than an omission. Two reasons, and either
-    # alone would be enough.
-    #
-    # The directory's default computers container always exists, and this play cannot name an
-    # organisational unit it has not been told the tree of -- a wrong DN fails the join, which is
-    # a confusing way to learn about an OU.
-    #
-    # And it keeps this machine OUT of the scope of any Windows Update policy linked to a servers
-    # or workstations OU. That matters: Group Policy owns
-    # HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate, so a GPO reaching this machine
-    # would overwrite what the wsus_client role writes there at the next refresh, and the proof
-    # would silently become a proof of the GPO instead. One mechanism per concern; here the
-    # mechanism is the role.
+    # This machine MUST be in scope of the domain's Windows Update policy, because that policy is
+    # what points it at the server under test -- the role checks that pointing rather than doing
+    # it. Domain Servers because it is a Windows Server, and because it is the one organisational
+    # unit this repository can show exists: the WSUS server's own unit nests inside it. A DN
+    # guessed from a tree nobody here has seen fails the join, which is a confusing way to learn
+    # about an OU.
     - role: 'domain_member'
       vars:
         domain_member:
           password: { bucket: "{{ aws_account_id | default('') }}-ansible" }
+          computer_ou: 'OU=Domain Servers,DC=tcn,DC=trinitytechnicalservices,DC=com'
     #endregion --- [ Roles: Domain Member ] --------------------------------------------------- #
   #endregion --- [ Roles ] -------------------------------------------------------------------- #
 
@@ -252,10 +246,6 @@
         wsus_client:
           server:
             url: 'https://tcnaw-wsus01.tcn.trinitytechnicalservices.com:8531'
-          certificate:
-            # Account-scoped, and only the pipeline knows the account. The fetch runs on the
-            # controller; this guest has no route to S3 either.
-            bucket: "{{ aws_account_id | default('') }}-ansible"
     #endregion --- [ Roles: WSUS Client ] ----------------------------------------------------- #
   #endregion --- [ Roles ] -------------------------------------------------------------------- #
 

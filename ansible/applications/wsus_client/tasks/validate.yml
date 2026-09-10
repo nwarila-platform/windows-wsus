@@ -8,34 +8,32 @@
 # because a guard that reads the value differently from the dispatcher is a guard the dispatcher
 # can route around: ' present ' would skip every check here and still run present_windows.yml.
 #
-# The config values themselves are checked exactly as the tasks CONSUME them, with no trimming,
-# because a guard that normalises what the role does not is a guard that passes input the role
-# then mishandles.
+# Every value this role holds is an EXPECTATION it checks on the guest, not a setting it writes.
+# These guards therefore hold the expectation itself to a usable shape: an expectation that cannot
+# be true is a run that fails on the guest for a reason declared here.
 #
 # =========================================================================================== #
 ---
 
-# The URL is held to a shape rather than merely to being non-empty, because every wrong shape
-# fails the same silent way: the agent writes the value, scans, finds nothing, and reports itself
-# healthy. A scheme is required so http and https cannot be confused by omission, and a port is
-# required because WSUS never serves on the scheme's default -- a URL without one is a machine
-# dialling 80 or 443 at a server listening on 8530 or 8531.
+# The URL is held to a shape rather than merely to being non-empty, because it is compared against
+# what Group Policy wrote, byte for byte. A trailing slash or a missing port here does not fail
+# loosely -- it fails as "Group Policy named a different server", which sends whoever reads it to
+# the wrong place entirely.
 - name: 'VALIDATE | Require A Usable WSUS Server URL'
   when: (state | default('present') | string | lower | trim) == 'present'
   vars:
     __host__: '[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*'
     __url__: "{{ wsus_client_running.server.url | default('', true) }}"
     # Five digits is a shape, not a port. 99999 and 00000 both match the shape and neither can be
-    # dialled, and the failure surfaces as a machine that scans nothing rather than as an error.
+    # dialled.
     __port__: "{{ __url__ | regex_search(':([0-9]{1,5})/?$', '\\1') | first | default('0', true) }}"
   ansible.builtin.assert:
     fail_msg: >-
-      Refusing to configure: wsus_client.server.url must be the URL this machine reports to,
-      written with its scheme, host and port -- 'https://wsus.example.com:8531'. It is
-      deliberately never defaulted, because a defaulted one points a machine at whatever the last
-      deployer's lab was and patching stops without anything reporting an error. The port is
-      required because WSUS does not serve on 80 or 443, so a URL without one dials a port nothing
-      is listening on, and it must be a port that can actually be dialled -- 1 to 65535.
+      Refusing to test: wsus_client.server.url must be the URL Group Policy is expected to have
+      named, written with its scheme, host and port -- 'https://wsus.example.com:8531'. It is
+      deliberately never defaulted, because this role compares it against what the machine was
+      actually told and a defaulted one would compare against the last deployer's lab. The port is
+      required because WSUS does not serve on 80 or 443, and it must be one that can be dialled.
     quiet: true
     that:
       - __url__ is match('^https?://' ~ __host__ ~ ':[0-9]{1,5}/?$')
@@ -43,71 +41,31 @@
       - (__port__ | int) >= 1
       - (__port__ | int) <= 65535
 
-- name: 'VALIDATE | Require A Usable Update Behaviour'
-  when: (state | default('present') | string | lower | trim) == 'present'
-  vars:
-    __option__: "{{ wsus_client_running.updates.auto_update_option | default('', true) }}"
-  ansible.builtin.assert:
-    fail_msg: >-
-      Refusing to configure: wsus_client.updates.auto_update_option must be one of the four values
-      Windows documents -- 2 notify, 3 download then notify, 4 download and install on a schedule,
-      5 let a local administrator choose. wsus_client.updates.allow_internet_locations must be a
-      real boolean, written true or false, because a quoted string coerces silently and leaving a
-      machine able to reach Microsoft directly is what makes a WSUS test prove nothing.
-    quiet: true
-    that:
-      - __option__ is match('^[2-5]$')
-      - wsus_client_running.updates.allow_internet_locations is boolean
-
-# The digest is checked here rather than after delivery for the same reason the server role checks
-# its own: this is a TRUST ANCHOR. A machine that installs the wrong one will trust whoever holds
-# the matching key, and it will do so quietly.
-# Ungated, for the reason the server role's twin records: the certificate checks below are gated on
-# this flag, so a flag that is not a boolean switches off its own validation.
-- name: 'VALIDATE | Require The Certificate Gate To Be A Real Boolean'
+- name: 'VALIDATE | Require A Usable Trust Anchor Expectation'
   when: (state | default('present') | string | lower | trim) == 'present'
   ansible.builtin.assert:
     fail_msg: >-
-      Refusing to configure: wsus_client.certificate.enabled must be a real boolean, written true
-      or false. A quoted string coerces silently, and because the certificate checks are gated on
-      this value, a typo here would switch off its own validation and leave the machine dialling
-      https with no trust anchor.
+      Refusing to test: wsus_client.certificate.thumbprint must be forty hexadecimal characters,
+      naming the certificate Group Policy is expected to have delivered. It is read as a registry
+      key name under both root stores, so a malformed one does not fail as "wrong thumbprint" --
+      it fails as "no anchor anywhere", which is a different and much more alarming answer.
     quiet: true
     that:
-      - wsus_client_running.certificate.enabled is boolean
+      - wsus_client_running.certificate.thumbprint | default('', true) is match('^[0-9A-Fa-f]{40}$')
 
-- name: 'VALIDATE | Require A Usable Certificate Declaration'
-  when:
-    - (state | default('present') | string | lower | trim) == 'present'
-    - wsus_client_running.certificate.enabled | bool
-  vars:
-    __cert__: "{{ wsus_client_running.certificate }}"
-  ansible.builtin.assert:
-    fail_msg: >-
-      Refusing to configure: the certificate declaration is malformed.
-      wsus_client.certificate.bucket must name the S3 bucket holding the public certificate and is
-      deliberately never defaulted, because only the pipeline knows which account it runs in.
-      object must be a non-empty key and sha256 sixty-four hexadecimal characters. This
-      certificate becomes a trust anchor on every machine that receives it, so the bytes are pinned
-      by digest before anything installs them.
-    quiet: true
-    that:
-      - __cert__.bucket | default('', true) | length > 0
-      - __cert__.object | default('', true) | length > 0
-      - __cert__.sha256 | default('', true) is match('^[0-9a-f]{64}$')
-
-# A client that trusts a certificate it will never be shown is harmless; a client dialling https
-# with no anchor fails every scan with a transport error that names TLS and not WSUS. The two keys
-# are therefore held to agree, here, where the answer is free.
-- name: 'VALIDATE | Require The Scheme And The Trust Anchor To Agree'
+# The module's own default names three categories and excludes Definition Updates, which is
+# exactly what this deployment approves. An empty or defaulted list here finds nothing and reports
+# success, so the list is required to say something.
+- name: 'VALIDATE | Require Something To Ask For'
   when: (state | default('present') | string | lower | trim) == 'present'
   ansible.builtin.assert:
     fail_msg: >-
-      Refusing to configure: wsus_client.server.url is https, so the machine needs a trust anchor
-      for it, but wsus_client.certificate.enabled is false. Either publish the server's public
-      certificate for this role to install, or point the machine at the http endpoint. Left as it
-      is, every scan fails with a TLS error that names the certificate and never mentions WSUS.
+      Refusing to test: wsus_client.updates.categories must name at least one update category, or
+      '*' for every category. A machine that asks for categories the server never approves finds
+      nothing and reports success, which is the one outcome this run must not produce by accident.
+      wsus_client.updates.reboot must be a real boolean, because a quoted string coerces silently
+      and a machine that reboots mid-task reports nothing at all.
     quiet: true
     that:
-      - (wsus_client_running.server.url | default('', true)) is not match('^https://')
-        or (wsus_client_running.certificate.enabled | bool)
+      - wsus_client_running.updates.categories | default([], true) | length > 0
+      - wsus_client_running.updates.reboot is boolean
