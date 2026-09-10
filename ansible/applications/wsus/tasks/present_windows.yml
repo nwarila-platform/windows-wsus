@@ -185,6 +185,24 @@
     __desired_data__: "{{ wsus_running.db.drive_letter }}:\\{{ wsus_running.db.data_subdir }}"
     __desired_log__: "{{ wsus_running.db.drive_letter }}:\\{{ wsus_running.db.log_subdir }}"
     __content_dir__: "{{ wsus_running.content.drive_letter }}:\\{{ wsus_running.content.subdir }}"
+    # The two client-facing rules, written in the shape Windows writes its own: the name carries
+    # the product and the direction, the description ends in the protocol and port, and both say
+    # WSUS rather than IIS so the reason the port is open is on the rule itself.
+    __firewall_rules__:
+      - name: 'Windows Server Update Services (HTTP Traffic-In)'
+        port: "{{ wsus_running.firewall.http_port }}"
+        description: >-
+          An inbound rule to allow client computers to download approved update payloads from
+          Windows Server Update Services (WSUS). WSUS serves payloads over plain HTTP by design;
+          they are Microsoft-signed and the client verifies them.
+          [TCP {{ wsus_running.firewall.http_port }}]
+
+      - name: 'Windows Server Update Services (HTTPS Traffic-In)'
+        port: "{{ wsus_running.tls.port }}"
+        description: >-
+          An inbound rule to allow client computers to retrieve update metadata from, authenticate
+          to, and report installation status to Windows Server Update Services (WSUS) over TLS.
+          [TCP {{ wsus_running.tls.port }}]
     __wsus_machine_name__: "{{ __wsus_computer_name__.value }}"
     # The four completion flags post-installation writes, each reaching 2 only when its component
     # finishes. Measured on this image: after the features install and before post-installation,
@@ -788,6 +806,71 @@
             path: "{{ __wsus_tls_target__.path }}"
             state: 'absent'
     #endregion --- [ Process: Serve WSUS To Its Clients Over HTTPS ] -------------------------- #
+
+    #region ------ [ Process: Admit Only The Estate To The Update Service ] ------------------- #
+    # WSUS opens two firewall rules of its own at post-installation. Measured on a live server:
+    # both named 'WSUS', inbound, TCP 8530 and TCP 8531, with program Any, service Any and remote
+    # address ANY. That is the entire internet admitted to the update service.
+    #
+    # This is NOT the security group repeated. A group cannot see traffic that arrives over the VPN
+    # tunnel: it sees a UDP envelope on 1194, and the payload is decapsulated inside the guest past
+    # every group rule. For everything reaching this server from the lab, the host firewall is not
+    # defence in depth -- it is the only defence there is.
+    #
+    # SCOPED THREE WAYS. To the ports WSUS serves; to System, because the listener is HTTP.SYS in
+    # kernel mode and the sockets belong to PID 4 rather than to w3wp.exe -- measured, and the same
+    # program Windows names in its own built-in IIS rules; and to the networks the estate actually
+    # occupies, which is the control the group cannot provide.
+    #
+    # NOT scoped to a service, and that is a limit rather than an omission. A service filter
+    # matches traffic owned by a named service, and HTTP.SYS answers these ports from the kernel --
+    # measured, PID 4 -- so no service owns them. Naming one would match nothing and close the port
+    # to the very clients the rule exists to admit. Windows' own IIS rules leave it unset for the
+    # same reason, and so do the two WSUS installs of its own.
+    #
+    # The network list is given in CIDR and Windows stores it in dotted-mask form -- 10.0.0.0/16
+    # becomes 10.0.0.0/255.255.0.0. Measured that this does NOT churn: the COM object normalises on
+    # ASSIGNMENT, so the module compares a normalised stored value against a normalised new one and
+    # finds them equal. Declaring the mask form here would be the same rule and a worse comment.
+    #
+    # Written in the shape Windows writes its own rules -- '<Product> (<PROTOCOL> Traffic-In)', a
+    # group, and a description ending '[TCP <port>]' -- but saying WSUS things rather than IIS
+    # things, so an administrator reading the rule list learns why the port is open and not merely
+    # that something web-shaped wanted it.
+    #
+    # ADDED BEFORE THE VENDOR'S ARE REMOVED. Windows evaluates every matching allow, so during the
+    # overlap the wider rule simply wins and the service never stops answering. Removing first
+    # would leave a window where a client is refused for no reason anyone would later find.
+
+    - name: 'PROCESS | Admit Only The Estate To The Update Service'
+      loop: "{{ __firewall_rules__ }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+      community.windows.win_firewall_rule:
+        action: 'allow'
+        description: "{{ item.description }}"
+        direction: 'in'
+        enabled: true
+        group: 'Windows Server Update Services (WSUS)'
+        localport: "{{ item.port }}"
+        name: "{{ item.name }}"
+        profiles: [ 'domain', 'private', 'public' ]
+        program: 'System'
+        protocol: 'tcp'
+        remoteip: "{{ wsus_running.firewall.admitted_networks }}"
+        state: 'present'
+
+    # Both of the vendor's rules share one display name, which is not something a declarative
+    # module can address one at a time -- so the name is removed, and the two scoped rules above
+    # are what remains admitting the ports.
+    - name: 'PROCESS | Remove The Unscoped Rules WSUS Opened For Itself'
+
+      community.windows.win_firewall_rule:
+        direction: 'in'
+        name: 'WSUS'
+        state: 'absent'
+    #endregion --- [ Process: Admit Only The Estate To The Update Service ] ------------------- #
 
     #region ------ [ Process: Reconcile Where WSUS Keeps Its Content ] ------------------------ #
     # WSUS records where its content lives in three places -- the registry root, the API cache one

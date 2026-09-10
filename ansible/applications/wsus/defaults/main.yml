@@ -92,6 +92,27 @@ wsus_defaults:
     upstream_use_ssl: false
   #endregion --- [ Upstream source ] --------------------------------------------------------- #
 
+  #region ------ [ Who may reach this server ] ----------------------------------------------- #
+  # WHICH NETWORKS THE HOST ITSELF ADMITS. Measured on a live server: WSUS opens two firewall rules
+  # of its own at post-installation, both named 'WSUS', for TCP 8530 and 8531, with program Any,
+  # service Any and remote address ANY. That is the whole internet admitted to the update service.
+  #
+  # This is not duplicated network control. The AWS security group cannot see traffic that arrives
+  # over the VPN tunnel at all -- it sees only the UDP envelope, and the payload is decapsulated
+  # INSIDE the guest, past every group rule. So for everything reaching this server from the lab,
+  # the host firewall is not defence in depth, it is the only defence there is.
+  #
+  # admitted_networks is a property of the deployment -- which networks exist and which of them
+  # this server serves -- so it is published by the play and deliberately absent here, exactly as
+  # the drive letters are. validate.yml refuses a run that omits it. A default would be the worst
+  # of both: either wide enough to be useless or narrow enough to lock out an estate silently.
+  firewall:
+    # WSUS serves metadata over TLS and update payloads over plain HTTP, on adjacent ports. The
+    # HTTPS port is wsus.tls.port and is NOT repeated here: one server has one HTTPS port, and two
+    # declarations of it would be two places to disagree.
+    http_port: 8530
+  #endregion --- [ Who may reach this server ] ----------------------------------------------- #
+
   #region ------ [ Client-facing TLS ] ------------------------------------------------------- #
   # WHETHER CLIENTS TALK TO THIS SERVER OVER HTTPS, and with which certificate. Genuine deployer
   # configuration: a server with no certificate to serve cannot converge with this on, and an

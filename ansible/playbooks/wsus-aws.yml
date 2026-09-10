@@ -154,6 +154,15 @@
             drive_letter: 'E'
           content:
             drive_letter: 'F'
+          firewall:
+            # The two networks this server serves, and nothing else. 10.0.0.0/16 is this account's
+            # VPC, which holds the client this deployment builds; 10.69.0.0/16 is the lab the VPN
+            # tunnel reaches, which holds the upstream and the estate's own machines.
+            #
+            # The tunnel is why this list matters rather than merely agreeing with the security
+            # group: traffic arriving through it is decapsulated inside the guest, past every group
+            # rule, so the host firewall is the only thing that can scope it.
+            admitted_networks: '10.0.0.0/16,10.69.0.0/16'
           sync:
             # The lab WSUS this POC mirrors, reached over the OpenVPN tunnel this host joins in
             # the play above. An address rather than a name because the guest resolves through the
