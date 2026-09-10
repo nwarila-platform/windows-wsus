@@ -35,6 +35,18 @@
           successful deployment proof.
         quiet: true
 
+    # The same argument, for the host that does the proving. Without this a run whose client never
+    # appeared would skip both client plays, report success, and prove only that the server can be
+    # built -- which is the half that was never in doubt.
+    - name: 'INVENTORY | Require At Least One Filtered Client'
+      ansible.builtin.assert:
+        that: groups['wsus_clients'] | default([]) | length >= 1
+        fail_msg: >-
+          Refusing to configure: the 'wsus_clients' inventory group is empty. The dynamic EC2
+          inventory found no running instance tagged Function=wsus_client for this run, so nothing
+          would ask the WSUS server for an update and the run would prove only half of itself.
+        quiet: true
+
     # The site roles template their bucket names from the account id, so a wrong one surfaces as a
     # download failure on the guest minutes later. Refuse it here, before anything is dialled.
     - name: 'INVENTORY | Require The Deploying Account'
@@ -156,3 +168,95 @@
   #endregion --- [ Roles ] -------------------------------------------------------------------- #
 
 #endregion --- [ Play: WSUS ] ----------------------------------------------------------------- #
+
+#region ------ [ Play: Configure The Client Guest ] ------------------------------------------- #
+# The client this deployment exists to convince. A WSUS server that reports itself healthy proves
+# that WSUS is configured; only a machine that asks it for updates, across the firewall rules as
+# written, proves that WSUS works.
+#
+# The same four roles the server gets, minus the disk manager: a client separates nothing, so it
+# has no data volumes to lay out.
+
+- name: 'PLAY | Configure The Client Guest (ephemeral AWS)'
+  hosts: 'wsus_clients'
+  any_errors_fatal: true
+
+  #region ------ [ Roles ] -------------------------------------------------------------------- #
+  roles:
+
+    #region ------ [ Roles: Host Readiness ] -------------------------------------------------- #
+    # Declared, not detected, for the reason the server's copy records: a failed probe reads as
+    # "no platform" and skips the EC2Launch wait that the rename-and-reboot below depends on.
+    - role: 'host_readiness'
+      vars:
+        host_readiness_platform: 'aws'
+    #endregion --- [ Roles: Host Readiness ] -------------------------------------------------- #
+
+    #region ------ [ Roles: OS Bootstrap ] ---------------------------------------------------- #
+    # Pass it NO vars: role params outrank the connection scoping it relies on.
+    - role: 'os_bootstrap'
+    #endregion --- [ Roles: OS Bootstrap ] ---------------------------------------------------- #
+
+    #region ------ [ Roles: Remote Client ] --------------------------------------------------- #
+    # The tunnel, because the directory this machine joins is on the other side of it.
+    - role: 'remote_client'
+    #endregion --- [ Roles: Remote Client ] --------------------------------------------------- #
+
+    #region ------ [ Roles: Domain Member ] --------------------------------------------------- #
+    # NO computer_ou, and that is a decision rather than an omission. Two reasons, and either
+    # alone would be enough.
+    #
+    # The directory's default computers container always exists, and this play cannot name an
+    # organisational unit it has not been told the tree of -- a wrong DN fails the join, which is
+    # a confusing way to learn about an OU.
+    #
+    # And it keeps this machine OUT of the scope of any Windows Update policy linked to a servers
+    # or workstations OU. That matters: Group Policy owns
+    # HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate, so a GPO reaching this machine
+    # would overwrite what the wsus_client role writes there at the next refresh, and the proof
+    # would silently become a proof of the GPO instead. One mechanism per concern; here the
+    # mechanism is the role.
+    - role: 'domain_member'
+      vars:
+        domain_member:
+          password: { bucket: "{{ aws_account_id | default('') }}-ansible" }
+    #endregion --- [ Roles: Domain Member ] --------------------------------------------------- #
+  #endregion --- [ Roles ] -------------------------------------------------------------------- #
+
+#endregion --- [ Play: Configure The Client Guest ] ------------------------------------------- #
+
+#region ------ [ Play: The Client ] ----------------------------------------------------------- #
+# Its own play, on the same reasoning the server's product gets one: the roles above bring a host
+# into existence and into the directory, and this is the thing that host exists to do.
+
+- name: 'PLAY | Point The Client At WSUS (ephemeral AWS)'
+  hosts: 'wsus_clients'
+  any_errors_fatal: true
+
+  #region ------ [ Roles ] -------------------------------------------------------------------- #
+  roles:
+
+    #region ------ [ Roles: WSUS Client ] ----------------------------------------------------- #
+    # The URL is the certificate's subject, not an address, and it has to be: the server presents
+    # a certificate for that name, so a client dialling an IP would fail the handshake no matter
+    # which address were right.
+    #
+    # WHICH address that name resolves to is worth watching on the first run. This server is
+    # multi-homed -- a VPC interface and a tunnel adapter -- and Windows registers what it has in
+    # DNS. The route this deployment sanctions is the VPC one, and the server's security group
+    # admits 8531 from this subnet alone; a name that resolved to the tunnel address instead would
+    # send the client the long way round. If that happens, the fix is to stop the tunnel adapter
+    # registering rather than to widen the firewall.
+    - role: 'wsus_client'
+      vars:
+        wsus_client:
+          server:
+            url: 'https://tcnaw-wsus01.tcn.trinitytechnicalservices.com:8531'
+          certificate:
+            # Account-scoped, and only the pipeline knows the account. The fetch runs on the
+            # controller; this guest has no route to S3 either.
+            bucket: "{{ aws_account_id | default('') }}-ansible"
+    #endregion --- [ Roles: WSUS Client ] ----------------------------------------------------- #
+  #endregion --- [ Roles ] -------------------------------------------------------------------- #
+
+#endregion --- [ Play: The Client ] ----------------------------------------------------------- #

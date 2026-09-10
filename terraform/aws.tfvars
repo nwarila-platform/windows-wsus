@@ -165,6 +165,24 @@ all_systems = [
             cidr_ipv4                    = "128.0.0.0/1"
             prefix_list_id               = null
             referenced_security_group_id = null
+          },
+          # The client this deployment builds to prove itself, reaching the WSUS HTTPS endpoint.
+          # Scoped to the subnet rather than to the client's security group because a group id
+          # does not exist until apply and cannot be named here; the subnet is one /19 in one
+          # private subnet in one availability zone, which is the tightest source this file can
+          # express.
+          #
+          # 8531 ONLY, deliberately. Once wsusutil records the server's own https URL, WSUS hands
+          # its clients that URL for metadata and for content alike, so a client that needs 8530
+          # is a client something is misconfigured for -- and admitting 8530 here would hide it.
+          {
+            description                  = "WSUS over HTTPS from the client subnet"
+            ip_protocol                  = "tcp"
+            from_port                    = 8531
+            to_port                      = 8531
+            cidr_ipv4                    = "10.0.128.0/19"
+            prefix_list_id               = null
+            referenced_security_group_id = null
           }
         ]
         # The VPN tunnel that carries this host onto the private network, and nothing else.
@@ -178,6 +196,141 @@ all_systems = [
             from_port                    = 1194
             to_port                      = 1194
             cidr_ipv4                    = "0.0.0.0/0"
+            prefix_list_id               = null
+            referenced_security_group_id = null
+          }
+        ]
+        tags = {}
+      }
+    ]
+
+    # No Elastic IP: the subnet auto-assigns the launch-time public IPv4 used for direct SSH.
+    associate_public_ip = false
+  },
+
+  # ------------------------------------------------------------------------------------------- #
+  # The client this deployment exists to convince. A WSUS server that reports itself healthy
+  # proves that WSUS is configured; only a machine that asks it for updates, over the firewall
+  # rules as written, proves that WSUS WORKS. This host is that machine, and it is built by the
+  # same lifecycle so it is never stale and never hand-maintained.
+  # ------------------------------------------------------------------------------------------- #
+  {
+    region            = "us_east_1"
+    hostname          = "tcnaw-wsusc01"
+    availability_zone = "us-east-1c"
+    subnet_id         = "subnet-03a855e712be7b399"
+    key_name          = "nwarila-ec2-key"
+
+    iam_instance_profile = "nwarila-ec2-profile"
+    aws_kms_alias        = "aws/ebs"
+
+    # Windows_Server-2025-English-Full-Base-2026.08.12, owner 801119661308 -- the same build and
+    # the same publication date as the server's image, so any difference between the two hosts is
+    # a difference this deployment made rather than one the images arrived with. Base, not the SQL
+    # image: a client has no database, and the SQL edition would bill a licence for an engine that
+    # would never be started.
+    ami = "ami-04fca11ec6cc2ddab"
+
+    # No OS-drive replacement. The server carries refresh = true because a database has to be
+    # shown outliving its operating system; a client holds nothing worth preserving, so a swap
+    # here would prove nothing and could only fail.
+    refresh = false
+
+    # t3.medium, not the server's t3.xlarge. Without a SQL Server licence there is no SKU floor to
+    # clear, and a Windows Update client's work is a handful of HTTPS calls and one install.
+    instance_type = "t3.medium"
+
+    connection_type = "ssh"
+    readiness_user  = null
+
+    readiness_gate             = false
+    readiness_command          = null
+    readiness_script_dir       = null
+    readiness_private_key_path = null
+    imds_hop_limit             = 1
+    set_state                  = null
+
+    # The Function tag is what puts this host in its own inventory group and therefore its own
+    # play. The server's tag stays 'wsus'; nothing that configures a WSUS server may run here.
+    tags = {
+      Function = "wsus_client"
+      Backup   = false
+    }
+
+    root_block_device = {
+      delete_on_termination = true
+      iops                  = null
+      tags                  = {}
+      throughput            = null
+      volume_type           = "gp3"
+      # Larger than the Base image's native root, because this machine's whole purpose is to
+      # download and install what WSUS offers it and an update that cannot land proves nothing.
+      volume_size = "50"
+    }
+
+    # None. Every disk on the server exists to separate a database, a content store and a web root
+    # that grow independently; a client separates nothing.
+    ebs_block_devices = []
+
+    ami_block_device_overrides = []
+
+    network_interfaces = [
+      {
+        description     = "tcnaw-wsusc01 CI firewall"
+        interface_type  = null
+        private_ip      = null
+        security_groups = []
+        # The same deliberate development-cycle allowance the server carries, split into two
+        # halves because the framework refuses a zero-length prefix; remove when the cycle ends.
+        ingress = [
+          {
+            description                  = "SSH from first half of IPv4"
+            ip_protocol                  = "tcp"
+            from_port                    = 22
+            to_port                      = 22
+            cidr_ipv4                    = "0.0.0.0/1"
+            prefix_list_id               = null
+            referenced_security_group_id = null
+          },
+          {
+            description                  = "SSH from second half of IPv4"
+            ip_protocol                  = "tcp"
+            from_port                    = 22
+            to_port                      = 22
+            cidr_ipv4                    = "128.0.0.0/1"
+            prefix_list_id               = null
+            referenced_security_group_id = null
+          }
+        ]
+        # TWO rules, and the absence of a third is the point of this host.
+        #
+        # The tunnel, because this machine joins the same directory the server does and the domain
+        # controllers are on the other side of it.
+        #
+        # WSUS on 8531, scoped to this subnet, because that is the one service it is allowed to
+        # consume.
+        #
+        # And NOTHING to the internet on 80 or 443. The role sets
+        # DoNotConnectToWindowsUpdateInternetLocations, but a registry value is a statement of
+        # intent that the machine itself could contradict. With no egress to Microsoft at all,
+        # anything this client installs came from the WSUS server this deployment built, and the
+        # proof stops depending on a policy setting being honoured.
+        egress = [
+          {
+            description                  = "OpenVPN tunnel out"
+            ip_protocol                  = "udp"
+            from_port                    = 1194
+            to_port                      = 1194
+            cidr_ipv4                    = "0.0.0.0/0"
+            prefix_list_id               = null
+            referenced_security_group_id = null
+          },
+          {
+            description                  = "WSUS over HTTPS, and nothing else"
+            ip_protocol                  = "tcp"
+            from_port                    = 8531
+            to_port                      = 8531
+            cidr_ipv4                    = "10.0.128.0/19"
             prefix_list_id               = null
             referenced_security_group_id = null
           }

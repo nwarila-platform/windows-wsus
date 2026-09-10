@@ -15,6 +15,7 @@
 # to have its hosts join, and give a second group its own list to split a deployment by role.
 groups:
   wsus_servers: "(aws_tags.Function | default('', true)) in ['wsus']"
+  wsus_clients: "(aws_tags.Function | default('', true)) in ['wsus_client']"
 
 #endregion --- [ This Repository ] ------------------------------------------------------------ #
 

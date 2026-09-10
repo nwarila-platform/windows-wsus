@@ -29,10 +29,10 @@
       }
     },
     {
-      "Sid": "ReadAppRepoByExactPathOnlyNoListing",
+      "Sid": "ReadOnlyThePinnedOpenVpnInstaller",
       "Effect": "Allow",
       "Action": "s3:GetObject",
-      "Resource": "arn:aws:s3:::<account-id>-apprepo/*",
+      "Resource": "arn:aws:s3:::<account-id>-apprepo/OpenVPN.net/OpenVPN Community/*/OpenVPNnet_OpenVPN-Community_*_x64.msi",
       "Condition": {
         "StringEquals": {
           "aws:ResourceAccount": "<account-id>"
