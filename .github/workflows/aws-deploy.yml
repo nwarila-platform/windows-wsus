@@ -358,6 +358,23 @@ jobs:
       # Readiness, host preparation, guest storage and the WSUS role all live in the playbook.
       # The EC2 inventory plugin filters live instances to this repository and run before exposing
       # one target.
+      # The FIRST long phase needs the refresh too, and most of all. The initial session is 130
+      # minutes and this step alone may take 110 of them -- leaving twenty for predecessor destroy
+      # and apply, each of which allows fifteen on its own. The playbook keeps making controller-
+      # side AWS calls throughout: the tunnel profile and join secret come from S3, the disk role
+      # resolves volumes through EC2, and the client's plays run LAST, after the server's
+      # synchronisation waits. A run that is slow but entirely permitted would fail there with
+      # ExpiredToken, with both Windows guests already built and paid for.
+      - name: Refresh AWS credentials before the first converge
+        if: always() && steps.tf-apply.outcome == 'success'
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ env.DEPLOY_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+          allowed-account-ids: ${{ secrets.AWS_ACCOUNT_ID }}
+          role-session-name: aws-deploy-${{ github.run_id }}-converge
+          role-duration-seconds: 7800
+
       # 110 rather than 60, because this step now builds TWO Windows guests SEQUENTIALLY. Ansible
       # runs plays in order, and the client's readiness, bootstrap, tunnel and domain join are
       # their own plays that begin only after the server's product is finished -- so the guest
