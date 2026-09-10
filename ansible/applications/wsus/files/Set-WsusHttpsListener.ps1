@@ -368,9 +368,16 @@ $Secured = [System.Collections.Generic.List[System.String]]::new()
 # regression dressed as a rollback.
 $SecuredThisRun = [System.Collections.Generic.List[System.String]]::new()
 
+# What each of those carried BEFORE. A rollback that writes 'None' flattens a directory that was
+# carrying, say, Ssl128 -- so the exact prior value is kept and put back.
+$PriorFlags = @{}
+$PriorValue = @{}
+
 ForEach ($Directory In $SecuredPath) {
   $Location = '{0}/{1}' -f $SiteName, $Directory.Trim('/')
   $Access = Get-WebConfiguration -Filter:'system.webServer/security/access' -PSPath:'IIS:\' -Location:$Location
+
+  $PriorValue[$Location] = [System.String]$Access.sslFlags
 
   If (([System.String]$Access.sslFlags) -match '(^|,)\s*Ssl\s*(,|$)') {
     $Secured.Add($Location)
@@ -383,6 +390,7 @@ ForEach ($Location In $NeedsSecuring) {
   If ($PSCmdlet.ShouldProcess($Location, 'Require SSL')) {
     Set-WebConfigurationProperty -Filter:'system.webServer/security/access' -Name:'sslFlags' -PSPath:'IIS:\' -Location:$Location -Value:'Ssl'
     $SecuredThisRun.Add($Location)
+    $PriorFlags[$Location] = $PriorValue[$Location]
     $Ansible.Changed = $True
     $Wrote = $True
   }
@@ -430,25 +438,79 @@ If ($NeedsRecording -and $PSCmdlet.ShouldProcess($WantedName, 'Record the SSL na
   Try {
     $Run = Start-Process -FilePath:$WsusUtilPath -ArgumentList:@('configuressl', $WantedName) -Wait -NoNewWindow -PassThru
 
+    # The host is touched from here whatever the exit code says, and whatever the rollback below
+    # puts back: wsusutil was invoked, and a run that ends saying it changed nothing would be
+    # lying about a server it ran a configuration tool against.
+    $Ansible.Changed = $True
+    $Wrote = $True
+
     If ($Run.ExitCode -ne 0) {
       Throw ('wsusutil configuressl {0} exited {1}; WSUS is still handing its clients the old URL.' -f $WantedName, $Run.ExitCode)
     }
-  } Catch {
-    ForEach ($Location In $SecuredThisRun) {
-      # Best effort, and deliberately not allowed to mask the real failure: a rollback that throws
-      # would replace the operator's diagnosis with its own.
-      Try {
-        Set-WebConfigurationProperty -Filter:'system.webServer/security/access' -Name:'sslFlags' -PSPath:'IIS:\' -Location:$Location -Value:'None'
-      } Catch {
-        Write-Warning -Message:('Could not put {0} back to accepting plain HTTP; the WSUS API may be unreachable until it is.' -f $Location)
+
+    # The proof belongs INSIDE the protected interval, not after it. An exit code is wsusutil's
+    # opinion; the registry is the server's, and a wsusutil that exits zero having persisted
+    # nothing leaves precisely the state this rollback exists for. Proving it out here would have
+    # thrown with the directories already secured and the rollback out of scope.
+    $Persisted = Get-ItemProperty -Path:'HKLM:\SOFTWARE\Microsoft\Update Services\Server\Setup' -ErrorAction:'SilentlyContinue'
+    $PersistedSsl = $False
+    If ($Null -ne $Persisted) {
+      $PersistedSslProperty = $Persisted.PSObject.Properties['UsingSSL']
+      If ($Null -ne $PersistedSslProperty) {
+        $PersistedSsl = ([System.Int32]$PersistedSslProperty.Value -eq 1)
       }
     }
 
-    Throw
-  }
+    If (-not $PersistedSsl) {
+      Throw 'WSUS still records itself as serving plain HTTP after wsusutil was told otherwise.'
+    }
 
-  $Ansible.Changed = $True
-  $Wrote = $True
+    $PersistedName = ''
+    If ($Null -ne $Persisted) {
+      $PersistedNameProperty = $Persisted.PSObject.Properties['ServerCertificateName']
+      If ($Null -ne $PersistedNameProperty) {
+        $PersistedName = ([System.String]$PersistedNameProperty.Value).Trim()
+      }
+    }
+
+    If (($PersistedName.Length -gt 0) -and ($PersistedName -ne $WantedName)) {
+      Throw (
+        'WSUS records [{0}] as the name it hands its clients, not [{1}], after wsusutil exited zero.' -f $PersistedName, $WantedName
+      )
+    }
+  } Catch {
+    # Captured before anything else runs, so the rollback cannot overwrite the automatic variable
+    # the rethrow depends on.
+    $Original = $PSItem
+
+    ForEach ($Location In $SecuredThisRun) {
+      # Best effort, and deliberately not allowed to mask the real failure: a rollback that throws
+      # would replace the operator's diagnosis with its own. Write-Warning is wrapped too, because
+      # a caller running with a terminating warning preference would otherwise throw from the
+      # diagnostic rather than from the fault.
+      # An absent prior value means the directory was simply off, and 'None' is how IIS spells
+      # that -- writing back the empty string the read returns is not the same thing. A prior
+      # value that WAS set, 'Ssl128' say, is restored exactly rather than flattened to off.
+      $Restore = 'None'
+      If (-not [System.String]::IsNullOrEmpty($PriorFlags[$Location])) {
+        $Restore = $PriorFlags[$Location]
+      }
+
+      Try {
+        Set-WebConfigurationProperty -Filter:'system.webServer/security/access' -Name:'sslFlags' -PSPath:'IIS:\' -Location:$Location -Value:$Restore
+      } Catch {
+        Try {
+          Write-Warning -Message:(
+            'Could not put {0} back to accepting plain HTTP; the WSUS API may be unreachable until it is.' -f $Location
+          ) -WarningAction:'Continue'
+        } Catch {
+          $Null = $PSItem
+        }
+      }
+    }
+
+    Throw $Original
+  }
 }
 #endregion --- [ What WSUS tells its own clients ] ------------------------------------------- #
 
@@ -478,35 +540,13 @@ If ($Wrote) {
     }
   }
 
-  $SetupAfter = Get-ItemProperty -Path:'HKLM:\SOFTWARE\Microsoft\Update Services\Server\Setup' -ErrorAction:'SilentlyContinue'
-  $UsingSslAfter = $False
-  $UsingSslAfterProperty = $SetupAfter.PSObject.Properties['UsingSSL']
-  If ($Null -ne $UsingSslAfterProperty) {
-    $UsingSslAfter = ([System.Int32]$UsingSslAfterProperty.Value -eq 1)
+  # What WSUS records for itself is deliberately NOT re-proven here. It is proven inside the
+  # protected interval above, where a failure can still put the directories back -- proving it out
+  # here would throw with them secured and the rollback out of scope, which is the one state that
+  # cannot fix itself.
+  If ($NeedsRecording) {
+    $UsingSsl = $True
   }
-
-  If (-not $UsingSslAfter) {
-    Throw 'WSUS still records itself as serving plain HTTP after wsusutil was told otherwise.'
-  }
-
-  # Same 'only when one is recorded' rule as the read above, and for the same reason: the value
-  # name is the vendor's, and treating its absence as a mismatch would fail every run on a server
-  # that records the name somewhere else. When it IS recorded, a wsusutil that exited zero without
-  # persisting the new name would otherwise churn -- re-running on every converge, reporting a
-  # change every time, and never correcting anything.
-  $RecordedNameAfter = ''
-  $RecordedNameAfterProperty = $SetupAfter.PSObject.Properties['ServerCertificateName']
-  If ($Null -ne $RecordedNameAfterProperty) {
-    $RecordedNameAfter = ([System.String]$RecordedNameAfterProperty.Value).Trim()
-  }
-
-  If (($RecordedNameAfter.Length -gt 0) -and ($RecordedNameAfter -ne $WantedName)) {
-    Throw (
-      'WSUS records [{0}] as the name it hands its clients, not [{1}], after wsusutil exited zero.' -f $RecordedNameAfter, $WantedName
-    )
-  }
-
-  $UsingSsl = $UsingSslAfter
   $Secured = [System.Collections.Generic.List[System.String]]::new()
   ForEach ($Directory In $SecuredPath) {
     $Secured.Add(('{0}/{1}' -f $SiteName, $Directory.Trim('/')))

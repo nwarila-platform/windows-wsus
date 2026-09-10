@@ -51,12 +51,14 @@ BeforeAll {
     Param ( [System.String]$Name )
 
     $global:FakeImported.Add($Name)
+    $global:FakeOrder.Add('import-module')
   }
 
   Function Get-WebBinding {
     [CmdletBinding()]
     Param ( [System.String]$Name, [System.String]$Protocol, [System.Int32]$Port )
 
+    $global:FakeOrder.Add('iis')
     If ($global:FakeSiteBindingMissing) { Return @() }
     Return @([PSCustomObject]@{ protocol = $Protocol; bindingInformation = (':{0}:' -f $Port) })
   }
@@ -77,6 +79,7 @@ BeforeAll {
     }
 
     If ($Path -like 'IIS:\SslBindings*') {
+      $global:FakeOrder.Add('iis')
       If ([System.String]::IsNullOrEmpty($global:FakeBoundThumbprint)) { Return $Null }
       Return [PSCustomObject]@{ Thumbprint = $global:FakeBoundThumbprint }
     }
@@ -106,6 +109,7 @@ BeforeAll {
     [CmdletBinding()]
     Param ( [System.String]$Filter, [System.String]$PSPath, [System.String]$Location )
 
+    $global:FakeOrder.Add('iis')
     Return [PSCustomObject]@{ sslFlags = [System.String]$global:FakeSslFlags[$Location] }
   }
 
@@ -121,7 +125,13 @@ BeforeAll {
 
     $global:FakeOrder.Add('secure')
     $global:FakeSecureCalls++
-    If (-not $global:FakeFlagDrops) { $global:FakeSslFlags[$Location] = [System.String]$Value }
+    $global:FakeRestored[$Location] = [System.String]$Value
+    If (-not $global:FakeFlagDrops -or $Value -ne 'Ssl') {
+      $global:FakeSslFlags[$Location] = [System.String]$Value
+    }
+    If ($global:FakeRollbackFails -and $Value -ne 'Ssl') {
+      Throw ('the provider refused to write {0}' -f $Location)
+    }
   }
 
   Function Get-ItemProperty {
@@ -198,6 +208,8 @@ Describe 'Set-WsusHttpsListener' {
     $global:FakeImported = [System.Collections.Generic.List[System.String]]::new()
     $global:FakeSiteBindingMissing = $false
     $global:FakeWsusUtilDropsName = $false
+    $global:FakeRollbackFails = $false
+    $global:FakeRestored = @{}
 
     $global:FakeCertMissing = $false
     $global:FakeCertThumbprint = $script:Pinned
@@ -359,6 +371,12 @@ Describe 'Set-WsusHttpsListener' {
       $null = & $script:Invoke
 
       $global:FakeImported | Should -Contain 'WebAdministration'
+
+      # BEFORE, not merely at some point. Asserting only that the import happened leaves the
+      # import free to move below the first provider read, which is the exact bug -- so the two
+      # events are compared by position.
+      $global:FakeOrder.IndexOf('import-module') | Should -BeGreaterOrEqual 0
+      $global:FakeOrder.IndexOf('iis') | Should -BeGreaterThan $global:FakeOrder.IndexOf('import-module')
     }
 
     # HTTP.SYS will hold a certificate mapping for a port no site listens on, so without this the
@@ -399,10 +417,50 @@ Describe 'Set-WsusHttpsListener' {
       $global:FakeSslFlags[('{0}/{1}' -f $script:Site, 'ApiRemoting30')] | Should -Be 'Ssl'
     }
 
+    # An exit code is wsusutil's opinion; the registry is the server's. A wsusutil that exits zero
+    # having persisted nothing leaves precisely the state the rollback exists for, so the proof has
+    # to sit inside the protected interval rather than after it.
+    It 'puts back what it secured when wsusutil exits zero and persists nothing' {
+      $global:FakeWsusUtilNoOp = $true
+
+      { & $script:Invoke } | Should -Throw -ExpectedMessage '*still records itself as serving plain HTTP*'
+      ForEach ($Vdir In $script:Vdirs) {
+        $global:FakeSslFlags[('{0}/{1}' -f $script:Site, $Vdir)] | Should -Be 'None'
+      }
+    }
+
+    # A directory carrying Ssl128 was not 'off', and flattening it to None on the way out would be
+    # a second regression handed to the operator alongside the first.
+    It 'restores the exact prior value rather than flattening it to off' {
+      $global:FakeSslFlags[('{0}/{1}' -f $script:Site, 'ClientWebService')] = 'Ssl128'
+      $global:FakeWsusUtilExit = 1
+
+      { & $script:Invoke } | Should -Throw -ExpectedMessage '*exited 1*'
+      $global:FakeRestored[('{0}/{1}' -f $script:Site, 'ClientWebService')] | Should -Be 'Ssl128'
+      $global:FakeRestored[('{0}/{1}' -f $script:Site, 'ApiRemoting30')] | Should -Be 'None'
+    }
+
     It 'reports the original failure, not the rollback' {
       $global:FakeWsusUtilExit = 3
 
       { & $script:Invoke } | Should -Throw -ExpectedMessage '*exited 3*'
+    }
+
+    # A rollback that throws would replace the operator's diagnosis with its own, which is the
+    # difference between 'wsusutil failed' and 'a config write failed' on a host in a state the
+    # operator now has to understand.
+    It 'still reports the original failure when the rollback itself fails' {
+      $global:FakeWsusUtilExit = 4
+      $global:FakeRollbackFails = $true
+
+      { & $script:Invoke } | Should -Throw -ExpectedMessage '*exited 4*'
+    }
+
+    It 'reports the change even when the rollback put everything back' {
+      $global:FakeWsusUtilExit = 1
+
+      { & $script:Invoke } | Should -Throw
+      $global:Ansible.Changed | Should -BeTrue
     }
   }
 
@@ -417,6 +475,13 @@ Describe 'Set-WsusHttpsListener' {
       $null = & $script:ScriptPath @script:Arguments -DnsName ('  {0}  ' -f $script:Dns)
 
       $global:FakeWsusUtilCalls | Should -Be 0
+    }
+
+    It 'hands wsusutil and the result message the trimmed name' {
+      $null = & $script:ScriptPath @script:Arguments -DnsName ('  {0}  ' -f $script:Dns)
+
+      $global:FakeWsusUtilArgs[1] | Should -Be $script:Dns
+      $global:Ansible.Result.msg | Should -BeLike ('*https://{0}:8531*' -f $script:Dns)
     }
 
     # The value name is the vendor's. Treating its absence as a mismatch would re-run wsusutil on

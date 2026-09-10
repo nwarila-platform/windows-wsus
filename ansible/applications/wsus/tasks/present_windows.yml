@@ -460,148 +460,25 @@
 
     #endregion --- [ Process: Ensure The WSUS Services Are Running ] -------------------------- #
 
-    #region ------ [ Process: Reconcile Where WSUS Keeps Its Content ] ------------------------ #
-    # WSUS records where its content lives in three places -- the registry root, the API cache one
-    # level below it, and the IIS Content virtual directory that actually serves files -- and only
-    # wsusutil movecontent updates them together. The realistic path to disagreement is a
-    # re-declaration: an operator changes the content drive letter and converges, leaving the store
-    # where it was while this role now asks for somewhere else.
-    #
-    # After the services, because the script asks the WSUS API where the content is and the API
-    # answers only once the server is up. Reading a stopped server as an empty answer would compare
-    # as "wrong place" and start copying a populated store, so the script refuses that read rather
-    # than guessing -- but the ordering is what keeps the refusal from firing on every reboot.
-    #
-    # One task, not a read and a decision and a command. The script owns the whole concern: it
-    # refuses the split brain movecontent cannot repair, moves when the API names the wrong cache,
-    # and checks all three records against the declaration afterwards.
-
-    - name: 'PROCESS | Reconcile Where WSUS Keeps Its Content'
-
-      ansible.windows.win_powershell:
-        depth: 3
-        error_action: 'stop'
-        parameters:
-          ContentRoot: "{{ __content_dir__ }}"
-          MoveLogPath: 'C:\Windows\Temp\wsus-movecontent.log'
-          WsusUtilPath: 'C:\Program Files\Update Services\Tools\wsusutil.exe'
-        script: "{{ lookup('ansible.builtin.file', 'Set-WsusContentLocation.ps1') }}"
-    #endregion --- [ Process: Reconcile Where WSUS Keeps Its Content ] ------------------------ #
-
-    #region ------ [ Process: Grant The WSUS Service Rights On The Content Cache ] ------------ #
-    # WSUS serves update files as NETWORK SERVICE, so the cache is only usable if that account can
-    # write beneath it. Set rather than added: win_acl adds an allow and leaves a DENY on the same
-    # identity in place, and Windows evaluates deny first -- measured on a live host, the allow
-    # entry is still printed exactly as before while the account cannot write. The script purges
-    # this identity's explicit entries and writes the declared one, so the result does not depend
-    # on what was there before. Post-installation happens to grant this today -- measured on the target --
-    # but the role declares it rather than inheriting it, so the rights survive a WSUS version that
-    # stops granting them and are stated where an operator can read them. Inheritable, because the
-    # cache is a tree the product creates folders and files inside long after this runs.
-
-    - name: 'PROCESS | Grant The WSUS Service Rights On The Content Cache'
-
-      ansible.windows.win_powershell:
-        depth: 3
-        error_action: 'stop'
-        parameters:
-          InheritanceFlags: 'ContainerInherit, ObjectInherit'
-          Path: "{{ __content_dir__ ~ '\\WsusContent' }}"
-          Rights: 'FullControl'
-          Sid: 'S-1-5-20'
-        script: "{{ lookup('ansible.builtin.file', 'Set-AclGrant.ps1') }}"
-    #endregion --- [ Process: Grant The WSUS Service Rights On The Content Cache ] ------------ #
-
-    #region ------ [ Process: Grant Interactive Users Browse Access On The Content Root ] ----- #
-    # Ratified convention: every interactive user on these servers is an administrator, and a
-    # folder Explorer cannot read makes it offer "Continue", which stamps that administrator's
-    # personal ACE onto the tree and leaves a stale SID behind when they depart. One shared
-    # read-and-execute entry costs nothing and prevents that.
-    #
-    # Written EXPLICITLY though the volume root already grants the same rights by inheritance.
-    # An inherited entry is the parent's to withdraw -- break inheritance here, or re-permission
-    # the volume, and the access vanishes with no change to this role. The role owns what it
-    # depends on.
-
-    - name: 'PROCESS | Grant Interactive Users Browse Access On The Content Root'
-
-      ansible.windows.win_powershell:
-        depth: 3
-        error_action: 'stop'
-        parameters:
-          InheritanceFlags: 'ContainerInherit, ObjectInherit'
-          Path: "{{ __content_dir__ }}"
-          Rights: 'ReadAndExecute'
-          Sid: 'S-1-5-32-545'
-        script: "{{ lookup('ansible.builtin.file', 'Set-AclGrant.ps1') }}"
-    #endregion --- [ Process: Grant Interactive Users Browse Access On The Content Root ] ----- #
-
-    #region ------ [ Process: Restrict The Update Languages WSUS Will Accept ] ---------------- #
-    # A WSUS server installs with every language Microsoft publishes enabled, so a synchronisation
-    # would pull metadata and binaries for all of them. On a server that patches one estate that is
-    # a permanent cost in disk and sync time for content nobody will ever approve.
-    #
-    # After the services, because the configuration is read and written through the WSUS API rather
-    # than the registry, and the API answers only once the server is up.
-    #
-    # The script does both halves and verifies from a freshly acquired configuration object:
-    # clearing the
-    # all-languages flag without writing a list leaves the old list, writing a list without
-    # clearing the flag leaves the flag overriding it, and the configuration object is a
-    # client-side cache that would report either assignment back whether or not it persisted.
-
-    - name: 'PROCESS | Restrict The Update Languages WSUS Will Accept'
-
-      ansible.windows.win_powershell:
-        depth: 3
-        error_action: 'stop'
-        parameters:
-          Language: "{{ wsus_running.updates.languages }}"
-        script: "{{ lookup('ansible.builtin.file', 'Set-WsusUpdateLanguage.ps1') }}"
-    #endregion --- [ Process: Restrict The Update Languages WSUS Will Accept ] ---------------- #
-
-    #region ------ [ Process: Point This Server At Its Upstream WSUS Source ] ----------------- #
-    # A WSUS server installs pointed at Microsoft Update. Leaving it there on a downstream means
-    # every server in the estate approves the same update independently and pulls the same bytes
-    # from the internet, which is the cost a downstream topology exists to remove.
-    #
-    # After the languages, because both are written through the same configuration object and the
-    # API only answers once the server is up. Order between them does not matter to the product;
-    # keeping the two API writes adjacent is what makes that obvious.
-    #
-    # All five values are one act. Recording the upstream without clearing SyncFromMicrosoftUpdate
-    # leaves the address in the console and Microsoft Update as the actual source -- a server that
-    # reads as configured and is not -- so the script writes and verifies the five together, and
-    # stops any synchronisation in flight first, because a sync mid-run is still talking to the old
-    # source and saving underneath it lands the server in a state neither configuration describes.
-    #
-    # The booleans arrive as booleans: Ansible templates a bare '{{ bool }}' back to a real bool
-    # and win_powershell serialises it as JSON true/false, so PowerShell binds it directly. That is
-    # load-bearing -- had it arrived as the string 'False', [System.Boolean] would have made it
-    # true, because every non-empty string casts true.
-
-    - name: 'PROCESS | Point This Server At Its Upstream WSUS Source'
-
-      ansible.windows.win_powershell:
-        depth: 3
-        error_action: 'stop'
-        parameters:
-          Replica: "{{ wsus_running.sync.replica }}"
-          UpstreamPort: "{{ wsus_running.sync.upstream_port }}"
-          UpstreamServer: "{{ wsus_running.sync.upstream_server }}"
-          UseSsl: "{{ wsus_running.sync.upstream_use_ssl }}"
-        script: "{{ lookup('ansible.builtin.file', 'Set-WsusUpstream.ps1') }}"
-    #endregion --- [ Process: Point This Server At Its Upstream WSUS Source ] ----------------- #
-
     #region ------ [ Process: Serve WSUS To Its Clients Over HTTPS ] -------------------------- #
-    # Last of the PROCESS regions, because every part of it needs a WSUS that is already installed,
-    # already knows where its content lives, and already knows where its updates come from. TLS is
-    # how clients reach that server, not part of building it.
+    # FIRST of the regions that talk to the WSUS API, and the position is load-bearing. Once
+    # wsusutil records UsingSSL=1, every later bare Get-WsusServer dials this machine over HTTPS and
+    # validates the certificate it is presented -- so the trust anchor this region installs has to
+    # already be there when they run. Putting this last instead would work on run one, when they
+    # still speak HTTP, and leave a host that had lost its anchor unable to converge again: every
+    # run's first API read would fail before reaching the region that repairs it.
+    #
+    # It also removes an asymmetry that would otherwise make the two runs different things. Here,
+    # run one and run two both drive the API over the same transport; last, run one would use HTTP
+    # and run two HTTPS, and only run two would exercise the path the estate actually uses.
+    #
+    # Everything it needs -- the WSUS site, the Setup key, the services -- exists by this point.
     #
     # The delivery is controller-side and the target never holds an S3 credential. That is not a
     # preference: measured in terraform/aws.tfvars, this guest's only egress rule is the VPN
-    # tunnel, so it has no route to S3 at all. Both objects are fetched here, verified here, and
-    # handed over the existing connection.
+    # tunnel, so it has no route to S3 at all. All three objects -- the certificate, its password
+    # and the public half this machine has to trust -- are fetched here, verified here, and handed
+    # over the existing connection.
     #
     # Wrapped in its own block so the staging directories are removed on the way out whether this
     # converged, refused or threw. A PFX left on either side is a private key left on disk.
@@ -837,12 +714,34 @@
         # The public half, not the PFX, so the private key never enters the Root store. No password
         # and no key_storage, because there is no key in this file.
         - name: 'PROCESS | Install The Certificate As A Trust Anchor For This Server'
+          register: '__wsus_tls_anchor_import__'
 
           ansible.windows.win_certificate_store:
             path: "{{ __wsus_tls_target__.path }}\\trust-anchor.cer"
             state: 'present'
             store_location: 'LocalMachine'
             store_name: 'Root'
+
+        # The digest proves the anchor is the object that was declared. It does NOT prove that
+        # object is the public half of the certificate the listener presents -- a consistent
+        # public_object and public_sha256 naming some OTHER valid certificate passes every check
+        # above, puts an unrelated anchor in Root, and leaves the next API call unable to build the
+        # chain it is shown. The store reports what it imported, so the two are tied together here.
+        #
+        # Skipped under --check because the import it reads is the thing check mode suppressed.
+        - name: 'PROCESS | Prove The Anchor Is The Certificate The Listener Will Present'
+          when: not ansible_check_mode
+
+          ansible.builtin.assert:
+            fail_msg: >-
+              The trust anchor installed into LocalMachine\Root is not the certificate this server
+              is pinned to present. Refusing to continue: the listener would come up with a chain
+              this machine cannot build, and every WSUS API call after it would fail on a
+              certificate error rather than on anything that names WSUS.
+            quiet: true
+            that:
+              - (__tls_cert__.thumbprint | upper)
+                in (__wsus_tls_anchor_import__.thumbprints | default([], true) | map('upper') | list)
 
         # One script for all three, because a server holding any two of them serves nobody and
         # reads as configured. Explained in the script's own header.
@@ -890,6 +789,138 @@
             state: 'absent'
     #endregion --- [ Process: Serve WSUS To Its Clients Over HTTPS ] -------------------------- #
 
+    #region ------ [ Process: Reconcile Where WSUS Keeps Its Content ] ------------------------ #
+    # WSUS records where its content lives in three places -- the registry root, the API cache one
+    # level below it, and the IIS Content virtual directory that actually serves files -- and only
+    # wsusutil movecontent updates them together. The realistic path to disagreement is a
+    # re-declaration: an operator changes the content drive letter and converges, leaving the store
+    # where it was while this role now asks for somewhere else.
+    #
+    # After the services, because the script asks the WSUS API where the content is and the API
+    # answers only once the server is up. Reading a stopped server as an empty answer would compare
+    # as "wrong place" and start copying a populated store, so the script refuses that read rather
+    # than guessing -- but the ordering is what keeps the refusal from firing on every reboot.
+    #
+    # One task, not a read and a decision and a command. The script owns the whole concern: it
+    # refuses the split brain movecontent cannot repair, moves when the API names the wrong cache,
+    # and checks all three records against the declaration afterwards.
+
+    - name: 'PROCESS | Reconcile Where WSUS Keeps Its Content'
+
+      ansible.windows.win_powershell:
+        depth: 3
+        error_action: 'stop'
+        parameters:
+          ContentRoot: "{{ __content_dir__ }}"
+          MoveLogPath: 'C:\Windows\Temp\wsus-movecontent.log'
+          WsusUtilPath: 'C:\Program Files\Update Services\Tools\wsusutil.exe'
+        script: "{{ lookup('ansible.builtin.file', 'Set-WsusContentLocation.ps1') }}"
+    #endregion --- [ Process: Reconcile Where WSUS Keeps Its Content ] ------------------------ #
+
+    #region ------ [ Process: Grant The WSUS Service Rights On The Content Cache ] ------------ #
+    # WSUS serves update files as NETWORK SERVICE, so the cache is only usable if that account can
+    # write beneath it. Set rather than added: win_acl adds an allow and leaves a DENY on the same
+    # identity in place, and Windows evaluates deny first -- measured on a live host, the allow
+    # entry is still printed exactly as before while the account cannot write. The script purges
+    # this identity's explicit entries and writes the declared one, so the result does not depend
+    # on what was there before. Post-installation happens to grant this today -- measured on the target --
+    # but the role declares it rather than inheriting it, so the rights survive a WSUS version that
+    # stops granting them and are stated where an operator can read them. Inheritable, because the
+    # cache is a tree the product creates folders and files inside long after this runs.
+
+    - name: 'PROCESS | Grant The WSUS Service Rights On The Content Cache'
+
+      ansible.windows.win_powershell:
+        depth: 3
+        error_action: 'stop'
+        parameters:
+          InheritanceFlags: 'ContainerInherit, ObjectInherit'
+          Path: "{{ __content_dir__ ~ '\\WsusContent' }}"
+          Rights: 'FullControl'
+          Sid: 'S-1-5-20'
+        script: "{{ lookup('ansible.builtin.file', 'Set-AclGrant.ps1') }}"
+    #endregion --- [ Process: Grant The WSUS Service Rights On The Content Cache ] ------------ #
+
+    #region ------ [ Process: Grant Interactive Users Browse Access On The Content Root ] ----- #
+    # Ratified convention: every interactive user on these servers is an administrator, and a
+    # folder Explorer cannot read makes it offer "Continue", which stamps that administrator's
+    # personal ACE onto the tree and leaves a stale SID behind when they depart. One shared
+    # read-and-execute entry costs nothing and prevents that.
+    #
+    # Written EXPLICITLY though the volume root already grants the same rights by inheritance.
+    # An inherited entry is the parent's to withdraw -- break inheritance here, or re-permission
+    # the volume, and the access vanishes with no change to this role. The role owns what it
+    # depends on.
+
+    - name: 'PROCESS | Grant Interactive Users Browse Access On The Content Root'
+
+      ansible.windows.win_powershell:
+        depth: 3
+        error_action: 'stop'
+        parameters:
+          InheritanceFlags: 'ContainerInherit, ObjectInherit'
+          Path: "{{ __content_dir__ }}"
+          Rights: 'ReadAndExecute'
+          Sid: 'S-1-5-32-545'
+        script: "{{ lookup('ansible.builtin.file', 'Set-AclGrant.ps1') }}"
+    #endregion --- [ Process: Grant Interactive Users Browse Access On The Content Root ] ----- #
+
+    #region ------ [ Process: Restrict The Update Languages WSUS Will Accept ] ---------------- #
+    # A WSUS server installs with every language Microsoft publishes enabled, so a synchronisation
+    # would pull metadata and binaries for all of them. On a server that patches one estate that is
+    # a permanent cost in disk and sync time for content nobody will ever approve.
+    #
+    # After the services, because the configuration is read and written through the WSUS API rather
+    # than the registry, and the API answers only once the server is up.
+    #
+    # The script does both halves and verifies from a freshly acquired configuration object:
+    # clearing the
+    # all-languages flag without writing a list leaves the old list, writing a list without
+    # clearing the flag leaves the flag overriding it, and the configuration object is a
+    # client-side cache that would report either assignment back whether or not it persisted.
+
+    - name: 'PROCESS | Restrict The Update Languages WSUS Will Accept'
+
+      ansible.windows.win_powershell:
+        depth: 3
+        error_action: 'stop'
+        parameters:
+          Language: "{{ wsus_running.updates.languages }}"
+        script: "{{ lookup('ansible.builtin.file', 'Set-WsusUpdateLanguage.ps1') }}"
+    #endregion --- [ Process: Restrict The Update Languages WSUS Will Accept ] ---------------- #
+
+    #region ------ [ Process: Point This Server At Its Upstream WSUS Source ] ----------------- #
+    # A WSUS server installs pointed at Microsoft Update. Leaving it there on a downstream means
+    # every server in the estate approves the same update independently and pulls the same bytes
+    # from the internet, which is the cost a downstream topology exists to remove.
+    #
+    # After the languages, because both are written through the same configuration object and the
+    # API only answers once the server is up. Order between them does not matter to the product;
+    # keeping the two API writes adjacent is what makes that obvious.
+    #
+    # All five values are one act. Recording the upstream without clearing SyncFromMicrosoftUpdate
+    # leaves the address in the console and Microsoft Update as the actual source -- a server that
+    # reads as configured and is not -- so the script writes and verifies the five together, and
+    # stops any synchronisation in flight first, because a sync mid-run is still talking to the old
+    # source and saving underneath it lands the server in a state neither configuration describes.
+    #
+    # The booleans arrive as booleans: Ansible templates a bare '{{ bool }}' back to a real bool
+    # and win_powershell serialises it as JSON true/false, so PowerShell binds it directly. That is
+    # load-bearing -- had it arrived as the string 'False', [System.Boolean] would have made it
+    # true, because every non-empty string casts true.
+
+    - name: 'PROCESS | Point This Server At Its Upstream WSUS Source'
+
+      ansible.windows.win_powershell:
+        depth: 3
+        error_action: 'stop'
+        parameters:
+          Replica: "{{ wsus_running.sync.replica }}"
+          UpstreamPort: "{{ wsus_running.sync.upstream_port }}"
+          UpstreamServer: "{{ wsus_running.sync.upstream_server }}"
+          UseSsl: "{{ wsus_running.sync.upstream_use_ssl }}"
+        script: "{{ lookup('ansible.builtin.file', 'Set-WsusUpstream.ps1') }}"
+    #endregion --- [ Process: Point This Server At Its Upstream WSUS Source ] ----------------- #
 #endregion --- [ Process: Configure WSUS on Windows ] ----------------------------------------- #
 
 
