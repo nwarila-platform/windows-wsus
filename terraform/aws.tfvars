@@ -157,32 +157,54 @@ all_systems = [
           # private subnet in one availability zone, which is the tightest source this file can
           # express.
           #
-          # BOTH ports, and the pair is not sloppiness. WSUS splits its client traffic: metadata,
-          # authentication and reporting go over TLS on 8531, and update PAYLOADS go over plain
-          # HTTP on 8530. That split is the vendor's, not this deployment's -- measured on a live
-          # server, the Content virtual directory carries no SSL requirement while the five
-          # client-facing services do, which is what makes payloads reachable on 8530 and only
-          # there.
+          # BOTH ports and BOTH networks, and neither pair is sloppiness.
           #
-          # Encrypting those payloads would buy nothing: they are Microsoft-signed and public, and
-          # the client verifies the signature regardless. Admitting only 8531 produces the worst
-          # failure a proof can have -- a client that scans successfully over TLS, correctly
-          # reports the updates it needs, and cannot download one of them.
+          # WSUS splits its client traffic: metadata, authentication and reporting go over TLS on
+          # 8531, and update PAYLOADS go over plain HTTP on 8530. That split is the vendor's, not
+          # this deployment's -- measured on a live server, the Content virtual directory carries
+          # no SSL requirement while the five client-facing services do, which is what makes
+          # payloads reachable on 8530 and only there. Encrypting them would buy nothing: they are
+          # Microsoft-signed and public, and the client verifies the signature regardless.
+          # Admitting only 8531 produces the worst failure a proof can have -- a client that scans
+          # successfully over TLS, correctly reports the updates it needs, and downloads none.
+          #
+          # The networks are the estate this server exists to serve: 10.0.0.0/16 is this account's
+          # VPC, and 10.69.0.0/16 is on-prem. The VPC half alone would serve only the client this
+          # deployment builds to prove the server -- and the machines that actually need patching
+          # are the other half.
           {
-            description                  = "WSUS metadata over HTTPS from the client subnet"
+            description                  = "WSUS metadata over HTTPS from the VPC"
             ip_protocol                  = "tcp"
             from_port                    = 8531
             to_port                      = 8531
-            cidr_ipv4                    = "10.0.128.0/19"
+            cidr_ipv4                    = "10.0.0.0/16"
             prefix_list_id               = null
             referenced_security_group_id = null
           },
           {
-            description                  = "WSUS update payloads over HTTP from the client subnet"
+            description                  = "WSUS metadata over HTTPS from the estate"
+            ip_protocol                  = "tcp"
+            from_port                    = 8531
+            to_port                      = 8531
+            cidr_ipv4                    = "10.69.0.0/16"
+            prefix_list_id               = null
+            referenced_security_group_id = null
+          },
+          {
+            description                  = "WSUS update payloads over HTTP from the VPC"
             ip_protocol                  = "tcp"
             from_port                    = 8530
             to_port                      = 8530
-            cidr_ipv4                    = "10.0.128.0/19"
+            cidr_ipv4                    = "10.0.0.0/16"
+            prefix_list_id               = null
+            referenced_security_group_id = null
+          },
+          {
+            description                  = "WSUS update payloads over HTTP from the estate"
+            ip_protocol                  = "tcp"
+            from_port                    = 8530
+            to_port                      = 8530
+            cidr_ipv4                    = "10.69.0.0/16"
             prefix_list_id               = null
             referenced_security_group_id = null
           }
@@ -287,15 +309,17 @@ all_systems = [
         # grant the framework attaches for the runner, and a human over the address the pipeline
         # resolves for them -- both at apply time, neither committed here.
         ingress = []
-        # THREE rules, and what is absent from them is the point of this host.
+        # FIVE rules, and what is absent from them is the point of this host.
         #
         # The tunnel, because this machine joins the same directory the server does and the domain
         # controllers are on the other side of it.
         #
-        # WSUS twice, scoped to this subnet: 8531 for the metadata, authentication and reporting
-        # WSUS serves over TLS, and 8530 for the update payloads it serves over plain HTTP. The
-        # split is the vendor's. Encrypting a Microsoft-signed public payload buys nothing, and
+        # WSUS on both its ports and both its networks: 8531 for the metadata, authentication and
+        # reporting WSUS serves over TLS, 8530 for the update payloads it serves over plain HTTP.
+        # The split is the vendor's. Encrypting a Microsoft-signed public payload buys nothing, and
         # allowing only 8531 would produce a client that scans perfectly and downloads nothing.
+        # Both networks so this machine's reach matches what the server admits, rather than being
+        # the narrower of the two and failing differently.
         #
         # And NOTHING to the internet on 80 or 443. A domain policy tells this machine not to reach
         # Microsoft, but a policy value is a statement of intent the machine itself could
@@ -313,20 +337,38 @@ all_systems = [
             referenced_security_group_id = null
           },
           {
-            description                  = "WSUS metadata over HTTPS"
+            description                  = "WSUS metadata over HTTPS in the VPC"
             ip_protocol                  = "tcp"
             from_port                    = 8531
             to_port                      = 8531
-            cidr_ipv4                    = "10.0.128.0/19"
+            cidr_ipv4                    = "10.0.0.0/16"
             prefix_list_id               = null
             referenced_security_group_id = null
           },
           {
-            description                  = "WSUS update payloads over HTTP"
+            description                  = "WSUS metadata over HTTPS across the tunnel"
+            ip_protocol                  = "tcp"
+            from_port                    = 8531
+            to_port                      = 8531
+            cidr_ipv4                    = "10.69.0.0/16"
+            prefix_list_id               = null
+            referenced_security_group_id = null
+          },
+          {
+            description                  = "WSUS update payloads over HTTP in the VPC"
             ip_protocol                  = "tcp"
             from_port                    = 8530
             to_port                      = 8530
-            cidr_ipv4                    = "10.0.128.0/19"
+            cidr_ipv4                    = "10.0.0.0/16"
+            prefix_list_id               = null
+            referenced_security_group_id = null
+          },
+          {
+            description                  = "WSUS update payloads over HTTP across the tunnel"
+            ip_protocol                  = "tcp"
+            from_port                    = 8530
+            to_port                      = 8530
+            cidr_ipv4                    = "10.69.0.0/16"
             prefix_list_id               = null
             referenced_security_group_id = null
           }
