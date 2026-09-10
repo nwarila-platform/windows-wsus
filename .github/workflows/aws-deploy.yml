@@ -7,12 +7,14 @@
 #
 #   * AWS credentials are issued only to this workflow at refs/heads/main, by both the workflow
 #     guard below and the OIDC trust; feature-branch workflow code never reaches AWS.
-#   * Reachability: direct SSH to a subnet-assigned public IPv4, admitted by two groups. The
-#     framework adds one scoped to the runner's validated public IPv4 at runtime; the interface
-#     carries a second, committed in terraform/aws.tfvars, opening tcp/22 to the whole IPv4
-#     space for the development cycle so an operator can reach a held guest. This configuration
-#     creates no EIP and has no NAT. The playbook performs the bounded direct-SSH readiness
-#     check because readiness_gate remains disabled.
+#   * Reachability: direct SSH to a subnet-assigned public IPv4, admitted by ONE run-scoped group
+#     the framework attaches at apply. It carries the runner's validated public IPv4, and an
+#     operator's own address as well when the debug_ip input is supplied. Nothing in
+#     terraform/aws.tfvars opens tcp/22 any more: the committed rule that opened it to the whole
+#     IPv4 space was a development-cycle allowance and has been removed, so this repository no
+#     longer records who may reach the estate or from where. This configuration creates no EIP and
+#     has no NAT. The playbook performs the bounded direct-SSH readiness check because
+#     readiness_gate remains disabled.
 #   * AWS credentials are exchanged before provisioning and refreshed before eligible teardown.
 #     The initial 7,800-second session covers normal deployment work; the teardown refresh uses a
 #     modest 3,600-second session so long holds do not reach destroy with expired credentials.
@@ -47,6 +49,10 @@ name: AWS Deploy
         description: After converge, replace the OS drive and prove the data volumes reattach
         type: boolean
         default: false
+      debug_ip:
+        description: Public IPv4 of a person who needs the held guest (blank grants nobody anything)
+        type: string
+        default: ''
   push:
     branches: [main]
   schedule:
@@ -99,6 +105,21 @@ jobs:
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
           persist-credentials: false
+
+      # Held to a bare IPv4 before it reaches terraform, on the same reasoning the hold duration
+      # is: an input that reaches a -var flag unchecked is an input that decides what that flag
+      # says. Blank is the normal case and grants nobody anything.
+      - name: Validate operator address
+        if: github.event_name == 'workflow_dispatch' && inputs.debug_ip != ''
+        env:
+          DEBUG_IP: ${{ inputs.debug_ip }}
+        run: |
+          set -euo pipefail
+          if ! printf '%s' "${DEBUG_IP}" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$'; then
+            echo "::error::debug_ip must be a bare IPv4 address with no prefix, or blank."
+            exit 1
+          fi
+          echo 'operator address validated'
 
       - name: Validate hold duration
         if: github.event_name == 'workflow_dispatch'
@@ -271,13 +292,27 @@ jobs:
 
       # The environment and deployment identity are individual -var flags — the highest-
       # precedence source, so the tfvars cannot override who this fresh deployment says it is.
+      #
+      # debug_ip is passed ONLY when a person asked for it. The framework's variable takes an
+      # address or null and refuses an empty string, so a blank input must not reach the flag at
+      # all -- hence the array rather than an inline expansion. Committed rules used to open tcp/22
+      # to the whole internet for this; this grants one person one address for one run instead,
+      # and records nowhere who they are.
       - name: Terraform apply
         id: tf-apply
         timeout-minutes: 15
         working-directory: .frameworks/aws-terraform-framework/terraform
+        env:
+          DEBUG_IP: ${{ inputs.debug_ip }}
         run: |
           set -euo pipefail
+          operator_var=()
+          if [[ -n "${DEBUG_IP:-}" ]]; then
+            operator_var=(-var "debug_ip=${DEBUG_IP}")
+            echo "operator access granted to one address for this run"
+          fi
           terraform apply -input=false -auto-approve -lock-timeout=120s \
+            "${operator_var[@]}" \
             -var-file="${GITHUB_WORKSPACE}/terraform/aws.tfvars" \
             -var "runner_ip=${RUNNER_IP}" \
             -var "environment=test" \
@@ -373,13 +408,24 @@ jobs:
       # system property, and it is also the only state in which the WSUS role ever meets an
       # existing SUSDB: every lifecycle destroys its volumes at the end, so nothing else this
       # repository can build leaves a database behind to be adopted.
+      # The operator grant is repeated here for the same reason every other -var is: this is a
+      # full apply, and a variable absent from it is a variable terraform computes as null. Left
+      # out, this second apply would quietly withdraw the access the first one granted, in the
+      # middle of the run the person asked for it.
       - name: Replace the OS drive, keeping the data volumes (refresh_serial bump)
         if: inputs.os_swap
         timeout-minutes: 15
         working-directory: .frameworks/aws-terraform-framework/terraform
+        env:
+          DEBUG_IP: ${{ inputs.debug_ip }}
         run: |
           set -euo pipefail
+          operator_var=()
+          if [[ -n "${DEBUG_IP:-}" ]]; then
+            operator_var=(-var "debug_ip=${DEBUG_IP}")
+          fi
           terraform apply -input=false -auto-approve -lock-timeout=120s \
+            "${operator_var[@]}" \
             -var-file="${GITHUB_WORKSPACE}/terraform/aws.tfvars" \
             -var "runner_ip=${RUNNER_IP}" \
             -var "environment=test" \

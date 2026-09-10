@@ -52,7 +52,7 @@ all_systems = [
     # Server, so this base is not the STIG one. Server 2025 rather than the target's 2022 because
     # OpenSSH Server ships installed only from 2025, and the framework's user_data starts sshd
     # rather than installing it; on 2022 that bootstrap aborts and nothing can reach the guest.
-    ami     = "ami-0ac1b4c911759cc2e"
+    ami = "ami-0ac1b4c911759cc2e"
     # OS-DRIVE REPLACEMENT (immutable-OS pattern). refresh=true makes this host swap-eligible:
     # bumping the framework's refresh_serial (0 -> 1 -> ...) replaces the OS instance while the
     # three data volumes, which are standalone resources rather than inline block devices, detach
@@ -144,28 +144,13 @@ all_systems = [
         interface_type  = null
         private_ip      = null
         security_groups = []
-        # Deliberate temporary development-cycle allowance: SSH from the whole IPv4 space, split
-        # into two halves because the framework refuses a zero-length prefix; remove when the
-        # cycle ends.
+        # NO SSH RULE HERE, and its absence is the point. Reaching this host is a RUN-SCOPED grant
+        # the framework attaches at apply from runner_ip, plus an operator's own /32 from debug_ip
+        # when a human needs the held guest. Both are passed at apply time and neither is
+        # committed, so this file never publishes who may reach the estate or from where. What
+        # stood here was tcp/22 open to the whole IPv4 space, described in its own comment as a
+        # temporary development-cycle allowance to be removed when the cycle ended. It has.
         ingress = [
-          {
-            description                  = "SSH from first half of IPv4"
-            ip_protocol                  = "tcp"
-            from_port                    = 22
-            to_port                      = 22
-            cidr_ipv4                    = "0.0.0.0/1"
-            prefix_list_id               = null
-            referenced_security_group_id = null
-          },
-          {
-            description                  = "SSH from second half of IPv4"
-            ip_protocol                  = "tcp"
-            from_port                    = 22
-            to_port                      = 22
-            cidr_ipv4                    = "128.0.0.0/1"
-            prefix_list_id               = null
-            referenced_security_group_id = null
-          },
           # The client this deployment builds to prove itself, reaching the WSUS HTTPS endpoint.
           # Scoped to the subnet rather than to the client's security group because a group id
           # does not exist until apply and cannot be named here; the subnet is one /19 in one
@@ -297,28 +282,11 @@ all_systems = [
         interface_type  = null
         private_ip      = null
         security_groups = []
-        # The same deliberate development-cycle allowance the server carries, split into two
-        # halves because the framework refuses a zero-length prefix; remove when the cycle ends.
-        ingress = [
-          {
-            description                  = "SSH from first half of IPv4"
-            ip_protocol                  = "tcp"
-            from_port                    = 22
-            to_port                      = 22
-            cidr_ipv4                    = "0.0.0.0/1"
-            prefix_list_id               = null
-            referenced_security_group_id = null
-          },
-          {
-            description                  = "SSH from second half of IPv4"
-            ip_protocol                  = "tcp"
-            from_port                    = 22
-            to_port                      = 22
-            cidr_ipv4                    = "128.0.0.0/1"
-            prefix_list_id               = null
-            referenced_security_group_id = null
-          }
-        ]
+        # EMPTY, and correctly so: this machine offers no service to anything. It reaches out to
+        # WSUS and to the directory, and listens for nobody. Ansible arrives over the run-scoped
+        # grant the framework attaches from runner_ip, and a human over debug_ip -- both passed at
+        # apply time, neither committed here.
+        ingress = []
         # THREE rules, and what is absent from them is the point of this host.
         #
         # The tunnel, because this machine joins the same directory the server does and the domain
