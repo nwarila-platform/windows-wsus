@@ -67,7 +67,7 @@
   # Begin The 'Process' Block
   block:
 
-    #region ------ [ Process: Teach This Machine To Trust The Server ] ----------------------- #
+    #region ------ [ Process: Teach This Machine To Trust The Server ] ------------------------ #
     # First, because the policy below points the machine at an https endpoint and a machine that
     # cannot chain that endpoint's certificate fails every scan with a transport error naming TLS.
     # Trust before the thing that needs it.
@@ -124,12 +124,28 @@
           check_mode: false
           delegate_to: 'localhost'
 
+        # The module probes the BUCKET before the object, and that probe is authorized by a
+        # bucket-level grant this deployment deliberately does not hold: reading two pinned keys
+        # must not imply the right to see the bucket. Skipping the probe is the module's documented
+        # answer for exactly that policy shape. A missing object still fails loudly -- the key check
+        # uses head_object, which the object-level grant does authorize.
           amazon.aws.s3_object:
             bucket: "{{ __cert__.bucket }}"
+            ceph: false
+            debug_botocore_endpoint_logs: false
             dest: "{{ __wsus_client_controller__.path }}/server.cer"
+            dualstack: false
+            encrypt: true
+            encryption_mode: 'AES256'
+            expiry: 600
+            ignore_nonexistent_bucket: true
             mode: 'get'
             object: "{{ __cert__.object }}"
             overwrite: 'different'
+            permission: [ 'private' ]
+            prefix: ''
+            purge_tags: true
+            retries: 0
             sig_v4: true
             validate_bucket_name: true
             validate_certs: true
@@ -193,16 +209,10 @@
       # having been set, because a failure early enough leaves the later ones undefined.
       always:
 
-        - name: 'CLEANUP | Remove The Certificate Delivery From The Target'
-          changed_when: false
-          check_mode: false
-          when: (__wsus_client_target__ | default({})).path | default('') | length > 0
-
-          ansible.windows.win_file:
-            path: "{{ __wsus_client_target__.path }}"
-            state: 'absent'
-
-        - name: 'CLEANUP | Remove The Certificate Delivery From The Controller'
+        # The controller copy first, so an unreachable guest cannot strand it. Nothing secret is
+        # in this file -- it is the public certificate -- but the ordering rule is the same one
+        # the server role's delivery uses, and a staging directory left behind is still litter.
+        - name: 'PROCESS | Remove The Certificate Delivery From The Controller'
           become: false
           changed_when: false
           check_mode: false
@@ -212,9 +222,18 @@
           ansible.builtin.file:
             path: "{{ __wsus_client_controller__.path }}"
             state: 'absent'
-    #endregion --- [ Process: Teach This Machine To Trust The Server ] ----------------------- #
 
-    #region ------ [ Process: Write The Windows Update Policy ] ------------------------------ #
+        - name: 'PROCESS | Remove The Certificate Delivery From The Target'
+          changed_when: false
+          check_mode: false
+          when: (__wsus_client_target__ | default({})).path | default('') | length > 0
+
+          ansible.windows.win_file:
+            path: "{{ __wsus_client_target__.path }}"
+            state: 'absent'
+    #endregion --- [ Process: Teach This Machine To Trust The Server ] ------------------------ #
+
+    #region ------ [ Process: Write The Windows Update Policy ] ------------------------------- #
     # win_regedit rather than a script: the module already reads the value, writes only on a
     # difference, and supports check mode, which is everything a script here would have had to
     # reimplement.
@@ -231,9 +250,9 @@
         path: "{{ item.path }}"
         state: 'present'
         type: "{{ item.type }}"
-    #endregion --- [ Process: Write The Windows Update Policy ] ------------------------------ #
+    #endregion --- [ Process: Write The Windows Update Policy ] ------------------------------- #
 
-    #region ------ [ Process: Make The Agent Read What Was Just Written ] -------------------- #
+    #region ------ [ Process: Make The Agent Read What Was Just Written ] --------------------- #
     # The agent caches its policy, so a machine whose registry is correct can keep scanning the
     # old server until something restarts it. Gated on the write having changed something, which
     # is what keeps a converged run reporting no change -- 'restarted' is unconditional by nature
@@ -245,6 +264,6 @@
       ansible.windows.win_service:
         name: 'wuauserv'
         state: 'restarted'
-    #endregion --- [ Process: Make The Agent Read What Was Just Written ] -------------------- #
+    #endregion --- [ Process: Make The Agent Read What Was Just Written ] --------------------- #
 
 #endregion --- [ Process: Point This Machine At Its WSUS Server ] ----------------------------- #

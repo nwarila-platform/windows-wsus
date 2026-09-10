@@ -243,7 +243,9 @@ $InheritedAllow = 0
 $DenyRights = 0
 $InheritedDeny = 0
 $ExplicitCount = 0
+$ExplicitAllowCount = 0
 $Inheritance = ''
+$Propagation = ''
 
 ForEach ($Ace In @($Acl.Access)) {
   # SID, never the display name. Translate is the supported route from an NTAccount; when the
@@ -278,18 +280,34 @@ ForEach ($Ace In @($Acl.Access)) {
   If ($IsDeny) {
     $DenyRights = $DenyRights -bor $AceRights
   } Else {
+    $ExplicitAllowCount++
     $ExplicitAllow = $ExplicitAllow -bor $AceRights
     If ([System.String]::IsNullOrEmpty($Inheritance)) {
       $Inheritance = [System.String]$Ace.InheritanceFlags
+      $Propagation = [System.String]$Ace.PropagationFlags
     }
   }
 }
 
-# Coverage for an allow -- an entry carrying more than was asked for still grants it. Intersection
-# for a deny -- one right inside the set is enough, because Windows evaluates deny first.
-$AllowExplicit = (($ExplicitAllow -band $RequiredValue) -eq $RequiredValue)
+# Windows adds Synchronize to an allow as it writes it. Measured on the target: a rule created as
+# ReadAndExecute (131241) reads back as 1179817, and FullControl reads back unchanged because it
+# already carries the bit. So the expectation is the declared rights WITH Synchronize -- comparing
+# against the declared value alone would find drift on every converge and rewrite a correct entry
+# forever.
+$ExpectedRights = (
+  $RequiredValue -bor [System.Int32][System.Security.AccessControl.FileSystemRights]::Synchronize
+)
+
+# EXACT, not coverage. This script declares the entry rather than adding to it, so an entry
+# carrying MORE than was asked for is drift too: a FullControl entry where ReadAndExecute was
+# declared is an over-grant this script exists to reduce. Coverage would call it correct.
+$AllowExplicit = ($ExplicitAllow -eq $ExpectedRights)
 $DenyIntersects = (($DenyRights -band $RequiredValue) -ne 0)
-$InheritanceMatches = ($Inheritance -eq $InheritanceFlags)
+
+# Inheritance AND propagation. An entry carrying the right inheritance flags with InheritOnly
+# propagation grants nothing on the path itself -- children only -- so the service would hold no
+# rights on the directory it has to write into while this reported no change.
+$InheritanceMatches = (($Inheritance -eq $InheritanceFlags) -and ($Propagation -eq 'None'))
 
 # Refused rather than reported converged. An inherited deny defeats the grant and cannot be
 # removed from here -- only from the parent carrying it -- so writing the allow and returning
@@ -302,9 +320,19 @@ If (($InheritedDeny -band $RequiredValue) -ne 0) {
   )
 }
 
-# Already correct means all three: the rights are covered by an entry written ON this path, that
-# entry carries the declared inheritance, and no deny stands against it.
-$AlreadyCorrect = ($AllowExplicit -and $InheritanceMatches -and (-not $DenyIntersects))
+# Already correct means all four: exactly ONE explicit entry stands for this identity, it carries
+# exactly the declared rights, it carries the declared inheritance with no InheritOnly propagation,
+# and no deny stands against it. The count matters because several explicit entries can OR together
+# into the declared rights while no single one of them is the entry this script declares -- and the
+# write below replaces all of them with one, so leaving them would mean reporting converged on a
+# state the next write would still change.
+$AlreadyCorrect = (
+  ($ExplicitCount -eq 1) -and
+  ($ExplicitAllowCount -eq 1) -and
+  $AllowExplicit -and
+  $InheritanceMatches -and
+  (-not $DenyIntersects)
+)
 $Purged = 0
 
 If (-not $AlreadyCorrect -and $PSCmdlet.ShouldProcess($Path, ('Set {0} for {1}' -f $Rights, $Sid))) {
@@ -330,6 +358,7 @@ If (-not $AlreadyCorrect -and $PSCmdlet.ShouldProcess($Path, ('Set {0} for {1}' 
   $InheritedAllow = 0
   $DenyRights = 0
   $Inheritance = ''
+  $Propagation = ''
   ForEach ($Ace In @($After.Access)) {
     $AceSid = ''
     Try {
@@ -349,14 +378,18 @@ If (-not $AlreadyCorrect -and $PSCmdlet.ShouldProcess($Path, ('Set {0} for {1}' 
       $ExplicitAllow = $ExplicitAllow -bor $AceRights
       If ([System.String]::IsNullOrEmpty($Inheritance)) {
         $Inheritance = [System.String]$Ace.InheritanceFlags
+        $Propagation = [System.String]$Ace.PropagationFlags
       }
     }
   }
 
-  $AllowExplicit = (($ExplicitAllow -band $RequiredValue) -eq $RequiredValue)
+  # The same rule the decision above used. A verification looser than the decision would pass a
+  # host the next run immediately writes to again.
+  $AllowExplicit = ($ExplicitAllow -eq $ExpectedRights)
   $DenyIntersects = (($DenyRights -band $RequiredValue) -ne 0)
+  $InheritanceMatches = (($Inheritance -eq $InheritanceFlags) -and ($Propagation -eq 'None'))
 
-  If ((-not $AllowExplicit) -or $DenyIntersects) {
+  If ((-not $AllowExplicit) -or $DenyIntersects -or (-not $InheritanceMatches)) {
     Throw ('The access control list on {0} does not grant {1} to {2} after the write.' -f $Path, $Rights, $Sid)
   }
 }

@@ -30,8 +30,14 @@ BeforeAll {
   $script:Allow = [System.Security.AccessControl.AccessControlType]::Allow
   $script:Deny = [System.Security.AccessControl.AccessControlType]::Deny
 
+  $script:ReadAndExecute = [System.Security.AccessControl.FileSystemRights]::ReadAndExecute
+  $script:Synchronize = [System.Security.AccessControl.FileSystemRights]::Synchronize
+
+  # Propagation defaults to None because that is what Windows writes and what every converged test
+  # means. It is a parameter so a test can model the InheritOnly entry that carries the right flags
+  # and grants nothing on the path itself.
   $script:NewAce = {
-    Param ($AceSid, $AceRights, $AceType, $AceInherited, $AceFlags)
+    Param ($AceSid, $AceRights, $AceType, $AceInherited, $AceFlags, $AcePropagation = 'None')
 
     $Identity = [PSCustomObject]@{ Value = $AceSid }
     $Identity | Add-Member -MemberType ScriptMethod -Name 'Translate' -Value {
@@ -45,6 +51,7 @@ BeforeAll {
       AccessControlType = $AceType
       IsInherited       = $AceInherited
       InheritanceFlags  = $AceFlags
+      PropagationFlags  = $AcePropagation
     }
   }
 
@@ -66,10 +73,17 @@ BeforeAll {
         }
         Return [PSCustomObject]@{
           IdentityReference = $RuleIdentity
-          FileSystemRights  = [System.Security.AccessControl.FileSystemRights]$A[1]
+          # Synchronize, because Windows adds it as it writes an allow. Measured on the target: a
+          # rule created as ReadAndExecute (131241) reads back as 1179817. Without this the model
+          # would let an exact-rights comparison pass that a real host would fail.
+          FileSystemRights  = [System.Security.AccessControl.FileSystemRights](
+            ([System.Int32][System.Security.AccessControl.FileSystemRights]$A[1]) -bor
+            ([System.Int32][System.Security.AccessControl.FileSystemRights]::Synchronize)
+          )
           AccessControlType = [System.Security.AccessControl.AccessControlType]$A[4]
           IsInherited       = $false
           InheritanceFlags  = [System.String]$A[2]
+          PropagationFlags  = [System.String]$A[3]
         }
       }
       default { Throw ('Unexpected type: {0}' -f $TypeName) }
@@ -106,6 +120,12 @@ BeforeAll {
 
   $script:Invoke = {
     & $script:ScriptPath -Path 'F:\WSUS\WsusContent' -Sid 'S-1-5-20' -Rights 'FullControl' `
+      -InheritanceFlags 'ContainerInherit, ObjectInherit'
+  }
+  # A second declaration, so a test can model an entry that grants MORE than was asked for. The
+  # over-grant case cannot be written with FullControl, because nothing exceeds it.
+  $script:InvokeReadOnly = {
+    & $script:ScriptPath -Path 'F:\WSUS\WsusContent' -Sid 'S-1-5-20' -Rights 'ReadAndExecute' `
       -InheritanceFlags 'ContainerInherit, ObjectInherit'
   }
   $script:InvokeWhatIf = {
@@ -173,6 +193,63 @@ Describe 'Set-AclGrant' {
       )
 
       $null = & $script:Invoke
+
+      $global:FakeCommitted | Should -Be 0
+      $global:Ansible.Changed | Should -BeFalse
+    }
+
+    # InheritOnly carries the declared inheritance flags and grants nothing on the path itself --
+    # children only. The service would hold no rights on the directory it has to write into, while
+    # a flags-only comparison called the entry correct and reported no change.
+    It 'rewrites an entry whose propagation is InheritOnly' {
+      $global:FakeAces = @(
+        (& $script:NewAce $script:NetworkService $script:FullControl $script:Allow $false 'ContainerInherit, ObjectInherit' 'InheritOnly')
+      )
+
+      $null = & $script:Invoke
+
+      $global:FakeCommitted | Should -Be 1
+      $global:Ansible.Result.changed | Should -BeTrue
+    }
+
+    # Two entries can OR together into the declared rights while neither is the entry this script
+    # declares -- and the write replaces both with one, so calling this converged would report no
+    # change on a state the next write still changes.
+    It 'rewrites when several explicit entries only add up to the rights' {
+      $global:FakeAces = @(
+        (& $script:NewAce $script:NetworkService $script:ReadAndExecute $script:Allow $false 'ContainerInherit, ObjectInherit')
+        (& $script:NewAce $script:NetworkService $script:FullControl $script:Allow $false 'ContainerInherit, ObjectInherit')
+      )
+
+      $null = & $script:Invoke
+
+      $global:FakeCommitted | Should -Be 1
+      @(@($global:FakeAces) | Where-Object { -not $_.IsInherited }) | Should -HaveCount 1
+    }
+
+    # This script declares the entry rather than adding to it, so an over-grant is drift too.
+    It 'reduces an entry that grants more than was declared' {
+      $global:FakeAces = @(
+        (& $script:NewAce $script:NetworkService $script:FullControl $script:Allow $false 'ContainerInherit, ObjectInherit')
+      )
+
+      $null = & $script:InvokeReadOnly
+
+      $global:FakeCommitted | Should -Be 1
+      $global:Ansible.Result.changed | Should -BeTrue
+    }
+
+    # Windows adds Synchronize as it writes an allow, so the entry a converged host holds is the
+    # declared rights PLUS that bit. Comparing against the declared value alone would find drift
+    # here on every converge and rewrite a correct entry forever.
+    It 'accepts the Synchronize bit Windows adds to a written allow' {
+      $global:FakeAces = @(
+        (& $script:NewAce $script:NetworkService ([System.Security.AccessControl.FileSystemRights](
+          ([System.Int32]$script:ReadAndExecute) -bor ([System.Int32]$script:Synchronize)
+        )) $script:Allow $false 'ContainerInherit, ObjectInherit')
+      )
+
+      $null = & $script:InvokeReadOnly
 
       $global:FakeCommitted | Should -Be 0
       $global:Ansible.Changed | Should -BeFalse

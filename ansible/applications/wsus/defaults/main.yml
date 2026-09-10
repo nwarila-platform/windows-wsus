@@ -108,14 +108,32 @@ wsus_defaults:
       object: 'applications/windows-wsus/tls/tcnaw-wsus01.tcn.trinitytechnicalservices.com.pfx'
       password_object: 'applications/windows-wsus/tls/tcnaw-wsus01.tcn.trinitytechnicalservices.com.pfx.password'
       password_sha256: '0ba43689e6f79a59fcf2ce0bfad2a868042d4e4eae92506b84ccb38f1bea6d59'
+
+      # The SAME certificate, public half only, because this server has to trust it as well as
+      # serve it. Once wsusutil records UsingSSL=1, WSUS's own API calls go over HTTPS to this
+      # machine and .NET validates what it is presented; a self-signed certificate is its own trust
+      # anchor, so without this in Root every converge AFTER the first fails on its first read of
+      # the WSUS API -- which is the second run, the one that is supposed to be the proof.
+      #
+      # Delivered as its own object rather than re-using the PFX, so the private key never enters
+      # the Root store.
+      public_object: 'applications/windows-wsus/tls/tcnaw-wsus01.tcn.trinitytechnicalservices.com.cer'
+      public_sha256: '3afd03b1f19b0f28b8a221f52cd68bddc04a2fe6c3e6df99f67343c7604b2e3e'
+
       sha256: '473880d30d30fd3f6fc32b9aedd6e9fd410d9a63b31c0152d993d9ed0a585e16'
       thumbprint: '8760E9DA2B79D7FCFB5C8DADD72628649029B348'
 
     # WHICH DIRECTORIES REFUSE PLAIN HTTP. Vendor-fixed rather than a preference: these five are
-    # the endpoints a client authenticates and reports through. Measured on a live server, the
-    # site also serves Content and Selfupdate, and both are deliberately absent -- requiring SSL
-    # on them breaks content delivery and legacy self-update, which is why Microsoft's own
-    # instructions name these five and stop.
+    # the endpoints a client authenticates and reports through, and Microsoft's own instructions
+    # name these five and stop.
+    #
+    # The site serves more than five, and every one of the others is deliberately absent. Measured:
+    # Content, Inventory and ReportingWebService on both images available here, and Selfupdate on
+    # the RTM one but NOT on the patched AMI -- SelfUpdate's presence tracks the WSUS patch level,
+    # not the OS version. Requiring SSL on Content breaks content delivery and on SelfUpdate breaks
+    # legacy self-update; Reporting and Inventory are simply not endpoints the vendor asks to be
+    # secured. Naming the five rather than deriving the list from what is installed is also what
+    # makes this indifferent to which of the others a given image happens to ship.
     secured_paths:
       - 'ApiRemoting30'
       - 'ClientWebService'

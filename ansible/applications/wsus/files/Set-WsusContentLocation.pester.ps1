@@ -226,5 +226,22 @@ Describe 'Set-WsusContentLocation' {
 
       $global:FakeMoveCalls | Should -Be 0
     }
+
+    # Suppression arrives as an injected -WhatIf, so the run's own Changed flag stays false on a
+    # host that plainly needs the move. Reporting that would tell a --check run the host was
+    # already where it should be, which is the one question --check exists to answer.
+    It 'still reports the change under -WhatIf, because the host needs one' {
+      $global:FakeApi = 'C:\WSUS\WsusContent'
+
+      $null = & $script:InvokeWhatIf
+
+      $global:Ansible.Result.changed | Should -BeTrue
+    }
+
+    It 'reports no change under -WhatIf when the content is already where it was declared' {
+      $null = & $script:InvokeWhatIf
+
+      $global:Ansible.Result.changed | Should -BeFalse
+    }
   }
 }

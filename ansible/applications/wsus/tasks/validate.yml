@@ -142,6 +142,21 @@
 # certificate is already in the machine store; a missing bucket is a task failure four regions in,
 # on a host that has already been changed. Nothing upstream can see this key, so it is this role's
 # to hold before its first mutation.
+# Ungated, and deliberately separate from the declaration below. Every other TLS guard is gated on
+# this flag, so a flag that is not a boolean disables its own validation: 'fase' coerces to false
+# with a deprecation warning, the whole TLS region is skipped, and the play succeeds with the server
+# still serving plain HTTP. A gate has to be checked by something outside the gate.
+- name: 'VALIDATE | Require The TLS Gate To Be A Real Boolean'
+  when: (state | default('present') | string | lower | trim) == 'present'
+  ansible.builtin.assert:
+    fail_msg: >-
+      Refusing to configure: wsus.tls.enabled must be a real boolean, written true or false. A
+      quoted string coerces silently, and because every other TLS check is gated on this value, a
+      typo here would switch off its own validation and leave the server on plain HTTP.
+    quiet: true
+    that:
+      - wsus_running.tls.enabled is boolean
+
 - name: 'VALIDATE | Require A Usable TLS Declaration'
   when:
     - (state | default('present') | string | lower | trim) == 'present'
@@ -154,9 +169,9 @@
     fail_msg: >-
       Refusing to configure: the TLS declaration is malformed. wsus.tls.certificate.bucket must
       name the S3 bucket holding the delivery and is deliberately never defaulted, because only
-      the pipeline knows which account it runs in. object and password_object must each be a
-      non-empty key, and sha256 and password_sha256 each sixty-four hexadecimal characters --
-      an object is trusted only once it matches the digest pinned here. thumbprint must be forty
+      the pipeline knows which account it runs in. object, password_object and public_object must
+      each be a non-empty key, and sha256, password_sha256 and public_sha256 each sixty-four
+      hexadecimal characters -- an object is trusted only once it matches the digest pinned here. thumbprint must be forty
       hexadecimal characters, naming the exact certificate the listener is pinned to rather than
       whichever one happens to carry the right subject. dns_name must be the name clients reach
       this server by, and wsus.tls.port a whole number in 1-65535. wsus.tls.secured_paths must
@@ -168,6 +183,8 @@
       - __cert__.password_object | default('', true) | length > 0
       - __cert__.sha256 | default('', true) is match('^[0-9a-f]{64}$')
       - __cert__.password_sha256 | default('', true) is match('^[0-9a-f]{64}$')
+      - __cert__.public_object | default('', true) | length > 0
+      - __cert__.public_sha256 | default('', true) is match('^[0-9a-f]{64}$')
       - __cert__.thumbprint | default('', true) is match('^[0-9A-Fa-f]{40}$')
       - __cert__.dns_name | default('', true) | trim is match(__host__)
       - __port__ is match('^[0-9]+$')

@@ -330,7 +330,11 @@ If ((-not $NeedsMove) -or $Moved) {
 
 $Result = [PSCustomObject]@{
   api_path      = [System.String]$ApiPath
-  changed       = [System.Boolean]$Ansible.Changed
+  # The DRIFT, not what this run managed to do about it. Suppression arrives as an injected
+  # -WhatIf, which leaves Ansible.Changed false on a host that plainly needs the move -- so
+  # reporting that value would tell a --check run the host was already where it should be, which
+  # is the one question --check exists to answer.
+  changed       = [System.Boolean]$NeedsMove
   check_mode    = [System.Boolean]$Ansible.CheckMode
   iis_path      = [System.String]$IisPath
   msg           = 'content root {0}: registry [{1}] api [{2}] iis [{3}]' -f $WantRoot, $RegistryPath, $ApiPath, $IisPath

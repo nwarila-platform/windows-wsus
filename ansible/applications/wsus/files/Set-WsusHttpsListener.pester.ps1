@@ -42,6 +42,25 @@ BeforeAll {
     'SimpleAuthWebService'
   )
 
+  # Import-Module is stubbed, not merely tolerated. The IIS: drive does not exist until
+  # WebAdministration is loaded, so a script that reads IIS:\ without importing it first would get
+  # 'drive not found' -- which -ErrorAction SilentlyContinue turns into 'nothing is bound'. Provider
+  # stubs cannot see that, so the import is asserted directly.
+  Function Import-Module {
+    [CmdletBinding()]
+    Param ( [System.String]$Name )
+
+    $global:FakeImported.Add($Name)
+  }
+
+  Function Get-WebBinding {
+    [CmdletBinding()]
+    Param ( [System.String]$Name, [System.String]$Protocol, [System.Int32]$Port )
+
+    If ($global:FakeSiteBindingMissing) { Return @() }
+    Return @([PSCustomObject]@{ protocol = $Protocol; bindingInformation = (':{0}:' -f $Port) })
+  }
+
   Function Get-Item {
     [CmdletBinding()]
     Param ( [System.String]$Path )
@@ -134,7 +153,7 @@ BeforeAll {
 
     If ($global:FakeWsusUtilExit -eq 0 -and -not $global:FakeWsusUtilNoOp) {
       $global:FakeUsingSsl = 1
-      $global:FakeRecordedName = $ArgumentList[1]
+      If (-not $global:FakeWsusUtilDropsName) { $global:FakeRecordedName = $ArgumentList[1] }
     }
 
     Return [PSCustomObject]@{ ExitCode = $global:FakeWsusUtilExit }
@@ -176,6 +195,9 @@ Describe 'Set-WsusHttpsListener' {
 
     $global:FakeOrder = [System.Collections.Generic.List[System.String]]::new()
     $global:FakeSslFlags = @{}
+    $global:FakeImported = [System.Collections.Generic.List[System.String]]::new()
+    $global:FakeSiteBindingMissing = $false
+    $global:FakeWsusUtilDropsName = $false
 
     $global:FakeCertMissing = $false
     $global:FakeCertThumbprint = $script:Pinned
@@ -324,6 +346,98 @@ Describe 'Set-WsusHttpsListener' {
 
       $global:FakeWsusUtilCalls | Should -Be 1
       $global:Ansible.Result.changed | Should -BeTrue
+    }
+  }
+
+  Context 'reaching the platform at all' {
+
+    # The IIS: drive does not exist until WebAdministration is loaded. Without the import every
+    # provider read fails as 'drive not found', which -ErrorAction SilentlyContinue reports as
+    # 'nothing is bound' -- so the script would decide the listener was empty and then throw on
+    # the write. Asserted here because no provider stub can reproduce a missing drive.
+    It 'loads WebAdministration before it touches the IIS provider' {
+      $null = & $script:Invoke
+
+      $global:FakeImported | Should -Contain 'WebAdministration'
+    }
+
+    # HTTP.SYS will hold a certificate mapping for a port no site listens on, so without this the
+    # script would attach a certificate, verify its own write, report success, and leave nothing
+    # serving.
+    It 'refuses a port the site has no https binding on' {
+      $global:FakeSiteBindingMissing = $true
+
+      { & $script:Invoke } | Should -Throw -ExpectedMessage '*has no https binding on port 8531*'
+      $global:FakeBindCalls | Should -Be 0
+    }
+  }
+
+  Context 'the state that cannot fix itself' {
+
+    # Between the directories requiring SSL and wsusutil persisting UsingSSL=1, the WSUS API is
+    # reachable over neither scheme. A host left there cannot converge again, because every later
+    # run's first act is to read that API.
+    It 'puts back what it secured when wsusutil fails' {
+      $global:FakeWsusUtilExit = 1
+
+      { & $script:Invoke } | Should -Throw -ExpectedMessage '*exited 1*'
+      ForEach ($Vdir In $script:Vdirs) {
+        $global:FakeSslFlags[('{0}/{1}' -f $script:Site, $Vdir)] | Should -Be 'None'
+      }
+    }
+
+    # Putting back a directory that was ALREADY requiring SSL would be a regression dressed as a
+    # rollback, so only what this run turned on comes back off.
+    It 'leaves directories that were already secured alone when it rolls back' {
+      & $script:Converge
+      $global:FakeSslFlags[('{0}/{1}' -f $script:Site, 'ClientWebService')] = ''
+      $global:FakeUsingSsl = 0
+      $global:FakeWsusUtilExit = 1
+
+      { & $script:Invoke } | Should -Throw -ExpectedMessage '*exited 1*'
+      $global:FakeSslFlags[('{0}/{1}' -f $script:Site, 'ClientWebService')] | Should -Be 'None'
+      $global:FakeSslFlags[('{0}/{1}' -f $script:Site, 'ApiRemoting30')] | Should -Be 'Ssl'
+    }
+
+    It 'reports the original failure, not the rollback' {
+      $global:FakeWsusUtilExit = 3
+
+      { & $script:Invoke } | Should -Throw -ExpectedMessage '*exited 3*'
+    }
+  }
+
+  Context 'the name WSUS records for itself' {
+
+    # wsusutil records the name without the padding it was handed, so a padded input compared
+    # against the recorded name never matches and re-runs wsusutil on every converge forever.
+    It 'normalises the declared name before comparing, running or reporting' {
+      & $script:Converge
+      $global:FakeRecordedName = $script:Dns
+
+      $null = & $script:ScriptPath @script:Arguments -DnsName ('  {0}  ' -f $script:Dns)
+
+      $global:FakeWsusUtilCalls | Should -Be 0
+    }
+
+    # The value name is the vendor's. Treating its absence as a mismatch would re-run wsusutil on
+    # every converge on a server that records the name somewhere else -- the role would report a
+    # change forever and never correct anything.
+    It 'does not churn when the server records no name at all' {
+      & $script:Converge
+      $global:FakeRecordedName = $null
+
+      $null = & $script:Invoke
+
+      $global:FakeWsusUtilCalls | Should -Be 0
+      $global:Ansible.Changed | Should -BeFalse
+    }
+
+    It 'fails when wsusutil exits zero and records a different name' {
+      & $script:Converge
+      $global:FakeRecordedName = 'stale.example.com'
+      $global:FakeWsusUtilDropsName = $true
+
+      { & $script:Invoke } | Should -Throw -ExpectedMessage '*not*'
     }
   }
 

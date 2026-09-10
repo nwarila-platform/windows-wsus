@@ -48,8 +48,13 @@
     .PARAMETER SecuredPath
         The virtual directories that must require SSL, as site-relative paths. Vendor-fixed rather
         than a preference: these are the endpoints a client authenticates and reports through.
-        Deliberately NOT every directory under the site -- Content and SelfUpdate serve unencrypted
-        by design, and requiring SSL on them breaks content delivery and legacy self-update.
+
+        Deliberately NOT every directory under the site. Content and SelfUpdate serve unencrypted
+        by design, and requiring SSL on them breaks content delivery and legacy self-update;
+        Reporting and Inventory are not endpoints the vendor asks to be secured. Taking the list
+        from the caller rather than enumerating the site is what makes this indifferent to which
+        of those a given image ships -- SelfUpdate, measured, is present at RTM and gone on a
+        patched image.
 
     .PARAMETER SiteName
         The IIS site WSUS installed. 'WSUS Administration' on a default installation; WSUS builds
@@ -267,6 +272,18 @@ $Wrote = $False
 
 $Wanted = $Thumbprint.Trim().ToUpperInvariant()
 
+# Normalised ONCE, here, and used for every comparison, for ShouldProcess, for wsusutil and for the
+# verification below. wsusutil records the name without the padding it was handed, so a padded input
+# compared against the recorded name never matches and re-runs wsusutil on every converge forever.
+$WantedName = $DnsName.Trim()
+
+# The IIS: drive does not exist until WebAdministration is loaded, and a provider path on a drive
+# that does not exist fails as 'drive not found'. Under -ErrorAction SilentlyContinue that failure
+# is indistinguishable from 'nothing is bound' -- the script would decide the listener is empty and
+# then throw on the write. Loaded explicitly, and with -ErrorAction Stop, because every read below
+# is only meaningful once it has succeeded.
+Import-Module -Name:'WebAdministration' -ErrorAction:'Stop'
+
 #region ------ [ The certificate this listener will present ] -------------------------------- #
 # Refused rather than assumed. The certificate is delivered from outside this role, so a failed
 # delivery or a key-less import is an input failure, and a listener bound to nothing answers the
@@ -300,6 +317,21 @@ If ($Certificate.NotAfter -lt (Get-Date)) {
 # so this attaches one and never adds or removes a binding. A wrong certificate is removed first --
 # the provider will not replace an existing entry in place, and leaving it binds the old one
 # forever.
+# The certificate mapping this script writes belongs to HTTP.SYS, and HTTP.SYS will happily hold a
+# mapping for a port no site listens on. Without this the script would attach a certificate to
+# 0.0.0.0:<port>, verify its own write, report success, and leave nothing serving -- so the site's
+# own binding is required first. Refused rather than created: WSUS ships the :8531: binding at
+# install, so its absence means the port is not the one this installation serves, which is a
+# declaration to correct rather than a listener for this role to invent.
+$SiteBinding = @(
+  Get-WebBinding -Name:$SiteName -Protocol:'https' -Port:$Port -ErrorAction:'SilentlyContinue'
+)
+If ($SiteBinding.Count -eq 0) {
+  Throw (
+    'The site [{0}] has no https binding on port {1}. WSUS creates its own at install, so declaring a port it does not serve would attach a certificate to a listener nothing answers on.' -f $SiteName, $Port
+  )
+}
+
 $SslPath = 'IIS:\SslBindings\0.0.0.0!{0}' -f $Port
 $BoundBefore = Get-Item -Path:$SslPath -ErrorAction:'SilentlyContinue'
 
@@ -332,6 +364,10 @@ If ($NeedsBinding -and $PSCmdlet.ShouldProcess($SslPath, 'Attach the pinned cert
 $NeedsSecuring = [System.Collections.Generic.List[System.String]]::new()
 $Secured = [System.Collections.Generic.List[System.String]]::new()
 
+# Only what THIS run turns on. Putting back a directory that was already requiring SSL would be a
+# regression dressed as a rollback.
+$SecuredThisRun = [System.Collections.Generic.List[System.String]]::new()
+
 ForEach ($Directory In $SecuredPath) {
   $Location = '{0}/{1}' -f $SiteName, $Directory.Trim('/')
   $Access = Get-WebConfiguration -Filter:'system.webServer/security/access' -PSPath:'IIS:\' -Location:$Location
@@ -346,6 +382,7 @@ ForEach ($Directory In $SecuredPath) {
 ForEach ($Location In $NeedsSecuring) {
   If ($PSCmdlet.ShouldProcess($Location, 'Require SSL')) {
     Set-WebConfigurationProperty -Filter:'system.webServer/security/access' -Name:'sslFlags' -PSPath:'IIS:\' -Location:$Location -Value:'Ssl'
+    $SecuredThisRun.Add($Location)
     $Ansible.Changed = $True
     $Wrote = $True
   }
@@ -377,13 +414,37 @@ If ($Null -ne $RecordedNameProperty) {
   $RecordedName = ([System.String]$RecordedNameProperty.Value).Trim()
 }
 
-$NeedsRecording = ((-not $UsingSsl) -or ($RecordedName -ne $DnsName))
+$NeedsRecording = (
+  (-not $UsingSsl) -or
+  (($RecordedName.Length -gt 0) -and ($RecordedName -ne $WantedName))
+)
 
-If ($NeedsRecording -and $PSCmdlet.ShouldProcess($DnsName, 'Record the SSL name WSUS hands its clients')) {
-  $Run = Start-Process -FilePath:$WsusUtilPath -ArgumentList:@('configuressl', $DnsName) -Wait -NoNewWindow -PassThru
+# The rollback exists for ONE state, and it is the state that cannot fix itself. Between the
+# directories requiring SSL and wsusutil persisting UsingSSL=1, the WSUS API is reachable over
+# neither scheme: HTTP is refused by the directories this run just secured, and nothing yet tells
+# the API to try HTTPS. A host left there cannot converge again, because every later run's first
+# act is to read that API. So a failure here puts back exactly what this run turned on -- never
+# what was already on, which would be a regression dressed as a rollback -- and then reports the
+# original failure rather than the rollback.
+If ($NeedsRecording -and $PSCmdlet.ShouldProcess($WantedName, 'Record the SSL name WSUS hands its clients')) {
+  Try {
+    $Run = Start-Process -FilePath:$WsusUtilPath -ArgumentList:@('configuressl', $WantedName) -Wait -NoNewWindow -PassThru
 
-  If ($Run.ExitCode -ne 0) {
-    Throw ('wsusutil configuressl {0} exited {1}; WSUS is still handing its clients the old URL.' -f $DnsName, $Run.ExitCode)
+    If ($Run.ExitCode -ne 0) {
+      Throw ('wsusutil configuressl {0} exited {1}; WSUS is still handing its clients the old URL.' -f $WantedName, $Run.ExitCode)
+    }
+  } Catch {
+    ForEach ($Location In $SecuredThisRun) {
+      # Best effort, and deliberately not allowed to mask the real failure: a rollback that throws
+      # would replace the operator's diagnosis with its own.
+      Try {
+        Set-WebConfigurationProperty -Filter:'system.webServer/security/access' -Name:'sslFlags' -PSPath:'IIS:\' -Location:$Location -Value:'None'
+      } Catch {
+        Write-Warning -Message:('Could not put {0} back to accepting plain HTTP; the WSUS API may be unreachable until it is.' -f $Location)
+      }
+    }
+
+    Throw
   }
 
   $Ansible.Changed = $True
@@ -428,6 +489,23 @@ If ($Wrote) {
     Throw 'WSUS still records itself as serving plain HTTP after wsusutil was told otherwise.'
   }
 
+  # Same 'only when one is recorded' rule as the read above, and for the same reason: the value
+  # name is the vendor's, and treating its absence as a mismatch would fail every run on a server
+  # that records the name somewhere else. When it IS recorded, a wsusutil that exited zero without
+  # persisting the new name would otherwise churn -- re-running on every converge, reporting a
+  # change every time, and never correcting anything.
+  $RecordedNameAfter = ''
+  $RecordedNameAfterProperty = $SetupAfter.PSObject.Properties['ServerCertificateName']
+  If ($Null -ne $RecordedNameAfterProperty) {
+    $RecordedNameAfter = ([System.String]$RecordedNameAfterProperty.Value).Trim()
+  }
+
+  If (($RecordedNameAfter.Length -gt 0) -and ($RecordedNameAfter -ne $WantedName)) {
+    Throw (
+      'WSUS records [{0}] as the name it hands its clients, not [{1}], after wsusutil exited zero.' -f $RecordedNameAfter, $WantedName
+    )
+  }
+
   $UsingSsl = $UsingSslAfter
   $Secured = [System.Collections.Generic.List[System.String]]::new()
   ForEach ($Directory In $SecuredPath) {
@@ -440,7 +518,7 @@ $Result = [PSCustomObject]@{
   bound       = [System.Boolean](-not $NeedsBinding -or $Wrote)
   changed     = [System.Boolean]($NeedsBinding -or ($NeedsSecuring.Count -gt 0) -or $NeedsRecording)
   check_mode  = [System.Boolean]$Ansible.CheckMode
-  msg         = 'https://{0}:{1} presenting {2}' -f $DnsName, $Port, $Wanted
+  msg         = 'https://{0}:{1} presenting {2}' -f $WantedName, $Port, $Wanted
   secured     = [System.String[]]$Secured.ToArray()
   ssl_enabled = [System.Boolean]$UsingSsl
   thumbprint  = [System.String]$Wanted

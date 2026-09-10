@@ -593,7 +593,7 @@
         script: "{{ lookup('ansible.builtin.file', 'Set-WsusUpstream.ps1') }}"
     #endregion --- [ Process: Point This Server At Its Upstream WSUS Source ] ----------------- #
 
-    #region ------ [ Process: Serve WSUS To Its Clients Over HTTPS ] ------------------------------ #
+    #region ------ [ Process: Serve WSUS To Its Clients Over HTTPS ] -------------------------- #
     # Last of the PROCESS regions, because every part of it needs a WSUS that is already installed,
     # already knows where its content lives, and already knows where its updates come from. TLS is
     # how clients reach that server, not part of building it.
@@ -657,12 +657,28 @@
           check_mode: false
           delegate_to: 'localhost'
 
+        # The module probes the BUCKET before the object, and that probe is authorized by a
+        # bucket-level grant this deployment deliberately does not hold: reading two pinned keys
+        # must not imply the right to see the bucket. Skipping the probe is the module's documented
+        # answer for exactly that policy shape. A missing object still fails loudly -- the key check
+        # uses head_object, which the object-level grant does authorize.
           amazon.aws.s3_object:
             bucket: "{{ __tls_cert__.bucket }}"
+            ceph: false
+            debug_botocore_endpoint_logs: false
             dest: "{{ __wsus_tls_controller__.path }}/certificate.pfx"
+            dualstack: false
+            encrypt: true
+            encryption_mode: 'AES256'
+            expiry: 600
+            ignore_nonexistent_bucket: true
             mode: 'get'
             object: "{{ __tls_cert__.object }}"
             overwrite: 'different'
+            permission: [ 'private' ]
+            prefix: ''
+            purge_tags: true
+            retries: 0
             sig_v4: true
             validate_bucket_name: true
             validate_certs: true
@@ -675,13 +691,68 @@
           no_log: true
           register: '__wsus_tls_password__'
 
+        # The module probes the BUCKET before the object, and that probe is authorized by a
+        # bucket-level grant this deployment deliberately does not hold: reading two pinned keys
+        # must not imply the right to see the bucket. Skipping the probe is the module's documented
+        # answer for exactly that policy shape. A missing object still fails loudly -- the key check
+        # uses head_object, which the object-level grant does authorize.
           amazon.aws.s3_object:
             bucket: "{{ __tls_cert__.bucket }}"
+            ceph: false
+            debug_botocore_endpoint_logs: false
+            dualstack: false
+            encrypt: true
+            encryption_mode: 'AES256'
+            expiry: 600
+            ignore_nonexistent_bucket: true
             mode: 'getstr'
             object: "{{ __tls_cert__.password_object }}"
+            overwrite: 'different'
+            permission: [ 'private' ]
+            prefix: ''
+            purge_tags: true
+            retries: 0
             sig_v4: true
             validate_bucket_name: true
             validate_certs: true
+
+        - name: 'PROCESS | Fetch The Server Trust Anchor To The Controller'
+          become: false
+          changed_when: false
+          check_mode: false
+          delegate_to: 'localhost'
+
+          amazon.aws.s3_object:
+            bucket: "{{ __tls_cert__.bucket }}"
+            ceph: false
+            debug_botocore_endpoint_logs: false
+            dest: "{{ __wsus_tls_controller__.path }}/trust-anchor.cer"
+            dualstack: false
+            encrypt: true
+            encryption_mode: 'AES256'
+            expiry: 600
+            ignore_nonexistent_bucket: true
+            mode: 'get'
+            object: "{{ __tls_cert__.public_object }}"
+            overwrite: 'different'
+            permission: [ 'private' ]
+            prefix: ''
+            purge_tags: true
+            retries: 0
+            sig_v4: true
+            validate_bucket_name: true
+            validate_certs: true
+
+        - name: 'PROCESS | Read The Delivered Trust Anchor Digest'
+          become: false
+          changed_when: false
+          check_mode: false
+          delegate_to: 'localhost'
+          register: '__wsus_tls_anchor__'
+
+          ansible.builtin.stat:
+            checksum_algorithm: 'sha256'
+            path: "{{ __wsus_tls_controller__.path }}/trust-anchor.cer"
 
         - name: 'PROCESS | Read The Delivered Certificate Digest'
           become: false
@@ -710,6 +781,8 @@
               - __wsus_tls_delivered__.stat.exists
               - __wsus_tls_delivered__.stat.checksum == __tls_cert__.sha256
               - __wsus_tls_password__.contents | hash('sha256') == __tls_cert__.password_sha256
+              - __wsus_tls_anchor__.stat.exists
+              - __wsus_tls_anchor__.stat.checksum == __tls_cert__.public_sha256
 
         # Unique per run, so a failed or concurrent run cannot leave PFX bytes for the next one to
         # find and reuse.
@@ -747,6 +820,30 @@
             store_location: 'LocalMachine'
             store_name: 'My'
 
+        - name: 'PROCESS | Copy The Trust Anchor To The Target'
+          changed_when: false
+          check_mode: false
+
+          ansible.windows.win_copy:
+            dest: "{{ __wsus_tls_target__.path }}\\trust-anchor.cer"
+            src: "{{ __wsus_tls_controller__.path }}/trust-anchor.cer"
+
+        # Root as well as My, and load-bearing rather than tidy. Once wsusutil records UsingSSL=1,
+        # WSUS's own API calls go over HTTPS to this machine and .NET validates what it is
+        # presented; a self-signed certificate is its own trust anchor, so without this every
+        # converge AFTER the first fails on its first read of the WSUS API -- which is the second
+        # run, the one that is supposed to be the proof.
+        #
+        # The public half, not the PFX, so the private key never enters the Root store. No password
+        # and no key_storage, because there is no key in this file.
+        - name: 'PROCESS | Install The Certificate As A Trust Anchor For This Server'
+
+          ansible.windows.win_certificate_store:
+            path: "{{ __wsus_tls_target__.path }}\\trust-anchor.cer"
+            state: 'present'
+            store_location: 'LocalMachine'
+            store_name: 'Root'
+
         # One script for all three, because a server holding any two of them serves nobody and
         # reads as configured. Explained in the script's own header.
         - name: 'PROCESS | Serve WSUS Over HTTPS With The Pinned Certificate'
@@ -767,16 +864,12 @@
       # having been set, because a failure early enough leaves the later ones undefined.
       always:
 
-        - name: 'CLEANUP | Remove The TLS Delivery From The Target'
-          changed_when: false
-          check_mode: false
-          when: (__wsus_tls_target__ | default({})).path | default('') | length > 0
-
-          ansible.windows.win_file:
-            path: "{{ __wsus_tls_target__.path }}"
-            state: 'absent'
-
-        - name: 'CLEANUP | Remove The TLS Delivery From The Controller'
+        # The CONTROLLER copy goes first, and the order is the whole point. Both copies hold the
+        # private key, but only one of these two tasks can be stopped by an unreachable guest --
+        # so the one that cannot is done first. Removing the target first and losing the
+        # connection would leave the runner's copy behind with nothing left to remove it, while a
+        # target that cannot be reached fails this task loudly instead of silently.
+        - name: 'PROCESS | Remove The TLS Delivery From The Controller'
           become: false
           changed_when: false
           check_mode: false
@@ -786,7 +879,16 @@
           ansible.builtin.file:
             path: "{{ __wsus_tls_controller__.path }}"
             state: 'absent'
-    #endregion --- [ Process: Serve WSUS To Its Clients Over HTTPS ] ------------------------------ #
+
+        - name: 'PROCESS | Remove The TLS Delivery From The Target'
+          changed_when: false
+          check_mode: false
+          when: (__wsus_tls_target__ | default({})).path | default('') | length > 0
+
+          ansible.windows.win_file:
+            path: "{{ __wsus_tls_target__.path }}"
+            state: 'absent'
+    #endregion --- [ Process: Serve WSUS To Its Clients Over HTTPS ] -------------------------- #
 
 #endregion --- [ Process: Configure WSUS on Windows ] ----------------------------------------- #
 

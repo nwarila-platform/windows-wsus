@@ -59,12 +59,13 @@ wsus_client_defaults:
   # the machines already chain -- one issued by the domain's own authority -- wants this off, and
   # a WSUS served over plain HTTP has nothing to trust.
   #
-  # Pinned twice, by digest on the delivered object and by thumbprint in the store, for the same
-  # reason as the server side: a trust anchor is the last thing that should be taken on faith.
+  # Pinned by digest on the delivered object, which is what decides the bytes that become an
+  # anchor -- a trust anchor is the last thing that should be taken on faith. There is deliberately
+  # no thumbprint here: the digest already determines the thumbprint, and a second pin that nothing
+  # reads is a claim rather than a check.
   # The bucket is absent because only the pipeline knows which account it runs in.
   certificate:
     enabled: true
     object: 'applications/windows-wsus/tls/tcnaw-wsus01.tcn.trinitytechnicalservices.com.cer'
     sha256: '3afd03b1f19b0f28b8a221f52cd68bddc04a2fe6c3e6df99f67343c7604b2e3e'
-    thumbprint: '8760E9DA2B79D7FCFB5C8DADD72628649029B348'
   #endregion --- [ Trusting the server ] ----------------------------------------------------- #

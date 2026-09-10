@@ -25,6 +25,9 @@
   vars:
     __host__: '[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*'
     __url__: "{{ wsus_client_running.server.url | default('', true) }}"
+    # Five digits is a shape, not a port. 99999 and 00000 both match the shape and neither can be
+    # dialled, and the failure surfaces as a machine that scans nothing rather than as an error.
+    __port__: "{{ __url__ | regex_search(':([0-9]{1,5})/?$', '\\1') | first | default('0', true) }}"
   ansible.builtin.assert:
     fail_msg: >-
       Refusing to configure: wsus_client.server.url must be the URL this machine reports to,
@@ -32,11 +35,13 @@
       deliberately never defaulted, because a defaulted one points a machine at whatever the last
       deployer's lab was and patching stops without anything reporting an error. The port is
       required because WSUS does not serve on 80 or 443, so a URL without one dials a port nothing
-      is listening on.
+      is listening on, and it must be a port that can actually be dialled -- 1 to 65535.
     quiet: true
     that:
       - __url__ is match('^https?://' ~ __host__ ~ ':[0-9]{1,5}/?$')
       - __url__ | length <= 255
+      - (__port__ | int) >= 1
+      - (__port__ | int) <= 65535
 
 - name: 'VALIDATE | Require A Usable Update Behaviour'
   when: (state | default('present') | string | lower | trim) == 'present'
@@ -57,6 +62,20 @@
 # The digest is checked here rather than after delivery for the same reason the server role checks
 # its own: this is a TRUST ANCHOR. A machine that installs the wrong one will trust whoever holds
 # the matching key, and it will do so quietly.
+# Ungated, for the reason the server role's twin records: the certificate checks below are gated on
+# this flag, so a flag that is not a boolean switches off its own validation.
+- name: 'VALIDATE | Require The Certificate Gate To Be A Real Boolean'
+  when: (state | default('present') | string | lower | trim) == 'present'
+  ansible.builtin.assert:
+    fail_msg: >-
+      Refusing to configure: wsus_client.certificate.enabled must be a real boolean, written true
+      or false. A quoted string coerces silently, and because the certificate checks are gated on
+      this value, a typo here would switch off its own validation and leave the machine dialling
+      https with no trust anchor.
+    quiet: true
+    that:
+      - wsus_client_running.certificate.enabled is boolean
+
 - name: 'VALIDATE | Require A Usable Certificate Declaration'
   when:
     - (state | default('present') | string | lower | trim) == 'present'
@@ -68,15 +87,14 @@
       Refusing to configure: the certificate declaration is malformed.
       wsus_client.certificate.bucket must name the S3 bucket holding the public certificate and is
       deliberately never defaulted, because only the pipeline knows which account it runs in.
-      object must be a non-empty key, sha256 sixty-four hexadecimal characters, and thumbprint
-      forty. This certificate becomes a trust anchor on every machine that receives it, so it is
-      pinned by digest before it is delivered and by thumbprint once it is in the store.
+      object must be a non-empty key and sha256 sixty-four hexadecimal characters. This
+      certificate becomes a trust anchor on every machine that receives it, so the bytes are pinned
+      by digest before anything installs them.
     quiet: true
     that:
       - __cert__.bucket | default('', true) | length > 0
       - __cert__.object | default('', true) | length > 0
       - __cert__.sha256 | default('', true) is match('^[0-9a-f]{64}$')
-      - __cert__.thumbprint | default('', true) is match('^[0-9A-Fa-f]{40}$')
 
 # A client that trusts a certificate it will never be shown is harmless; a client dialling https
 # with no anchor fails every scan with a transport error that names TLS and not WSUS. The two keys
