@@ -145,8 +145,8 @@ all_systems = [
         private_ip      = null
         security_groups = []
         # NO SSH RULE HERE, and its absence is the point. Reaching this host is a RUN-SCOPED grant
-        # the framework attaches at apply from runner_ip, plus an operator's own /32 from debug_ip
-        # when a human needs the held guest. Both are passed at apply time and neither is
+        # the framework attaches at apply: the runner's own address, plus a human's when the
+        # pipeline resolves one from the organisation secret naming their host. Neither is
         # committed, so this file never publishes who may reach the estate or from where. What
         # stood here was tcp/22 open to the whole IPv4 space, described in its own comment as a
         # temporary development-cycle allowance to be removed when the cycle ended. It has.
@@ -284,8 +284,8 @@ all_systems = [
         security_groups = []
         # EMPTY, and correctly so: this machine offers no service to anything. It reaches out to
         # WSUS and to the directory, and listens for nobody. Ansible arrives over the run-scoped
-        # grant the framework attaches from runner_ip, and a human over debug_ip -- both passed at
-        # apply time, neither committed here.
+        # grant the framework attaches for the runner, and a human over the address the pipeline
+        # resolves for them -- both at apply time, neither committed here.
         ingress = []
         # THREE rules, and what is absent from them is the point of this host.
         #

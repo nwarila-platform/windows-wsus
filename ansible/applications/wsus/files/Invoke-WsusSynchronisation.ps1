@@ -317,8 +317,8 @@ If ($NeedsSync -and $PSCmdlet.ShouldProcess($Server.Name, 'Synchronise from the 
 # read zero on a server that has finished, on a server that has not started, and on a server whose
 # download failed -- three states with nothing in common. Waiting on it would return instantly
 # from an empty queue and report a catalogue whose files never arrived. The byte counters are kept
-# for what they honestly are: telemetry -- and not reported at all, because read after the wait
-# they are zero every time and a number that is always zero invites a reader to conclude something.
+# not read at all. Read after the wait they are zero every time, and a number that is always zero
+# invites a reader to conclude something from it.
 #
 # UpdatesWithServerErrorsCount is checked too, because a download that will never succeed leaves
 # UpdatesNeedingFilesCount above zero forever, and waiting the full deadline for it is a slow way

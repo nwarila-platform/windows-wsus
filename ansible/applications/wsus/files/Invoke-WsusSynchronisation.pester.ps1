@@ -90,8 +90,8 @@ BeforeAll {
 
     # UpdatesNeedingFilesCount is what says whether the server HAS its files.
     # GetContentDownloadProgress says only what is downloading right now, which reads zero on a
-    # finished server, an unstarted one and a failed one alike -- so the script does not report it,
-    # and this stub keeps it only because the script may still read it while deciding.
+    # finished server, an unstarted one and a failed one alike. The script does not read it at all;
+    # the member stays only so the fake's surface matches the real object it stands in for.
     $Server | Add-Member -MemberType ScriptMethod -Name 'GetStatus' -Value {
       Return [PSCustomObject]@{
         UpdatesNeedingFilesCount     = $global:FakeNeedingFiles

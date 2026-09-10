@@ -5,7 +5,7 @@ SQL Server. Neither was discarded. Every behavioural contract they carried is re
 disposition the rebuilt role must satisfy, so that a removed test is a recorded obligation rather
 than a silently lowered bar.
 
-Four dispositions are used, and every named task and every test method carries exactly one:
+Five dispositions are used, and every named task and every test method carries exactly one:
 
 | Disposition | Meaning |
 |---|---|
@@ -13,6 +13,7 @@ Four dispositions are used, and every named task and every test method carries e
 | `reproduce against SQL` | The authority survives; the mechanism, literal, or matrix changes. The note names what changes. |
 | `invert` | The old authority is gone. The rebuild must assert its **absence**, not merely omit it. |
 | `drop` | Genuinely not owed. The note gives the reason. |
+| `superseded` | The authority was owed and has been settled a different way, or dissolved with something it depended on. The note says which, and names the numbered decision that records it. Distinct from `drop`: a dropped row was never owed, a superseded one was and is now discharged elsewhere. |
 
 ## Source of record
 
@@ -103,9 +104,9 @@ recursive walk yields, so this table diffs directly against the file.
 | 43 | `MAIN \| Tune WsusPool Application Pool` | reproduce against SQL | Same six attributes and values; the module changes under TD-004. Extend with rapid-fail protection, required by IIS Site STIG V-218777/V-218778 and not WSUS-exempt. |
 | 44 | `MAIN \| Restrict WSUS Update Languages` | reproduce | `AllUpdateLanguagesEnabled = false` plus an order-insensitive compare and post-`Save()` re-read. |
 | 45 | `MAIN \| Configure Upstream WSUS Source` | reproduce | Five-field diff, stop any in-flight sync before `Save()`, verify the persisted five. |
-| 46 | `MAIN \| Wait For The Configured Upstream WSUS Endpoint` | reproduce | Conditional on `sync.bootstrap_enabled`. |
-| 47 | `INFO \| Synchronization Proof Is Deliberately Disabled` | reproduce | The honesty marker: with the bootstrap off the run is a configuration smoke and claims nothing about reachability. |
-| 48 | `MAIN \| Bootstrap WSUS Category Sync To Terminal Success` | reproduce | Full invocation-ownership contract under `BootstrapInvocationContractTest`. |
+| 46 | `MAIN \| Wait For The Configured Upstream WSUS Endpoint` | superseded | `sync.bootstrap_enabled` no longer exists, and no reachability probe replaces this: an unreachable upstream surfaces as a failed synchronisation inside its own deadline. Decision 50.
+| 47 | `INFO \| Synchronization Proof Is Deliberately Disabled` | superseded | Dissolved with the flag it described. The synchronisation always runs, so there is no disabled case to be honest about. Decision 50.
+| 48 | `MAIN \| Bootstrap WSUS Category Sync To Terminal Success` | superseded | Implemented with the fingerprint replaced by the upstream actor's own change report, and invocation ownership consciously dropped -- one caller, one synchronisation, stopped to a full halt before a new one starts. Decision 50.
 | 49 | `MAIN \| Relocate IIS Logs To G:` | reproduce | `siteDefaults` and every site's `logFile.directory`/`enabled`, literal drive-qualified path, `%VAR%` treated as drift. |
 | 50 | `MAIN \| Validate + Normalize IIS wwwroot Target` | reproduce | Validate before any native module can expand a bad override. |
 | 51 | `MAIN \| Copy IIS wwwroot Content To G:` | reproduce | Content before repoint, so the relocated root is populated. |
@@ -130,7 +131,7 @@ recursive walk yields, so this table diffs directly against the file.
 | 70 | `MAIN \| Bind The Pinned Certificate To The WSUS HTTPS Endpoint` | reproduce | Full contract under `test_binding_converges_and_verifies_exact_wildcard_empty_host_listener`. |
 | 71 | `MAIN \| Require SSL On The Client-Facing WSUS Endpoints` | reproduce | The five-vdir list is vendor-fixed; written out below. |
 | 72 | `MAIN \| Activate And Verify The WSUS HTTPS Listener` | reproduce | Same shared reconciler as task 36. |
-| 73 | `VERIFY \| Complete A Live HTTPS Request To The WSUS Client Endpoint` | reproduce | 12 retries, 5s apart, `until rc == 0`. |
+| 73 | `VERIFY \| Complete A Live HTTPS Request To The WSUS Client Endpoint` | superseded | Discharged by something stronger: a real client on a machine with no route to Microsoft completing the handshake, rather than the server making a request of itself. Decision 50.
 | 74 | `CLEANUP \| Remove The Unique TLS Staging Directory From The Target` | reproduce | `always`. |
 | 75 | `CLEANUP \| Remove The Unique TLS Staging Directory From The Controller` | reproduce | `always`. |
 | 76 | `CLEANUP \| Clear The In-Memory PFX Password Fact` | reproduce | `always`, `no_log`. |
