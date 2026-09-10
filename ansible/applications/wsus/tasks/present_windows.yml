@@ -910,6 +910,7 @@
     # true, because every non-empty string casts true.
 
     - name: 'PROCESS | Point This Server At Its Upstream WSUS Source'
+      register: '__wsus_upstream__'
 
       ansible.windows.win_powershell:
         depth: 3
@@ -921,6 +922,33 @@
           UseSsl: "{{ wsus_running.sync.upstream_use_ssl }}"
         script: "{{ lookup('ansible.builtin.file', 'Set-WsusUpstream.ps1') }}"
     #endregion --- [ Process: Point This Server At Its Upstream WSUS Source ] ----------------- #
+
+    #region ------ [ Process: Bring The Catalogue Down From The Upstream ] -------------------- #
+    # Pointing a server at an upstream fetches nothing. Until a synchronisation completes this
+    # server offers its clients an empty catalogue -- and a client that asks an empty server
+    # reports "no updates required" and looks exactly like success. That silence is the failure
+    # this region exists to remove, and it is the only one in the role a client can see.
+    #
+    # Force is the upstream actor's OWN change report rather than a fingerprint recomputed here.
+    # The question is "does the catalogue on disk come from the source we are now pointed at", and
+    # the task that re-pointed the server has already answered it. The contract reached the same
+    # answer by hashing five values into a registry marker; this reaches it by asking the task
+    # that knows.
+    #
+    # default({}) because under --check the module reports what it would do without a result, and
+    # a run that cannot read the flag should decline to force rather than fail reading it.
+
+    - name: 'PROCESS | Bring The Catalogue And Its Content Down From The Upstream'
+
+      ansible.windows.win_powershell:
+        depth: 3
+        error_action: 'stop'
+        parameters:
+          ContentTimeoutSeconds: "{{ wsus_running.sync.content_timeout_seconds }}"
+          Force: "{{ (__wsus_upstream__.result | default({})).changed | default(false) }}"
+          TimeoutSeconds: "{{ wsus_running.sync.timeout_seconds }}"
+        script: "{{ lookup('ansible.builtin.file', 'Invoke-WsusSynchronisation.ps1') }}"
+    #endregion --- [ Process: Bring The Catalogue Down From The Upstream ] -------------------- #
 #endregion --- [ Process: Configure WSUS on Windows ] ----------------------------------------- #
 
 

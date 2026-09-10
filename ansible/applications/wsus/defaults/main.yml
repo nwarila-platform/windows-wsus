@@ -76,7 +76,14 @@ wsus_defaults:
   # upstream's property and not something this role can arrange. replica true is the mirror
   # topology the port and the upstream imply: approvals are made once, upstream, and inherited.
   sync:
+    # HOW LONG TO WAIT for the catalogue, and then for the bytes behind it. Deployer values because
+    # they are a property of the link and of what the upstream holds, not of this role: a downstream
+    # of a small curated upstream converges in minutes, and one of a full Microsoft mirror does not.
+    # Generous rather than tight -- the cost of waiting is a slow run, and the cost of giving up
+    # early is a server that reports itself configured and serves an empty catalogue.
+    content_timeout_seconds: 3600
     replica: true
+    timeout_seconds: 3600
     upstream_port: 8530
     upstream_use_ssl: false
   #endregion --- [ Upstream source ] --------------------------------------------------------- #
