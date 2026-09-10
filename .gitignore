@@ -70,6 +70,8 @@
 !/ansible/applications/wsus/files/Invoke-SusdbAdoption.ps1
 !/ansible/applications/wsus/files/Set-AclGrant.pester.ps1
 !/ansible/applications/wsus/files/Set-AclGrant.ps1
+!/ansible/applications/wsus/files/Set-WsusContentLocation.pester.ps1
+!/ansible/applications/wsus/files/Set-WsusContentLocation.ps1
 !/ansible/applications/wsus/files/Set-WsusUpdateLanguage.pester.ps1
 !/ansible/applications/wsus/files/Set-WsusUpdateLanguage.ps1
 !/ansible/applications/wsus/meta/main.yml

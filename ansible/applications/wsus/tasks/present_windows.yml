@@ -14,10 +14,10 @@
 # forbids the materialization step that would otherwise produce it.
 #
 # --check against a host that has never converged does not complete: win_file predicts the
-# directories rather than creating them, and win_acl needs a path that exists even to predict
-# against. That is the ordinary limit of check mode on tasks that depend on an earlier task's
-# side effect, not something this role can repair without carrying conditionals for a path the
-# lifecycle never runs. --check against a converged host reads and proves normally.
+# directories rather than creating them, and the access-control actor reads a descriptor from a
+# path that does not exist yet. That is the ordinary limit of check mode on tasks that depend on
+# an earlier task's side effect, not something this role can repair without carrying conditionals
+# for a path the lifecycle never runs. --check against a converged host reads normally.
 #
 # ============================================================================================= #
 ---
@@ -259,11 +259,16 @@
     #endregion --- [ Process: Create The Database Directories On The Data Volume ] ------------ #
 
     #region ------ [ Process: Grant The Instance FullControl On The Database Directories ] ---- #
-    # The per-service account, which Windows resolves to a SID derived from the service NAME
-    # rather than from the machine -- so the entry this writes is the one a REPLACEMENT operating
-    # system reading the same volume would also resolve, which is what lets the data volume outlive
-    # the host. END compares that SID rather than this name, because a renamed or localised
-    # principal would satisfy a name comparison while granting nothing.
+    # The per-service account, whose SID Windows derives from the service NAME rather than from the
+    # machine -- so the entry this writes is the one a REPLACEMENT operating system reading the same
+    # volume would also resolve, which is what lets the data volume outlive the host. Passed as the
+    # SID the placement read already resolved, because a name comparison would be satisfied by a
+    # renamed or localised principal that grants nothing.
+    #
+    # Set rather than added, for the same reason the content paths are: an additive grant leaves a
+    # DENY on the same identity standing, and Windows evaluates deny first -- so the allow would be
+    # written, the task would report ok on every later run, and SUSDB still could not grow. That is
+    # the one thing two clean runs cannot prove here, so the actor removes it instead.
 
     - name: 'PROCESS | Grant The Instance FullControl On The Database Directories'
       loop:
@@ -272,15 +277,15 @@
       loop_control:
         label: "{{ item }}"
 
-      ansible.windows.win_acl:
-        follow: false
-        inherit: 'ContainerInherit, ObjectInherit'
-        path: "{{ item }}"
-        propagation: 'None'
-        rights: 'FullControl'
-        state: 'present'
-        type: 'allow'
-        user: 'NT SERVICE\MSSQLSERVER'
+      ansible.windows.win_powershell:
+        depth: 3
+        error_action: 'stop'
+        parameters:
+          InheritanceFlags: 'ContainerInherit, ObjectInherit'
+          Path: "{{ item }}"
+          Rights: 'FullControl'
+          Sid: "{{ __wsus_placement__.result.service_sid }}"
+        script: "{{ lookup('ansible.builtin.file', 'Set-AclGrant.ps1') }}"
     #endregion --- [ Process: Grant The Instance FullControl On The Database Directories ] ---- #
 
     #region ------ [ Process: Pin The Instance Default Data And Log Directories ] ------------- #
@@ -435,64 +440,52 @@
           - "CONTENT_DIR={{ __content_dir__ }}"
     #endregion --- [ Process: Complete The Post-Installation Against The SQL Instance ] ------- #
 
-    #region ------ [ Process: Reconcile Where WSUS Keeps Its Content ] ------------------------ #
-    # WSUS records the content location in three places and only wsusutil keeps them together: the
-    # registry holds the ROOT, the server API holds the CACHE one level below it, and IIS holds the
-    # cache again as the physical path that actually serves files to clients.
-    #
-    # The realistic path to disagreement is a re-declaration -- an operator changes the content
-    # drive letter and converges -- which leaves the store where it was while this role now asks
-    # for somewhere else. movecontent is the only supported repair, and it COPIES: -skipcopy is
-    # deliberately absent, because a reconcile that switched the pointers without moving the bytes
-    # would leave a server that reports health and serves nothing.
-    #
-    # The refusal ahead of it covers the state movecontent cannot repair. If the API already names
-    # the right cache while the registry names somewhere else, the two have been edited apart by
-    # hand; moving content again would not reconcile them, and writing the registry directly is
-    # unsupported. That fails closed for an operator rather than guessing.
+    #region ------ [ Process: Ensure The WSUS Services Are Running ] -------------------------- #
+    # Post-installation configures the server; it does not guarantee the services that answer for
+    # it came back. In this order, because IIS hosts the WSUS endpoints and a WsusService started
+    # against a stopped W3SVC has nothing to serve.
 
-    - name: 'PROCESS | Read Where WSUS Currently Keeps Its Content'
-      changed_when: false
-      register: '__wsus_content_where__'
+    - name: 'PROCESS | Ensure The WSUS Services Are Running'
+      loop: ['W3SVC', 'WsusService']
+      loop_control:
+        label: "{{ item }}"
+
+      ansible.windows.win_service:
+        dependency_action: 'set'
+        desktop_interact: false
+        force_dependent_services: false
+        name: "{{ item }}"
+        start_mode: 'auto'
+        state: 'started'
+
+    #endregion --- [ Process: Ensure The WSUS Services Are Running ] -------------------------- #
+
+    #region ------ [ Process: Reconcile Where WSUS Keeps Its Content ] ------------------------ #
+    # WSUS records where its content lives in three places -- the registry root, the API cache one
+    # level below it, and the IIS Content virtual directory that actually serves files -- and only
+    # wsusutil movecontent updates them together. The realistic path to disagreement is a
+    # re-declaration: an operator changes the content drive letter and converges, leaving the store
+    # where it was while this role now asks for somewhere else.
+    #
+    # After the services, because the script asks the WSUS API where the content is and the API
+    # answers only once the server is up. Reading a stopped server as an empty answer would compare
+    # as "wrong place" and start copying a populated store, so the script refuses that read rather
+    # than guessing -- but the ordering is what keeps the refusal from firing on every reboot.
+    #
+    # One task, not a read and a decision and a command. The script owns the whole concern: it
+    # refuses the split brain movecontent cannot repair, moves when the API names the wrong cache,
+    # and checks all three records against the declaration afterwards.
+
+    - name: 'PROCESS | Reconcile Where WSUS Keeps Its Content'
 
       ansible.windows.win_powershell:
         depth: 3
         error_action: 'stop'
-        script: "{{ lookup('ansible.builtin.file', 'Get-WsusContentLocation.ps1') }}"
-
-    # ----------------------------------------------------------------------------------------- #
-
-    - name: 'PROCESS | Refuse A Content Location Edited Apart By Hand'
-
-      ansible.builtin.assert:
-        fail_msg: >-
-          WSUS records its content location inconsistently: the API names
-          '{{ __wsus_content_where__.result.api_path }}', which is where this role wants it,
-          but the registry names '{{ __wsus_content_where__.result.registry_path }}' rather
-          than '{{ __content_dir__ }}'. Only wsusutil moves all three together, and it cannot
-          repair this: the two have been edited apart. Writing the registry directly is
-          unsupported, so this refuses rather than guessing. Re-run WSUS post-installation.
-        quiet: true
-        that:
-          - >-
-            (__wsus_content_where__.result.api_path | lower)
-            != ((__content_dir__ ~ '\\WsusContent') | lower)
-            or (__wsus_content_where__.result.registry_path | lower)
-            == (__content_dir__ | lower)
-
-    # ----------------------------------------------------------------------------------------- #
-
-    - name: 'PROCESS | Move The Content Store To The Declared Root'
-      when: >-
-        (__wsus_content_where__.result.api_path | lower)
-        != ((__content_dir__ ~ '\\WsusContent') | lower)
-
-      ansible.windows.win_command:
-        argv:
-          - 'C:\Program Files\Update Services\Tools\wsusutil.exe'
-          - 'movecontent'
-          - "{{ __content_dir__ }}"
-          - 'C:\Windows\Temp\wsus-movecontent.log'
+        parameters:
+          ContentRoot: "{{ __content_dir__ }}"
+          MoveLogPath: 'C:\Windows\Temp\wsus-movecontent.log'
+          WsusUtilPath: 'C:\Program Files\Update Services\Tools\wsusutil.exe'
+        script: "{{ lookup('ansible.builtin.file', 'Set-WsusContentLocation.ps1') }}"
     #endregion --- [ Process: Reconcile Where WSUS Keeps Its Content ] ------------------------ #
 
     #region ------ [ Process: Grant The WSUS Service Rights On The Content Cache ] ------------ #
@@ -543,26 +536,6 @@
         script: "{{ lookup('ansible.builtin.file', 'Set-AclGrant.ps1') }}"
     #endregion --- [ Process: Grant Interactive Users Browse Access On The Content Root ] ----- #
 
-    #region ------ [ Process: Ensure The WSUS Services Are Running ] -------------------------- #
-    # Post-installation configures the server; it does not guarantee the services that answer for
-    # it came back. In this order, because IIS hosts the WSUS endpoints and a WsusService started
-    # against a stopped W3SVC has nothing to serve.
-
-    - name: 'PROCESS | Ensure The WSUS Services Are Running'
-      loop: ['W3SVC', 'WsusService']
-      loop_control:
-        label: "{{ item }}"
-
-      ansible.windows.win_service:
-        dependency_action: 'set'
-        desktop_interact: false
-        force_dependent_services: false
-        name: "{{ item }}"
-        start_mode: 'auto'
-        state: 'started'
-
-    #endregion --- [ Process: Ensure The WSUS Services Are Running ] -------------------------- #
-
     #region ------ [ Process: Restrict The Update Languages WSUS Will Accept ] ---------------- #
     # A WSUS server installs with every language Microsoft publishes enabled, so a synchronisation
     # would pull metadata and binaries for all of them. On a server that patches one estate that is
@@ -596,8 +569,6 @@
   vars:
     __desired_data__: "{{ wsus_running.db.drive_letter }}:\\{{ wsus_running.db.data_subdir }}"
     __desired_log__: "{{ wsus_running.db.drive_letter }}:\\{{ wsus_running.db.log_subdir }}"
-    __content_dir__: "{{ wsus_running.content.drive_letter }}:\\{{ wsus_running.content.subdir }}"
-    __wsus_machine_name__: "{{ __wsus_computer_name__.value }}"
 
   # Begin The 'End' Block
   block:
@@ -610,14 +581,14 @@
     # A restarted instance reports Running before it accepts connections, so opening the
     # connection can throw for a few seconds after PROCESS. Retrying covers that, and with it
     # every other throw this read can raise -- a host missing the service or the settings key
-    # spends the full minute before failing. What it does NOT cover is a wrong answer: an engine
-    # that responds and names the wrong directory returns successfully, and the asserts below
-    # fail it on the first attempt.
+    # spends the full minute before failing.
+    #
     # Reading successfully is not the same as the engine being up. win_reboot returns at the
     # logon prompt, before the auto-start services have finished, and the script reports a
-    # Start Pending instance as a clean read with placement_read false -- which would fail two
-    # asserts below on a host that is converging correctly. `and` short-circuits, so a genuinely
-    # failed read never dereferences .result.
+    # Start Pending instance as a clean read with placement_read false. The until condition
+    # therefore requires placement_read as well as success, so the retry covers a half-started
+    # engine rather than accepting its answer. `and` short-circuits, so a genuinely failed read
+    # never dereferences .result.
     - name: 'END | Re-Read Where This Instance Creates Databases'
       register: '__wsus_placement_proof__'
       retries: 12
