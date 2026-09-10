@@ -1,0 +1,40 @@
+# =========================================================================================== #
+# File: '{{ role_path }}/meta/main.yml'
+# --- [ Description ] ----------------------------------------------------------------------- #
+# Role metadata for wsus_client. Description-only (style guide 8): NOT an enforcing argument
+# spec. The role's tasks/validate.yml enforces its merged-config guards.
+#
+# REQUIRED INPUTS: 'wsus_client.server.url'. WHICH WSUS a machine reports to is a property of the
+# deployment, so the play publishes it and validate.yml refuses a run that omits it. The
+# certificate bucket is required on the same reasoning as the server role's: only the pipeline
+# knows which account it runs in.
+#
+# This role configures a client to USE a WSUS server. It does not install updates and does not
+# approve any: what a client is offered is the server's decision, which is the whole point of
+# pointing a client at one.
+#
+# =========================================================================================== #
+---
+galaxy_info:
+
+  role_name: 'wsus_client'
+  namespace: 'nwarila_platform'
+  author: 'nwarila-platform'
+  description: >-
+    Points a Windows machine at a WSUS server and teaches it to trust that server's certificate,
+    so the machine takes its updates from the estate rather than from Microsoft.
+
+  license: 'MIT'
+  min_ansible_version: '2.17'
+
+  platforms:
+    - name: 'Windows'
+      versions:
+        - '2025'
+
+  galaxy_tags:
+    - 'wsus'
+    - 'windowsupdate'
+    - 'windows'
+
+dependencies: []

@@ -1,0 +1,14 @@
+# ============================================================================================= #
+# File: '{{ role_path }}/tasks/clean_windows.yml'
+# --- [ Description ] ----------------------------------------------------------------------- #
+#
+# state=clean removes what this role STAGED on the guest, never what it configured. The loader
+# resolves an OS task file per state, so this file has to exist for 'clean' to dispatch at all --
+# the local style contract names it alongside present_windows.yml.
+#
+# It is deliberately empty. This role stages one artefact, the certificate it teaches the client
+# to trust, and removes it in the same run's 'always' whether that run converged or threw. There
+# is nothing left for a later 'clean' to find.
+#
+# ============================================================================================= #
+---

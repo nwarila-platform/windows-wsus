@@ -26,6 +26,11 @@
 !/ansible/applications/wsus/meta/
 !/ansible/applications/wsus/tasks/
 !/ansible/applications/wsus/vars/
+!/ansible/applications/wsus_client/
+!/ansible/applications/wsus_client/defaults/
+!/ansible/applications/wsus_client/meta/
+!/ansible/applications/wsus_client/tasks/
+!/ansible/applications/wsus_client/vars/
 !/ansible/inventory/
 !/ansible/playbooks/
 !/docs/
@@ -84,6 +89,13 @@
 !/ansible/applications/wsus/tasks/present_windows.yml
 !/ansible/applications/wsus/tasks/validate.yml
 !/ansible/applications/wsus/vars/windows.yml
+!/ansible/applications/wsus_client/defaults/main.yml
+!/ansible/applications/wsus_client/meta/main.yml
+!/ansible/applications/wsus_client/tasks/clean_windows.yml
+!/ansible/applications/wsus_client/tasks/main.yml
+!/ansible/applications/wsus_client/tasks/present_windows.yml
+!/ansible/applications/wsus_client/tasks/validate.yml
+!/ansible/applications/wsus_client/vars/windows.yml
 !/ansible/inventory/aws_ec2.yml
 !/ansible/playbooks/wsus-aws.yml
 

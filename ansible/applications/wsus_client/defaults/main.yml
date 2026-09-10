@@ -1,0 +1,70 @@
+# =========================================================================================== #
+# File: '{{ role_path }}/defaults/main.yml'
+# --- [ Description ] ----------------------------------------------------------------------- #
+#
+# Lowest-precedence configuration for the wsus_client role. The v3 loader merges the OS overlay in
+# vars/ over this map and publishes the result as 'wsus_client_running'; tasks read only the
+# merged map.
+#
+# WHAT BELONGS HERE: the values a deployer can meaningfully choose -- which server a machine
+# reports to, how it is allowed to behave once it does, and which certificate it must trust to
+# reach that server over TLS.
+#
+# WHAT DOES NOT: constants wearing a default's clothes. The registry paths Windows Update policy
+# lives under, the names of the values in them, and the name of the Windows Update service are
+# fixed by the product. They are written where they are used.
+#
+# =========================================================================================== #
+---
+
+wsus_client_defaults:
+
+  #region ------ [ Which server ] ------------------------------------------------------------ #
+  # WHERE THIS MACHINE TAKES ITS UPDATES FROM, as the URL clients dial -- scheme, host and port.
+  # A property of the deployment, so it is published by the play and deliberately absent here;
+  # validate.yml refuses a run that omits it. Defaulting it would point a machine at whatever the
+  # last deployer's lab was, which is the one mistake nobody notices until patching stops.
+  #
+  # ONE url, written to BOTH the update service and the statistics server. They address the same
+  # WSUS site: the statistics server is where clients POST detection and installation results,
+  # which WSUS serves from the same site and port as the client web service. Splitting them only
+  # makes sense in topologies that offload reporting elsewhere, and a MISMATCH is the classic
+  # cause of clients that appear in the console and never report status. Encoding it as one value
+  # makes that mismatch unrepresentable.
+  server: {}
+  #endregion --- [ Which server ] ------------------------------------------------------------ #
+
+  #region ------ [ How the machine behaves once pointed ] ------------------------------------ #
+  # 4 is download and install on a schedule, which is what makes a machine actually take what the
+  # server approved. The other documented options -- 2 notify only, 3 download then notify, 5 let
+  # a local administrator choose -- are genuine estate decisions, so this is declared rather than
+  # written into the role.
+  #
+  # allow_internet_locations false is the setting most often missed and the one that makes a test
+  # conclusive rather than suggestive. With it false, Windows Update and Defender cannot reach
+  # Microsoft directly, so anything this machine installs came from WSUS and nowhere else. With it
+  # true, a machine can update itself from Microsoft while WSUS delivers nothing, and look healthy.
+  updates:
+    allow_internet_locations: false
+    auto_update_option: 4
+  #endregion --- [ How the machine behaves once pointed ] ------------------------------------ #
+
+  #region ------ [ Trusting the server ] ----------------------------------------------------- #
+  # A client will not talk to an HTTPS endpoint whose certificate it cannot chain, and the POC
+  # server presents a self-signed certificate, so the client is given that certificate as a trust
+  # anchor. The PUBLIC certificate only: the client needs to verify the server, never to be it,
+  # so the private key stays where it is served from and never reaches a client.
+  #
+  # enabled is a real choice rather than a formality: an estate whose WSUS presents a certificate
+  # the machines already chain -- one issued by the domain's own authority -- wants this off, and
+  # a WSUS served over plain HTTP has nothing to trust.
+  #
+  # Pinned twice, by digest on the delivered object and by thumbprint in the store, for the same
+  # reason as the server side: a trust anchor is the last thing that should be taken on faith.
+  # The bucket is absent because only the pipeline knows which account it runs in.
+  certificate:
+    enabled: true
+    object: 'applications/windows-wsus/tls/tcnaw-wsus01.tcn.trinitytechnicalservices.com.cer'
+    sha256: '3afd03b1f19b0f28b8a221f52cd68bddc04a2fe6c3e6df99f67343c7604b2e3e'
+    thumbprint: '8760E9DA2B79D7FCFB5C8DADD72628649029B348'
+  #endregion --- [ Trusting the server ] ----------------------------------------------------- #

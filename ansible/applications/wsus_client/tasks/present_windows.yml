@@ -1,0 +1,250 @@
+# ============================================================================================= #
+# File: '{{ role_path }}/tasks/present_windows.yml'
+# --- [ Description ] ----------------------------------------------------------------------- #
+#
+# Points a Windows machine at a WSUS server and teaches it to trust that server's certificate.
+#
+# There is no BEGIN stage. BEGIN exists to read a machine and decide which of several actions the
+# machine needs; here every value is declared and none of them depends on what is already there,
+# so a read would decide nothing and only give the role something to disagree with itself about.
+#
+# There is no END stage either. What this role writes is proven by running the playbook twice: a
+# second run that reports no change is the statement that every value landed and stayed. What the
+# role does NOT control -- whether the server actually offers this machine anything -- is not a
+# thing to assert, it is a thing to go and measure against the server.
+#
+# ============================================================================================= #
+---
+
+#region ------ [ Process: Point This Machine At Its WSUS Server ] ----------------------------- #
+
+- name: 'PROCESS | Point This Machine At Its WSUS Server'
+  vars:
+    __client__: "{{ wsus_client_running }}"
+    __cert__: "{{ wsus_client_running.certificate }}"
+
+    # Product constants, written where they are used rather than pretending to be configuration:
+    # these are the paths Windows reads its update policy from, and no site chooses them.
+    __policy_root__: 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate'
+    __policy_au__: 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU'
+
+    # One list, because these six values are one decision. A machine holding some of them is not
+    # partly pointed at WSUS -- UseWUServer without WUServer scans nothing, WUServer without
+    # UseWUServer is ignored, and WUServer without WUStatusServer produces the client that appears
+    # in the console and never reports. Declaring them together is what makes the partial states
+    # unreachable.
+    __policy_values__:
+      - path: "{{ __policy_root__ }}"
+        name: 'WUServer'
+        data: "{{ __client__.server.url }}"
+        type: 'string'
+
+      - path: "{{ __policy_root__ }}"
+        name: 'WUStatusServer'
+        data: "{{ __client__.server.url }}"
+        type: 'string'
+
+      - path: "{{ __policy_root__ }}"
+        name: 'DoNotConnectToWindowsUpdateInternetLocations'
+        data: "{{ 0 if __client__.updates.allow_internet_locations | bool else 1 }}"
+        type: 'dword'
+
+      - path: "{{ __policy_au__ }}"
+        name: 'UseWUServer'
+        data: 1
+        type: 'dword'
+
+      - path: "{{ __policy_au__ }}"
+        name: 'NoAutoUpdate'
+        data: 0
+        type: 'dword'
+
+      - path: "{{ __policy_au__ }}"
+        name: 'AUOptions'
+        data: "{{ __client__.updates.auto_update_option }}"
+        type: 'dword'
+
+  # Begin The 'Process' Block
+  block:
+
+    #region ------ [ Process: Teach This Machine To Trust The Server ] ----------------------- #
+    # First, because the policy below points the machine at an https endpoint and a machine that
+    # cannot chain that endpoint's certificate fails every scan with a transport error naming TLS.
+    # Trust before the thing that needs it.
+    #
+    # The PUBLIC certificate only. A client needs to verify the server, never to be it, so the
+    # private key stays on the server and what travels here cannot impersonate anything.
+    #
+    # Controller-side delivery, as the server role does it, and for the same measured reason: this
+    # guest has no outbound route to S3.
+    #
+    # Wrapped in its own block so the staging directories go away whether this converged, refused
+    # or threw.
+    - name: 'PROCESS | Teach This Machine To Trust The WSUS Server'
+      when: __cert__.enabled | bool
+
+      # Begin The 'Trust' Block
+      block:
+
+        # become is off explicitly on every controller task. The framework chassis turns become on
+        # for every task, and these run on the CONTROLLER, where elevation buys nothing and a
+        # runner that cannot sudo without a password would fail the play on a task never needing
+        # root.
+        - name: 'PROCESS | Create A Staging Directory For The Certificate On The Controller'
+          become: false
+          changed_when: false
+          check_mode: false
+          delegate_to: 'localhost'
+          register: '__wsus_client_controller__'
+
+          ansible.builtin.tempfile:
+            prefix: 'windows-wsus-client-'
+            state: 'directory'
+
+        - name: 'PROCESS | Restrict The Controller Staging Directory'
+          become: false
+          changed_when: false
+          check_mode: false
+          delegate_to: 'localhost'
+
+          ansible.builtin.file:
+            mode: '0700'
+            path: "{{ __wsus_client_controller__.path }}"
+            state: 'directory'
+
+        # check_mode is off for the reason the framework's own S3 fetch records: s3_object supports
+        # check mode by RETURNING EARLY, so under --check the register exists and the field the
+        # next task reads does not, and the digest check dies on a template error instead of its
+        # own message. Running the fetch for real under --check costs a read this task already
+        # declares changeless, and buys the most useful thing --check can say here -- that the
+        # object exists and still matches the digest pinned in defaults.
+        - name: 'PROCESS | Fetch The Server Certificate To The Controller'
+          become: false
+          changed_when: false
+          check_mode: false
+          delegate_to: 'localhost'
+
+          amazon.aws.s3_object:
+            bucket: "{{ __cert__.bucket }}"
+            dest: "{{ __wsus_client_controller__.path }}/server.cer"
+            mode: 'get'
+            object: "{{ __cert__.object }}"
+            overwrite: 'different'
+            sig_v4: true
+            validate_bucket_name: true
+            validate_certs: true
+
+        - name: 'PROCESS | Read The Delivered Certificate Digest'
+          become: false
+          changed_when: false
+          check_mode: false
+          delegate_to: 'localhost'
+          register: '__wsus_client_delivered__'
+
+          ansible.builtin.stat:
+            checksum_algorithm: 'sha256'
+            path: "{{ __wsus_client_controller__.path }}/server.cer"
+
+        - name: 'PROCESS | Verify The Certificate Against Its Pinned Digest'
+
+          ansible.builtin.assert:
+            fail_msg: >-
+              The delivered certificate does not match the digest pinned in defaults. Refusing to
+              install a trust anchor that is not the one this role was told to install -- a machine
+              that trusts the wrong certificate trusts whoever holds the matching key, and does so
+              quietly.
+            quiet: true
+            that:
+              - __wsus_client_delivered__.stat.exists
+              - __wsus_client_delivered__.stat.checksum == __cert__.sha256
+
+        - name: 'PROCESS | Create A Staging Directory For The Certificate On The Target'
+          changed_when: false
+          check_mode: false
+          register: '__wsus_client_target__'
+
+          ansible.windows.win_tempfile:
+            prefix: 'windows-wsus-client-'
+            state: 'directory'
+
+        # changed_when false because delivering the artefact is not convergence. Only the import
+        # below may report a change.
+        - name: 'PROCESS | Copy The Certificate To The Target'
+          changed_when: false
+          check_mode: false
+
+          ansible.windows.win_copy:
+            dest: "{{ __wsus_client_target__.path }}\\server.cer"
+            src: "{{ __wsus_client_controller__.path }}/server.cer"
+
+        # Root, because the server presents a self-signed certificate and a self-signed
+        # certificate is its own trust anchor. No password and no key_storage: there is no private
+        # key in this file, which is the point of shipping the public certificate rather than the
+        # PFX.
+        - name: 'PROCESS | Install The Server Certificate As A Trust Anchor'
+
+          ansible.windows.win_certificate_store:
+            path: "{{ __wsus_client_target__.path }}\\server.cer"
+            state: 'present'
+            store_location: 'LocalMachine'
+            store_name: 'Root'
+
+      # Runs whether the block converged, refused or threw. Each is guarded on its own register
+      # having been set, because a failure early enough leaves the later ones undefined.
+      always:
+
+        - name: 'CLEANUP | Remove The Certificate Delivery From The Target'
+          changed_when: false
+          check_mode: false
+          when: (__wsus_client_target__ | default({})).path | default('') | length > 0
+
+          ansible.windows.win_file:
+            path: "{{ __wsus_client_target__.path }}"
+            state: 'absent'
+
+        - name: 'CLEANUP | Remove The Certificate Delivery From The Controller'
+          become: false
+          changed_when: false
+          check_mode: false
+          delegate_to: 'localhost'
+          when: (__wsus_client_controller__ | default({})).path | default('') | length > 0
+
+          ansible.builtin.file:
+            path: "{{ __wsus_client_controller__.path }}"
+            state: 'absent'
+    #endregion --- [ Process: Teach This Machine To Trust The Server ] ----------------------- #
+
+    #region ------ [ Process: Write The Windows Update Policy ] ------------------------------ #
+    # win_regedit rather than a script: the module already reads the value, writes only on a
+    # difference, and supports check mode, which is everything a script here would have had to
+    # reimplement.
+
+    - name: 'PROCESS | Write The Windows Update Policy'
+      loop: "{{ __policy_values__ }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: '__wsus_client_policy__'
+
+      ansible.windows.win_regedit:
+        data: "{{ item.data }}"
+        name: "{{ item.name }}"
+        path: "{{ item.path }}"
+        state: 'present'
+        type: "{{ item.type }}"
+    #endregion --- [ Process: Write The Windows Update Policy ] ------------------------------ #
+
+    #region ------ [ Process: Make The Agent Read What Was Just Written ] -------------------- #
+    # The agent caches its policy, so a machine whose registry is correct can keep scanning the
+    # old server until something restarts it. Gated on the write having changed something, which
+    # is what keeps a converged run reporting no change -- 'restarted' is unconditional by nature
+    # and would otherwise report a change on every run forever.
+
+    - name: 'PROCESS | Restart The Windows Update Agent So It Reads The New Policy'
+      when: __wsus_client_policy__ is changed
+
+      ansible.windows.win_service:
+        name: 'wuauserv'
+        state: 'restarted'
+    #endregion --- [ Process: Make The Agent Read What Was Just Written ] -------------------- #
+
+#endregion --- [ Process: Point This Machine At Its WSUS Server ] ----------------------------- #

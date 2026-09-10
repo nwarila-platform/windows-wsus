@@ -1,0 +1,95 @@
+# =========================================================================================== #
+# File: '{{ role_path }}/tasks/validate.yml'
+# --- [ Description ] ----------------------------------------------------------------------- #
+#
+# Validates the merged running config on the CONTROLLER, before anything touches the guest.
+#
+# 'state' is normalised EXACTLY as the loader normalises it for dispatch -- lower and trimmed --
+# because a guard that reads the value differently from the dispatcher is a guard the dispatcher
+# can route around: ' present ' would skip every check here and still run present_windows.yml.
+#
+# The config values themselves are checked exactly as the tasks CONSUME them, with no trimming,
+# because a guard that normalises what the role does not is a guard that passes input the role
+# then mishandles.
+#
+# =========================================================================================== #
+---
+
+# The URL is held to a shape rather than merely to being non-empty, because every wrong shape
+# fails the same silent way: the agent writes the value, scans, finds nothing, and reports itself
+# healthy. A scheme is required so http and https cannot be confused by omission, and a port is
+# required because WSUS never serves on the scheme's default -- a URL without one is a machine
+# dialling 80 or 443 at a server listening on 8530 or 8531.
+- name: 'VALIDATE | Require A Usable WSUS Server URL'
+  when: (state | default('present') | string | lower | trim) == 'present'
+  vars:
+    __host__: '[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*'
+    __url__: "{{ wsus_client_running.server.url | default('', true) }}"
+  ansible.builtin.assert:
+    fail_msg: >-
+      Refusing to configure: wsus_client.server.url must be the URL this machine reports to,
+      written with its scheme, host and port -- 'https://wsus.example.com:8531'. It is
+      deliberately never defaulted, because a defaulted one points a machine at whatever the last
+      deployer's lab was and patching stops without anything reporting an error. The port is
+      required because WSUS does not serve on 80 or 443, so a URL without one dials a port nothing
+      is listening on.
+    quiet: true
+    that:
+      - __url__ is match('^https?://' ~ __host__ ~ ':[0-9]{1,5}/?$')
+      - __url__ | length <= 255
+
+- name: 'VALIDATE | Require A Usable Update Behaviour'
+  when: (state | default('present') | string | lower | trim) == 'present'
+  vars:
+    __option__: "{{ wsus_client_running.updates.auto_update_option | default('', true) }}"
+  ansible.builtin.assert:
+    fail_msg: >-
+      Refusing to configure: wsus_client.updates.auto_update_option must be one of the four values
+      Windows documents -- 2 notify, 3 download then notify, 4 download and install on a schedule,
+      5 let a local administrator choose. wsus_client.updates.allow_internet_locations must be a
+      real boolean, written true or false, because a quoted string coerces silently and leaving a
+      machine able to reach Microsoft directly is what makes a WSUS test prove nothing.
+    quiet: true
+    that:
+      - __option__ is match('^[2-5]$')
+      - wsus_client_running.updates.allow_internet_locations is boolean
+
+# The digest is checked here rather than after delivery for the same reason the server role checks
+# its own: this is a TRUST ANCHOR. A machine that installs the wrong one will trust whoever holds
+# the matching key, and it will do so quietly.
+- name: 'VALIDATE | Require A Usable Certificate Declaration'
+  when:
+    - (state | default('present') | string | lower | trim) == 'present'
+    - wsus_client_running.certificate.enabled | bool
+  vars:
+    __cert__: "{{ wsus_client_running.certificate }}"
+  ansible.builtin.assert:
+    fail_msg: >-
+      Refusing to configure: the certificate declaration is malformed.
+      wsus_client.certificate.bucket must name the S3 bucket holding the public certificate and is
+      deliberately never defaulted, because only the pipeline knows which account it runs in.
+      object must be a non-empty key, sha256 sixty-four hexadecimal characters, and thumbprint
+      forty. This certificate becomes a trust anchor on every machine that receives it, so it is
+      pinned by digest before it is delivered and by thumbprint once it is in the store.
+    quiet: true
+    that:
+      - __cert__.bucket | default('', true) | length > 0
+      - __cert__.object | default('', true) | length > 0
+      - __cert__.sha256 | default('', true) is match('^[0-9a-f]{64}$')
+      - __cert__.thumbprint | default('', true) is match('^[0-9A-Fa-f]{40}$')
+
+# A client that trusts a certificate it will never be shown is harmless; a client dialling https
+# with no anchor fails every scan with a transport error that names TLS and not WSUS. The two keys
+# are therefore held to agree, here, where the answer is free.
+- name: 'VALIDATE | Require The Scheme And The Trust Anchor To Agree'
+  when: (state | default('present') | string | lower | trim) == 'present'
+  ansible.builtin.assert:
+    fail_msg: >-
+      Refusing to configure: wsus_client.server.url is https, so the machine needs a trust anchor
+      for it, but wsus_client.certificate.enabled is false. Either publish the server's public
+      certificate for this role to install, or point the machine at the http endpoint. Left as it
+      is, every scan fails with a TLS error that names the certificate and never mentions WSUS.
+    quiet: true
+    that:
+      - (wsus_client_running.server.url | default('', true)) is not match('^https://')
+        or (wsus_client_running.certificate.enabled | bool)
