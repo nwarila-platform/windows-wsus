@@ -16,10 +16,12 @@
 #   * AWS credentials are exchanged before provisioning and refreshed before eligible teardown.
 #     The initial 7,800-second session covers normal deployment work; the teardown refresh uses a
 #     modest 3,600-second session so long holds do not reach destroy with expired credentials.
-#     The 330-minute job budget includes a four-hour hold plus measured-path margin and stays below
-#     the runner's 360-minute execution limit. It is not a teardown guarantee: abnormal delay can
-#     exhaust the job budget before destroy and strand paid resources. That risk is accepted for
-#     this temporary proof bed.
+#     The 330-minute job budget stays below the runner's 360-minute execution limit. It no longer
+#     accommodates the longest hold: this lifecycle now builds TWO Windows guests sequentially, so
+#     the converge path costs roughly 150 minutes of it and a 240-minute hold would not fit. Choose
+#     120 or less until the two-guest path has been measured. It is not a teardown guarantee
+#     either: abnormal delay can exhaust the budget before destroy and strand paid resources. That
+#     risk is accepted for this temporary proof bed.
 #   * One fixed state key; this workflow's concurrency group prevents overlapping applies and
 #     never cancels a live lifecycle. A later lifecycle can clean predecessor state before apply;
 #     no age-gated reaper exists for a run killed before destroy.
@@ -79,8 +81,9 @@ jobs:
     needs: main-ref
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
-    # The 330-minute budget leaves measured-path margin around a 240-minute hold and remains below
-    # the runner's 360-minute execution limit; a timeout can still strand resources before teardown.
+    # The 330-minute budget remains below the runner's 360-minute execution limit. With two Windows
+    # guests built sequentially the converge path takes roughly 150 minutes of it, so a 240-minute
+    # hold no longer fits; a timeout can still strand resources before teardown.
     timeout-minutes: 330
     permissions:
       id-token: write
@@ -314,8 +317,13 @@ jobs:
       # Readiness, host preparation, guest storage and the WSUS role all live in the playbook.
       # The EC2 inventory plugin filters live instances to this repository and run before exposing
       # one target.
+      # 110 rather than 60, because this step now builds TWO Windows guests SEQUENTIALLY. Ansible
+      # runs plays in order, and the client's readiness, bootstrap, tunnel and domain join are
+      # their own plays that begin only after the server's product is finished -- so the guest
+      # preparation cost is paid twice, and on top of it sit the WSUS install, the TLS work, a
+      # catalogue synchronisation with its content, and the client's own update install.
       - name: Run the WSUS playbook
-        timeout-minutes: 60
+        timeout-minutes: 110
         working-directory: .frameworks/ansible-framework
         env:
           ANSIBLE_CONFIG: ${{ github.workspace }}/.frameworks/ansible-framework/ansible.cfg
@@ -336,8 +344,10 @@ jobs:
       # run again and the step fails if any managed host reports changed>0 -- the standard proof
       # that every task's change detection is honest. A role that re-reports a change would bounce
       # its service on every run, so this is a hard gate, not a warning.
+      # 40 rather than 30 for the same reason, though this run does no work on either host: it is
+      # two full inventories, two connection setups and two playbook passes.
       - name: Prove the converge is idempotent (second run is a no-op)
-        timeout-minutes: 30
+        timeout-minutes: 40
         working-directory: .frameworks/ansible-framework
         env:
           ANSIBLE_CONFIG: ${{ github.workspace }}/.frameworks/ansible-framework/ansible.cfg
