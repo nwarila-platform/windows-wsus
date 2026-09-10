@@ -6,9 +6,10 @@
 # resolves an OS task file per state, so this file has to exist for 'clean' to dispatch at all --
 # the local style contract names it alongside present_windows.yml.
 #
-# It is deliberately empty. This role stages one artefact, the certificate it teaches the client
-# to trust, and removes it in the same run's 'always' whether that run converged or threw. There
-# is nothing left for a later 'clean' to find.
+# It is deliberately empty, and will stay that way. This role stages nothing: it reads registry
+# values, asks the WSUS server for updates, and lets the update agent place what it installs. The
+# first staged artefact would bring its removal here with it, and there is no reason this role
+# would ever have one.
 #
 # ============================================================================================= #
 ---

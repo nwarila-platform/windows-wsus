@@ -803,8 +803,12 @@ cannot make on its own.
   `community.windows.win_iis_webapppool`, deprecated for removal in `community.windows` 4.0.0. The
   pinned collection set carries no `microsoft.iis`, so the successor cannot simply be adopted, and
   the attribute mapping must be re-validated when it is.
-- **The synchronization half is unproven.** The AWS play sets `sync.bootstrap_enabled: false`
-  because its placeholder upstream is deliberately unreachable, so tasks 46 and 48 and the marker
-  and fingerprint contracts above have never executed against a real source. They are transcribed
-  obligations, not demonstrated behaviour, and reproducing them buys nothing until an upstream
-  exists.
+- **The synchronization half is no longer unproven, and no longer built this way.** This bullet
+  recorded that the AWS play set `sync.bootstrap_enabled: false` against a deliberately unreachable
+  placeholder upstream, so rows 46 and 48 and the marker and fingerprint contracts had never
+  executed against a real source. Both halves of that are now out of date. A real upstream exists,
+  `bootstrap_enabled` does not, and the synchronisation always runs. Rows 46, 47 and 48 are
+  superseded, each with its reason, in decision 50 of the agreement -- the fingerprint is replaced
+  by the upstream actor's own change report, row 47's honesty marker is dissolved with the flag it
+  described, and row 46's reachability probe is consciously absent. Row 73 is discharged there too,
+  by a live client rather than by a request the server makes of itself.

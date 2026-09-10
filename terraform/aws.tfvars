@@ -172,14 +172,31 @@ all_systems = [
           # private subnet in one availability zone, which is the tightest source this file can
           # express.
           #
-          # 8531 ONLY, deliberately. Once wsusutil records the server's own https URL, WSUS hands
-          # its clients that URL for metadata and for content alike, so a client that needs 8530
-          # is a client something is misconfigured for -- and admitting 8530 here would hide it.
+          # BOTH ports, and the pair is not sloppiness. WSUS splits its client traffic: metadata,
+          # authentication and reporting go over TLS on 8531, and update PAYLOADS go over plain
+          # HTTP on 8530. That split is the vendor's, not this deployment's -- measured on a live
+          # server, the Content virtual directory carries no SSL requirement while the five
+          # client-facing services do, which is what makes payloads reachable on 8530 and only
+          # there.
+          #
+          # Encrypting those payloads would buy nothing: they are Microsoft-signed and public, and
+          # the client verifies the signature regardless. Admitting only 8531 produces the worst
+          # failure a proof can have -- a client that scans successfully over TLS, correctly
+          # reports the updates it needs, and cannot download one of them.
           {
-            description                  = "WSUS over HTTPS from the client subnet"
+            description                  = "WSUS metadata over HTTPS from the client subnet"
             ip_protocol                  = "tcp"
             from_port                    = 8531
             to_port                      = 8531
+            cidr_ipv4                    = "10.0.128.0/19"
+            prefix_list_id               = null
+            referenced_security_group_id = null
+          },
+          {
+            description                  = "WSUS update payloads over HTTP from the client subnet"
+            ip_protocol                  = "tcp"
+            from_port                    = 8530
+            to_port                      = 8530
             cidr_ipv4                    = "10.0.128.0/19"
             prefix_list_id               = null
             referenced_security_group_id = null
@@ -302,17 +319,19 @@ all_systems = [
             referenced_security_group_id = null
           }
         ]
-        # TWO rules, and the absence of a third is the point of this host.
+        # THREE rules, and what is absent from them is the point of this host.
         #
         # The tunnel, because this machine joins the same directory the server does and the domain
         # controllers are on the other side of it.
         #
-        # WSUS on 8531, scoped to this subnet, because that is the one service it is allowed to
-        # consume.
+        # WSUS twice, scoped to this subnet: 8531 for the metadata, authentication and reporting
+        # WSUS serves over TLS, and 8530 for the update payloads it serves over plain HTTP. The
+        # split is the vendor's. Encrypting a Microsoft-signed public payload buys nothing, and
+        # allowing only 8531 would produce a client that scans perfectly and downloads nothing.
         #
-        # And NOTHING to the internet on 80 or 443. The role sets
-        # DoNotConnectToWindowsUpdateInternetLocations, but a registry value is a statement of
-        # intent that the machine itself could contradict. With no egress to Microsoft at all,
+        # And NOTHING to the internet on 80 or 443. A domain policy tells this machine not to reach
+        # Microsoft, but a policy value is a statement of intent the machine itself could
+        # contradict. With no egress to Microsoft at all,
         # anything this client installs came from the WSUS server this deployment built, and the
         # proof stops depending on a policy setting being honoured.
         egress = [
@@ -326,10 +345,19 @@ all_systems = [
             referenced_security_group_id = null
           },
           {
-            description                  = "WSUS over HTTPS, and nothing else"
+            description                  = "WSUS metadata over HTTPS"
             ip_protocol                  = "tcp"
             from_port                    = 8531
             to_port                      = 8531
+            cidr_ipv4                    = "10.0.128.0/19"
+            prefix_list_id               = null
+            referenced_security_group_id = null
+          },
+          {
+            description                  = "WSUS update payloads over HTTP"
+            ip_protocol                  = "tcp"
+            from_port                    = 8530
+            to_port                      = 8530
             cidr_ipv4                    = "10.0.128.0/19"
             prefix_list_id               = null
             referenced_security_group_id = null

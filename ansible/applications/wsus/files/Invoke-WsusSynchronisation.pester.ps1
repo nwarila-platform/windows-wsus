@@ -58,9 +58,16 @@ BeforeAll {
       }
     }
 
-    If ($global:FakeOutstanding -gt 0 -and -not $global:FakeContentStalls) {
+    If ($global:FakeStopTicksLeft -gt 0) {
+      $global:FakeStopTicksLeft--
+      If ($global:FakeStopTicksLeft -le 0 -and -not $global:FakeStopNeverCompletes) {
+        $global:FakeStatus = 'NotProcessing'
+      }
+    }
+
+    If ($global:FakeNeedingFiles -gt 0 -and -not $global:FakeContentStalls) {
+      $global:FakeNeedingFiles = 0
       $global:FakeDownloaded = $global:FakeTotalBytes
-      $global:FakeOutstanding = 0
     }
   }
 
@@ -76,6 +83,16 @@ BeforeAll {
       Return $global:FakeUpdateCount
     }
 
+    # UpdatesNeedingFilesCount is what says whether the server HAS its files.
+    # GetContentDownloadProgress says only what is downloading right now, which reads zero on a
+    # finished server, an unstarted one and a failed one alike.
+    $Server | Add-Member -MemberType ScriptMethod -Name 'GetStatus' -Value {
+      Return [PSCustomObject]@{
+        UpdatesNeedingFilesCount     = $global:FakeNeedingFiles
+        UpdatesWithServerErrorsCount = $global:FakeServerErrors
+      }
+    }
+
     $Server | Add-Member -MemberType ScriptMethod -Name 'GetContentDownloadProgress' -Value {
       Return [PSCustomObject]@{
         TotalBytesToDownload = $global:FakeTotalBytes
@@ -87,6 +104,9 @@ BeforeAll {
       $Subscription = [PSCustomObject]@{}
 
       $Subscription | Add-Member -MemberType ScriptMethod -Name 'GetLastSynchronizationInfo' -Value {
+        If ($global:FakeSyncInfoFaults) {
+          Throw 'The database is unavailable.'
+        }
         If ($global:FakeNeverSynced) {
           Throw 'The server has never synchronized.'
         }
@@ -105,10 +125,19 @@ BeforeAll {
         $global:FakeSyncTicksLeft = $global:FakeSyncTicks
       }
 
+      # ASYNCHRONOUS, as it is on a real server: the status passes through Stopping on its way to
+      # NotProcessing, and StartSynchronization throws for as long as it sits there. A stub that
+      # stopped instantly would let a script race straight past the state that breaks it.
       $Subscription | Add-Member -MemberType ScriptMethod -Name 'StopSynchronization' -Value {
         $global:FakeStopCalls++
         $global:FakeOrder.Add('stop')
-        $global:FakeStatus = 'NotProcessing'
+        $global:FakeStatus = 'Stopping'
+        $global:FakeStopTicksLeft = $global:FakeStopTicks
+      }
+
+      $Subscription | Add-Member -MemberType ScriptMethod -Name 'GetSynchronizationHistory' -Value {
+        If ($global:FakeNeverSynced) { Return @() }
+        Return @([PSCustomObject]@{ Id = 1 })
       }
 
       Return $Subscription
@@ -151,10 +180,15 @@ Describe 'Invoke-WsusSynchronisation' {
     $global:FakeStopCalls = 0
     $global:FakeSleeps = 0
     $global:FakeUpdateCount = 12
-    $global:FakeTotalBytes = 93342992
-    $global:FakeDownloaded = 93342992
-    $global:FakeOutstanding = 0
+    $global:FakeTotalBytes = 69881768
+    $global:FakeDownloaded = 69881768
+    $global:FakeNeedingFiles = 0
+    $global:FakeServerErrors = 0
     $global:FakeContentStalls = $false
+    $global:FakeStopTicks = 2
+    $global:FakeStopTicksLeft = 0
+    $global:FakeStopNeverCompletes = $false
+    $global:FakeSyncInfoFaults = $false
   }
 
   Context 'a server that has never spoken to its upstream' {
@@ -202,13 +236,26 @@ Describe 'Invoke-WsusSynchronisation' {
     # server is converged in metadata and useless in practice.
     It 'waits for outstanding content even when the catalogue is already complete' {
       $global:FakeNeverSynced = $false
-      $global:FakeDownloaded = 0
-      $global:FakeOutstanding = $global:FakeTotalBytes
+      $global:FakeNeedingFiles = 3
 
       $null = & $script:Invoke
 
       $global:FakeStartCalls | Should -Be 0
-      $global:FakeDownloaded | Should -Be $global:FakeTotalBytes
+      $global:FakeNeedingFiles | Should -Be 0
+    }
+
+    # The byte counters describe what is downloading NOW, so they read zero on a finished server,
+    # an unstarted one and a failed one alike. A script that waited on them would return instantly
+    # from an empty queue and report a catalogue whose files never arrived.
+    It 'waits on files still needed even when no bytes are moving' {
+      $global:FakeNeverSynced = $false
+      $global:FakeNeedingFiles = 5
+      $global:FakeDownloaded = $global:FakeTotalBytes
+
+      $null = & $script:Invoke
+
+      $global:FakeNeedingFiles | Should -Be 0
+      $global:Ansible.Result.needing_files | Should -Be 0
     }
   }
 
@@ -222,6 +269,26 @@ Describe 'Invoke-WsusSynchronisation' {
 
       $global:FakeStopCalls | Should -Be 1
       $global:FakeOrder.IndexOf('start') | Should -BeGreaterThan $global:FakeOrder.IndexOf('stop')
+    }
+
+    # Stop is asynchronous. The server sits in Stopping on its way to NotProcessing and
+    # StartSynchronization throws for as long as it is there, so asking it to stop and starting in
+    # the next statement is a race a busy server wins.
+    It 'waits for the stop to finish before starting, rather than racing it' {
+      $global:FakeStatus = 'Running'
+
+      $null = & $script:Invoke
+
+      $global:FakeStatus | Should -Not -Be 'Stopping'
+      $global:FakeStartCalls | Should -Be 1
+    }
+
+    It 'refuses to start underneath a synchronisation that will not stop' {
+      $global:FakeStatus = 'Running'
+      $global:FakeStopNeverCompletes = $true
+
+      { & $script:Invoke } | Should -Throw -ExpectedMessage '*had not within 600 seconds*'
+      $global:FakeStartCalls | Should -Be 0
     }
   }
 
@@ -244,11 +311,31 @@ Describe 'Invoke-WsusSynchronisation' {
     # Metadata without content is a server offering updates it cannot deliver, to a client with no
     # route to Microsoft and nowhere else to look.
     It 'refuses when the content never finishes arriving' {
-      $global:FakeDownloaded = 0
-      $global:FakeOutstanding = $global:FakeTotalBytes
+      $global:FakeNeedingFiles = 4
       $global:FakeContentStalls = $true
 
-      { & $script:Invoke } | Should -Throw -ExpectedMessage '*still outstanding*'
+      { & $script:Invoke } | Should -Throw -ExpectedMessage '*still need files*'
+    }
+
+    # A download that will never succeed leaves the count above zero forever, and waiting the full
+    # deadline for it is a slow way to learn something the server already knows.
+    It 'refuses immediately when the server reports content it cannot download' {
+      $global:FakeNeedingFiles = 4
+      $global:FakeServerErrors = 2
+      $global:FakeContentStalls = $true
+
+      { & $script:Invoke } | Should -Throw -ExpectedMessage '*cannot download*'
+    }
+
+    # A server with no history and a server that could not answer both raise here, and they mean
+    # opposite things. Starting a synchronisation to paper over a database fault would hide the
+    # fault and report a change.
+    It 'rethrows a fault rather than reading it as never synchronised' {
+      $global:FakeNeverSynced = $false
+      $global:FakeSyncInfoFaults = $true
+
+      { & $script:Invoke } | Should -Throw -ExpectedMessage '*database is unavailable*'
+      $global:FakeStartCalls | Should -Be 0
     }
 
     It 'refuses a host where WSUS post-installation has not produced a server' {

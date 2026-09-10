@@ -5,12 +5,14 @@
 # spec. The role's tasks/validate.yml enforces its merged-config guards.
 #
 # REQUIRED INPUTS: 'wsus_client.server.url'. WHICH WSUS a machine reports to is a property of the
-# deployment, so the play publishes it and validate.yml refuses a run that omits it. The
-# certificate bucket is required on the same reasoning as the server role's: only the pipeline
-# knows which account it runs in.
+# deployment, so the play publishes it and validate.yml refuses a run that omits it. It is an
+# EXPECTATION, not a setting: the role compares it against what Group Policy actually wrote.
 #
-# This role configures a client to USE a WSUS server. It does not install updates and does not
-# approve any: what a client is offered is the server's decision, which is the whole point of
+# THIS ROLE CONFIGURES NOTHING. Group Policy owns what a machine is told about WSUS -- the server
+# it reports to and the certificate it must trust -- and rewrites those values at its own
+# convenience, so a role writing them would be a second owner losing intermittently. What this
+# role does is the one thing nothing else does: ask that server for updates, take them, and prove
+# it worked. What it is OFFERED remains the server's decision, which is the whole point of
 # pointing a client at one.
 #
 # =========================================================================================== #
@@ -21,8 +23,9 @@ galaxy_info:
   namespace: 'nwarila_platform'
   author: 'nwarila-platform'
   description: >-
-    Points a Windows machine at a WSUS server and teaches it to trust that server's certificate,
-    so the machine takes its updates from the estate rather than from Microsoft.
+    Triggers a Windows Update synchronisation against an estate WSUS server and proves it worked.
+    Configures nothing: Group Policy owns what the machine is told, and this role checks that it
+    was told, then takes what the server offers.
 
   license: 'MIT'
   min_ansible_version: '2.17'

@@ -35,12 +35,18 @@
 
     #region ------ [ Process: Make Group Policy Current Before Reading It ] ------------------- #
     # A machine that joined the domain minutes ago has had one policy application, at boot, and a
-    # Group Policy object edited since then has not reached it. Forcing a refresh removes that
-    # race, so what the next task reads is what the domain currently says rather than what it said
-    # when this machine started.
+    # Group Policy object edited since then has not reached it. A refresh removes that race, so
+    # what the next task reads is what the domain currently says rather than what it said when
+    # this machine started.
     #
-    # changed_when false: refreshing policy is a read of the domain's intent, not a change this
-    # role is making. Whatever Group Policy then writes is Group Policy's change, not ours.
+    # Deliberately NOT /force. The default invocation applies only settings that have CHANGED,
+    # which on a converged machine is none of them; /force reapplies every setting on every
+    # converge, which is a repeated write dressed up as a read. The race this closes is a policy
+    # the machine has not seen yet, and the default closes exactly that.
+    #
+    # changed_when false is then honest rather than a suppression: this task itself changes
+    # nothing. If the domain has something new to apply, Group Policy applies it, and that is
+    # Group Policy's change to report, not this role's to claim.
 
     - name: 'PROCESS | Make Group Policy Current Before Reading It'
       changed_when: false
@@ -49,7 +55,6 @@
         argv:
           - 'gpupdate.exe'
           - '/target:computer'
-          - '/force'
     #endregion --- [ Process: Make Group Policy Current Before Reading It ] ------------------- #
 
     #region ------ [ Process: Read What Group Policy Left Behind ] ---------------------------- #
@@ -128,33 +133,34 @@
     # Naturally idempotent, without anything here making it so: a second run finds nothing left to
     # install and reports no change, because the first run installed it.
 
+    # failed_when rather than a following assertion, because an actor owns its own outcome: an
+    # update WSUS offered and this machine could not install is a failure of the work this task
+    # performed, not a fact about it for something else to judge. The module's own failure signal
+    # is preserved alongside, since failed_when REPLACES it rather than adding to it.
     - name: 'PROCESS | Take What WSUS Offers'
       register: '__wsus_client_updates__'
+      failed_when: >-
+        __wsus_client_updates__ is failed
+        or (__wsus_client_updates__.failed_update_count | default(0) | int) > 0
 
       ansible.windows.win_updates:
         category_names: "{{ __client__.updates.categories }}"
         reboot: "{{ __client__.updates.reboot }}"
         server_selection: 'managed_server'
         state: 'installed'
+
+    # The counts ARE the proof, and a registered result nobody prints is a proof nobody can read.
+    # Printed rather than asserted: a converged machine is offered nothing, so there is no number
+    # here worth failing on that failed_when above has not already caught.
+    - name: 'PROCESS | Report What WSUS Delivered'
+      changed_when: false
+
+      ansible.builtin.debug:
+        msg: >-
+          WSUS offered {{ __wsus_client_updates__.found_update_count | default(0) }},
+          installed {{ __wsus_client_updates__.installed_update_count | default(0) }},
+          failed {{ __wsus_client_updates__.failed_update_count | default(0) }},
+          reboot required {{ __wsus_client_updates__.reboot_required | default(false) }}.
     #endregion --- [ Process: Take What WSUS Offers ] ----------------------------------------- #
-
-    #region ------ [ Process: Refuse An Update That Would Not Install ] ----------------------- #
-    # Deliberately NOT an assertion that anything was offered. A converged machine is offered
-    # nothing, and demanding a non-zero count would fail the second run -- the run that proves the
-    # first one worked. What is worth refusing is an update WSUS offered and this machine could not
-    # install, because that is a delivery failure wearing a successful run's clothes.
-
-    - name: 'PROCESS | Refuse An Update That Would Not Install'
-
-      ansible.builtin.assert:
-        fail_msg: >-
-          {{ __wsus_client_updates__.failed_update_count | default(0) }} of the
-          {{ __wsus_client_updates__.found_update_count | default(0) }} updates WSUS offered this
-          machine failed to install. The server delivered them and the machine refused them, which
-          is a failure of the pipeline this deployment exists to prove.
-        quiet: true
-        that:
-          - (__wsus_client_updates__.failed_update_count | default(0) | int) == 0
-    #endregion --- [ Process: Refuse An Update That Would Not Install ] ----------------------- #
 
 #endregion --- [ Process: Ask WSUS For Updates, And Prove It Answered ] ----------------------- #

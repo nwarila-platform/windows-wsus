@@ -41,7 +41,8 @@
         How long to wait for the synchronisation itself to reach a terminal state.
 
     .OUTPUTS
-        One object carrying changed, check_mode, content_bytes, msg, result and update_count.
+        One object carrying changed, check_mode, content_bytes, msg, needing_files, result and
+        update_count.
 #>
 
 [CmdletBinding(SupportsShouldProcess)]
@@ -213,15 +214,25 @@ $Subscription = $Server.GetSubscription()
 # an exception rather than as a null. Caught and read as 'never', which is exactly what it means --
 # letting it escape would turn a first run into a failure.
 $Succeeded = $False
-$LastResult = 'Never'
+$LastResult = 'NeverRun'
 
 Try {
   $Last = $Subscription.GetLastSynchronizationInfo()
   $LastResult = [System.String]$Last.Result
   $Succeeded = ($LastResult -eq 'Succeeded')
 } Catch {
+  # A server with no history and a server that could not answer both arrive here, and they mean
+  # opposite things: the first should synchronise, the second should stop. Told apart
+  # STRUCTURALLY rather than by matching a message, which would be a different string in a
+  # different install language. An empty history is "never"; anything else rethrows, because
+  # starting a synchronisation to paper over a database fault would hide the fault and report a
+  # change.
+  If (@($Subscription.GetSynchronizationHistory()).Count -gt 0) {
+    Throw
+  }
+
   $Succeeded = $False
-  $LastResult = 'Never'
+  $LastResult = 'NeverRun'
 }
 
 # Force is the upstream actor's own change report. A server pointed somewhere new holds a catalogue
@@ -235,8 +246,27 @@ $Synchronised = $False
 If ($NeedsSync -and $PSCmdlet.ShouldProcess($Server.Name, 'Synchronise from the upstream WSUS server')) {
   # A synchronisation already running is not this one, and starting underneath it throws. Waiting
   # for it and then starting our own is what makes the result below ours to read.
+  #
+  # StopSynchronization is ASYNCHRONOUS. The server passes through Stopping on its way to
+  # NotProcessing, and StartSynchronization throws for as long as it is there -- so asking it to
+  # stop and starting in the next statement is a race this would lose on a busy server. Polled to
+  # a full stop first, with the same deadline the synchronisation itself gets.
   If ([System.String]$Subscription.GetSynchronizationStatus() -ne 'NotProcessing') {
     $Subscription.StopSynchronization()
+
+    $StopDeadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    While (
+      ((Get-Date) -lt $StopDeadline) -and
+      ([System.String]$Subscription.GetSynchronizationStatus() -ne 'NotProcessing')
+    ) {
+      Start-Sleep -Seconds 10
+    }
+
+    If ([System.String]$Subscription.GetSynchronizationStatus() -ne 'NotProcessing') {
+      Throw (
+        'A synchronisation was asked to stop and had not within {0} seconds; refusing to start one underneath it.' -f $TimeoutSeconds
+      )
+    }
   }
 
   $Subscription.StartSynchronization()
@@ -278,34 +308,54 @@ If ($NeedsSync -and $PSCmdlet.ShouldProcess($Server.Name, 'Synchronise from the 
 # upstream's approvals arrive with the catalogue, so the download starts on its own -- what this
 # waits for is its end.
 #
-# Waited for on any run that synchronised, and on any run that finds bytes still outstanding: a
-# previous run may have timed out here while the catalogue itself was complete, and that server is
-# converged in metadata and useless in practice.
-$Progress = $Server.GetContentDownloadProgress()
-$Outstanding = ([System.Int64]$Progress.TotalBytesToDownload - [System.Int64]$Progress.DownloadedBytes)
+# COMPLETENESS comes from UpdatesNeedingFilesCount, not from the byte counters.
+# GetContentDownloadProgress reports the updates currently DOWNLOADING, so both of its counters
+# read zero on a server that has finished, on a server that has not started, and on a server whose
+# download failed -- three states with nothing in common. Waiting on it would return instantly
+# from an empty queue and report a catalogue whose files never arrived. The byte counters are kept
+# for what they honestly are: telemetry.
+#
+# UpdatesWithServerErrorsCount is checked too, because a download that will never succeed leaves
+# UpdatesNeedingFilesCount above zero forever, and waiting the full deadline for it is a slow way
+# to learn something the server already knows.
+#
+# Waited for on any run that synchronised, and on any run that still needs files: a previous run
+# may have timed out here while the catalogue itself completed, leaving a server converged in
+# metadata and useless in practice.
+$Status = $Server.GetStatus()
+$NeedingFiles = [System.Int32]$Status.UpdatesNeedingFilesCount
 
-If (($Synchronised -or ($Outstanding -gt 0)) -and $PSCmdlet.ShouldProcess($Server.Name, 'Wait for the update content to arrive')) {
+If (($Synchronised -or ($NeedingFiles -gt 0)) -and $PSCmdlet.ShouldProcess($Server.Name, 'Wait for the update content to arrive')) {
   $ContentDeadline = (Get-Date).AddSeconds($ContentTimeoutSeconds)
 
-  While (((Get-Date) -lt $ContentDeadline) -and ($Outstanding -gt 0)) {
+  While (((Get-Date) -lt $ContentDeadline) -and ($NeedingFiles -gt 0)) {
+    If ([System.Int32]$Status.UpdatesWithServerErrorsCount -gt 0) {
+      Throw (
+        'The server reports {0} update(s) it cannot download. Waiting for content that will never arrive would only delay this.' -f $Status.UpdatesWithServerErrorsCount
+      )
+    }
+
     Start-Sleep -Seconds 10
-    $Progress = $Server.GetContentDownloadProgress()
-    $Outstanding = ([System.Int64]$Progress.TotalBytesToDownload - [System.Int64]$Progress.DownloadedBytes)
+    $Status = $Server.GetStatus()
+    $NeedingFiles = [System.Int32]$Status.UpdatesNeedingFilesCount
   }
 
-  If ($Outstanding -gt 0) {
+  If ($NeedingFiles -gt 0) {
     Throw (
-      'The update content did not finish downloading within {0} seconds; {1} bytes are still outstanding and a client offered these updates could not install them.' -f $ContentTimeoutSeconds, $Outstanding
+      'The update content did not finish downloading within {0} seconds; {1} update(s) still need files and a client offered them could not install them.' -f $ContentTimeoutSeconds, $NeedingFiles
     )
   }
 }
+
+$Progress = $Server.GetContentDownloadProgress()
 #endregion --- [ The bytes the catalogue points at ] ----------------------------------------- #
 
 $Result = [PSCustomObject]@{
   changed       = [System.Boolean]$NeedsSync
   check_mode    = [System.Boolean]$Ansible.CheckMode
   content_bytes = [System.Int64]$Progress.DownloadedBytes
-  msg           = 'synchronisation {0}, {1} updates, {2} bytes of content' -f $LastResult, $Server.GetUpdateCount(), $Progress.DownloadedBytes
+  msg           = 'synchronisation {0}, {1} updates, {2} still needing files' -f $LastResult, $Server.GetUpdateCount(), $NeedingFiles
+  needing_files = [System.Int32]$NeedingFiles
   result        = [System.String]$LastResult
   update_count  = [System.Int32]$Server.GetUpdateCount()
 }

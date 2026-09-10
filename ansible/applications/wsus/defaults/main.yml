@@ -76,14 +76,18 @@ wsus_defaults:
   # upstream's property and not something this role can arrange. replica true is the mirror
   # topology the port and the upstream imply: approvals are made once, upstream, and inherited.
   sync:
-    # HOW LONG TO WAIT for the catalogue, and then for the bytes behind it. Deployer values because
+    # HOW LONG TO WAIT for the catalogue, and then for the files behind it. Deployer values because
     # they are a property of the link and of what the upstream holds, not of this role: a downstream
     # of a small curated upstream converges in minutes, and one of a full Microsoft mirror does not.
-    # Generous rather than tight -- the cost of waiting is a slow run, and the cost of giving up
-    # early is a server that reports itself configured and serves an empty catalogue.
-    content_timeout_seconds: 3600
+    #
+    # These two run SEQUENTIALLY and both sit inside one CI step, so their sum is the number that
+    # matters -- and it has to leave room for everything else in that step, which now includes
+    # building a second Windows guest. Forty-five minutes for a curated upstream measured at 66 MB
+    # across one approved update is generous by a wide margin; three hours would not be generous,
+    # it would be a step killed by its caller before the script could say what went wrong.
+    content_timeout_seconds: 900
     replica: true
-    timeout_seconds: 3600
+    timeout_seconds: 1800
     upstream_port: 8530
     upstream_use_ssl: false
   #endregion --- [ Upstream source ] --------------------------------------------------------- #

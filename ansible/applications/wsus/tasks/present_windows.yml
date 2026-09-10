@@ -923,7 +923,7 @@
         script: "{{ lookup('ansible.builtin.file', 'Set-WsusUpstream.ps1') }}"
     #endregion --- [ Process: Point This Server At Its Upstream WSUS Source ] ----------------- #
 
-    #region ------ [ Process: Bring The Catalogue Down From The Upstream ] -------------------- #
+    #region ------ [ Process: Bring The Catalogue And Its Content Down From The Upstream ] ---- #
     # Pointing a server at an upstream fetches nothing. Until a synchronisation completes this
     # server offers its clients an empty catalogue -- and a client that asks an empty server
     # reports "no updates required" and looks exactly like success. That silence is the failure
@@ -948,7 +948,8 @@
           Force: "{{ (__wsus_upstream__.result | default({})).changed | default(false) }}"
           TimeoutSeconds: "{{ wsus_running.sync.timeout_seconds }}"
         script: "{{ lookup('ansible.builtin.file', 'Invoke-WsusSynchronisation.ps1') }}"
-    #endregion --- [ Process: Bring The Catalogue Down From The Upstream ] -------------------- #
+    #endregion --- [ Process: Bring The Catalogue And Its Content Down From The Upstream ] ---- #
+
 #endregion --- [ Process: Configure WSUS on Windows ] ----------------------------------------- #
 
 
