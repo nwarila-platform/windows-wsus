@@ -18,7 +18,6 @@
 #
 # =========================================================================================== #
 ---
-
 #region ------ [ Play: Inventory Contract ] --------------------------------------------------- #
 # The inventory already filters to this run's instance by its framework-set tags. This guards the
 # one state that filter cannot cover: an empty result, where nothing launched or nothing tagged.
@@ -38,6 +37,7 @@
     # The same argument, for the host that does the proving. Without this a run whose client never
     # appeared would skip both client plays, report success, and prove only that the server can be
     # built -- which is the half that was never in doubt.
+
     - name: 'INVENTORY | Require At Least One Filtered Client'
       ansible.builtin.assert:
         that: groups['wsus_clients'] | default([]) | length >= 1
@@ -49,6 +49,7 @@
 
     # The site roles template their bucket names from the account id, so a wrong one surfaces as a
     # download failure on the guest minutes later. Refuse it here, before anything is dialled.
+
     - name: 'INVENTORY | Require The Deploying Account'
       ansible.builtin.assert:
         that: aws_account_id is defined and aws_account_id is match('^[0-9]{12}$')
@@ -78,6 +79,7 @@
         # as "no platform" and SKIPS the EC2Launch wait -- and the next role renames the computer
         # and reboots, which is exactly what that wait exists to sequence against.
         host_readiness_platform: 'aws'
+
     #endregion --- [ Roles: Host Readiness ] -------------------------------------------------- #
 
     #region ------ [ Roles: OS Bootstrap ] ---------------------------------------------------- #
@@ -85,12 +87,14 @@
     # after it depends on that. Pass it NO vars: role params outrank the connection scoping it
     # relies on, and a stray one silently re-breaks the pre-flip stage.
     - role: 'os_bootstrap'
+
     #endregion --- [ Roles: OS Bootstrap ] ---------------------------------------------------- #
 
     #region ------ [ Roles: Remote Client ] --------------------------------------------------- #
     # Site policy: the role defaults every value openvpn_client needs, so this play states none.
     # 'aws_account_id' is an extra-var -- only the pipeline knows which account it deploys into.
     - role: 'remote_client'
+
     #endregion --- [ Roles: Remote Client ] --------------------------------------------------- #
 
     #region ------ [ Roles: Domain Member ] --------------------------------------------------- #
@@ -117,6 +121,7 @@
           password: { bucket: "{{ aws_account_id | default('') }}-ansible" }
           computer_ou: 'OU=WSUS,OU=Domain Servers,DC=tcn,DC=trinitytechnicalservices,DC=com'
           registration_address: "{{ aws_private_ip_address }}"
+
     #endregion --- [ Roles: Domain Member ] --------------------------------------------------- #
 
     #region ------ [ Roles: Windows Disk Manager ] -------------------------------------------- #
@@ -139,7 +144,9 @@
               drive_letter: 'G'
               label: 'WSUSIIS'
               allocation_unit: 4096
+
     #endregion --- [ Roles: Windows Disk Manager ] -------------------------------------------- #
+
   #endregion --- [ Roles ] -------------------------------------------------------------------- #
 
 #endregion --- [ Play: Configure The Guest ] -------------------------------------------------- #
@@ -206,7 +213,9 @@
               public_sha256: '3afd03b1f19b0f28b8a221f52cd68bddc04a2fe6c3e6df99f67343c7604b2e3e'
               sha256: '473880d30d30fd3f6fc32b9aedd6e9fd410d9a63b31c0152d993d9ed0a585e16'
               thumbprint: '8760E9DA2B79D7FCFB5C8DADD72628649029B348'
+
     #endregion --- [ Roles: WSUS ] ------------------------------------------------------------ #
+
   #endregion --- [ Roles ] -------------------------------------------------------------------- #
 
 #endregion --- [ Play: WSUS ] ----------------------------------------------------------------- #
@@ -232,16 +241,19 @@
     - role: 'host_readiness'
       vars:
         host_readiness_platform: 'aws'
+
     #endregion --- [ Roles: Host Readiness ] -------------------------------------------------- #
 
     #region ------ [ Roles: OS Bootstrap ] ---------------------------------------------------- #
     # Pass it NO vars: role params outrank the connection scoping it relies on.
     - role: 'os_bootstrap'
+
     #endregion --- [ Roles: OS Bootstrap ] ---------------------------------------------------- #
 
     #region ------ [ Roles: Remote Client ] --------------------------------------------------- #
     # The tunnel, because the directory this machine joins is on the other side of it.
     - role: 'remote_client'
+
     #endregion --- [ Roles: Remote Client ] --------------------------------------------------- #
 
     #region ------ [ Roles: Domain Member ] --------------------------------------------------- #
@@ -262,7 +274,9 @@
           # converge that left registration as it found it would report success while the name
           # stayed wrong.
           registration_address: "{{ aws_private_ip_address }}"
+
     #endregion --- [ Roles: Domain Member ] --------------------------------------------------- #
+
   #endregion --- [ Roles ] -------------------------------------------------------------------- #
 
 #endregion --- [ Play: Configure The Client Guest ] ------------------------------------------- #
@@ -294,7 +308,9 @@
         wsus_client:
           server:
             url: 'https://tcnaw-wsus01.tcn.trinitytechnicalservices.com:8531'
+
     #endregion --- [ Roles: WSUS Client ] ----------------------------------------------------- #
+
   #endregion --- [ Roles ] -------------------------------------------------------------------- #
 
 #endregion --- [ Play: Prove The Client ] ----------------------------------------------------- #
