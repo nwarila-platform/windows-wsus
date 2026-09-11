@@ -68,6 +68,7 @@
 !/.github/workflows/powershell.yml
 
 # --- [ allowed: the ansible tree ] --------------------------------------------------------- #
+!/ansible/applications/wsus/README.md
 !/ansible/applications/wsus/defaults/main.yml
 !/ansible/applications/wsus/files/Get-SqlDatabasePlacement.pester.ps1
 !/ansible/applications/wsus/files/Get-SqlDatabasePlacement.ps1
@@ -91,6 +92,7 @@
 !/ansible/applications/wsus/tasks/present_windows.yml
 !/ansible/applications/wsus/tasks/validate.yml
 !/ansible/applications/wsus/vars/windows.yml
+!/ansible/applications/wsus_client/README.md
 !/ansible/applications/wsus_client/defaults/main.yml
 !/ansible/applications/wsus_client/meta/main.yml
 !/ansible/applications/wsus_client/tasks/clean_windows.yml
