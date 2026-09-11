@@ -211,25 +211,22 @@
   ansible.builtin.assert:
     fail_msg: >-
       Refusing to configure: the TLS declaration is malformed. wsus.tls.certificate.bucket
-      must name the S3 bucket holding the delivery. It is declared empty by the role and never
-      given a usable default, because only the pipeline knows which account it runs in.
-      object, password_object and public_object must each be a non-empty key, and sha256,
-      password_sha256 and public_sha256 each sixty-four hexadecimal characters -- an object is
-      trusted only once it matches the digest pinned here. thumbprint must be forty
-      hexadecimal characters, naming the exact certificate the listener is pinned to rather
-      than whichever one happens to carry the right subject. dns_name must be the name clients
-      reach this server by, and wsus.tls.port a whole number in 1-65535.
-      wsus.tls.secured_paths must name at least one directory, and wsus.tls.site_name the IIS
-      site WSUS installed. See meta/main.yml.
+      must name the S3 bucket holding the PKCS#12. It is declared empty by the role and never
+      given a usable default, because only the pipeline knows which account it runs in. object
+      must be a non-empty key and sha256 sixty-four hexadecimal characters -- the container is
+      trusted only once it matches the digest pinned here. password must be the non-empty
+      secret that unlocks it, resolved by the caller rather than named as an object.
+      thumbprint must be forty hexadecimal characters, naming the exact certificate the
+      listener is pinned to rather than whichever one happens to carry the right subject.
+      dns_name must be the name clients reach this server by, and wsus.tls.port a whole number
+      in 1-65535. wsus.tls.secured_paths must name at least one directory, and
+      wsus.tls.site_name the IIS site WSUS installed. See meta/main.yml.
     quiet: true
     that:
       - __cert__.bucket | default('', true) | length > 0
       - __cert__.object | default('', true) | length > 0
-      - __cert__.password_object | default('', true) | length > 0
+      - __cert__.password | default('', true) | length > 0
       - __cert__.sha256 | default('', true) is match('^[0-9a-f]{64}$')
-      - __cert__.password_sha256 | default('', true) is match('^[0-9a-f]{64}$')
-      - __cert__.public_object | default('', true) | length > 0
-      - __cert__.public_sha256 | default('', true) is match('^[0-9a-f]{64}$')
       - __cert__.thumbprint | default('', true) is match('^[0-9A-Fa-f]{40}$')
       - __cert__.dns_name | default('', true) | trim is match(__host__)
       - __port__ is match('^[0-9]+$')

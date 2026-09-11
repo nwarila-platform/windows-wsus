@@ -10,9 +10,10 @@ wide-open rules WSUS opened for itself, reconciles where update content is kept 
 it, restricts the languages the server will accept, points the server at its upstream, and
 synchronises the catalogue and the files behind it.
 
-Everything that arrives from S3 moves through the controller: the certificate, its password and
-the public half are fetched, digest-checked and handed over the existing connection, so the guest
-never receives cloud credentials. In this deployment it has no route to S3 at all.
+Everything that arrives from S3 moves through the controller: one PKCS#12 is fetched and
+digest-checked there, its password is read there through the framework's `secret` lookup, and the
+container is handed over the existing connection, so the guest never receives cloud credentials.
+In this deployment it has no route to S3 at all.
 
 > **Scope: one server, one co-located default SQL instance.** The AWS images install the default
 > `MSSQLSERVER` instance; the role writes that name where it needs a service and the machine name
@@ -43,19 +44,26 @@ else.
 
 Deployment-specific inputs carry an account id, a certificate identity or a network topology, and
 they change with every site, so the playbook states them where a reader can see them rather than
-defaulting them in the role. `meta/main.yml` names all thirteen, and gives the reason where the
+defaulting them in the role. `meta/main.yml` names all ten, and gives the reason where the
 answer is not obvious from the key. `tasks/validate.yml` enforces them on the controller before
 the role's first mutation -- the loader gathers facts from the guest first, so this is the gate in
-front of every change, not in front of every contact. The nine certificate leaves are required
+front of every change, not in front of every contact. The six certificate leaves are required
 when `wsus.tls.enabled` is true, which is the shipped default; the other four are required
 always.
 
 Two drive letters (database and content, refused if equal), the upstream WSUS server, the networks
-the host firewall admits, and nine keys describing the certificate: bucket, DNS name, the three
-object keys, their three digests, and the thumbprint the listener is pinned to.
+the host firewall admits, and six keys describing the certificate: bucket, DNS name, the object
+key of the PKCS#12, its digest, the password that unlocks it, and the thumbprint the listener is
+pinned to.
 
-The digests are checked on the **controller**, because that is where the objects land and where
-the credential to fetch them exists. The thumbprint is separate from the digests on purpose: a
+The password is a **value, not a location**. Reading a credential out of S3 is the framework
+`secret` lookup's job, so the playbook calls it and passes what comes back; the role is handed a
+password and never a bucket key. That lookup takes the digest of the stored bytes as its second
+term, so the pin the role used to check itself did not go away — it moved to the only thing that
+still sees the object.
+
+The digest is checked on the **controller**, because that is where the object lands and where
+the credential to fetch it exists. The thumbprint is separate from the digest on purpose: a
 digest proves an object is the one that was declared, and a thumbprint proves the listener
 presents the certificate that was meant rather than whichever one a subject search happened to
 find.
@@ -85,10 +93,9 @@ the instance so it adopts them — and only then installs WSUS.
 
 **TLS runs before every task that talks to the WSUS API.** Once `wsusutil configuressl` records
 `UsingSSL=1`, every later bare `Get-WsusServer` dials this machine over HTTPS and validates what
-it is presented, so the trust anchor has to already be in place when they run. Putting TLS last
-would work on run one, when they still speak HTTP, and leave a host that had lost its anchor
-unable to converge again — every run's first API read failing before reaching the region that
-repairs it. It also keeps the two runs the same thing: both drive the API over the same
+it is presented, so the listener has to be settled before any of them run. Putting TLS last would
+work on run one, when they still speak HTTP, and differ on run two. Keeping it first makes the two
+runs the same thing: both drive the API over the same
 transport, rather than run one using HTTP and only run two exercising the path the estate uses.
 
 ## Serving clients over HTTPS
@@ -109,16 +116,27 @@ rather than deriving the list from what is installed is also what makes the role
 which of the others a given image happens to ship — `SelfUpdate` tracks the WSUS patch level, not
 the OS version, and is present on one image here and absent on the other.
 
-The public half of the certificate is delivered as its own object rather than re-used from the
-PFX, because this server must **trust** the certificate as well as serve it: with `UsingSSL=1`,
-WSUS's own API calls go over HTTPS to this machine and .NET validates the chain. A self-signed
-certificate is its own anchor, so without the public half in `Root` every converge after the first
-fails on its first API read — the second run, the one that is supposed to be the proof. Shipping
-it separately keeps the private key out of the `Root` store.
+**The role does not make anything trust this certificate.** It imports the PKCS#12 into
+`LocalMachine\My` and pins the listener to it. That is presenting, not trusting: a certificate in
+`My` is one this machine holds, and holding it confers no root trust. A directory delivers its
+trusted root to every domain member, which is exactly what a production CA's root would do, and a
+role that also wrote the root store would be a second owner of a decision the directory already
+makes.
 
-The delivery is wrapped in a block whose `always` removes both staging copies, controller first:
-both hold the private key, but only the target copy can be stranded by an unreachable guest, so
-the one that cannot be stranded is removed first.
+In this development estate that delivery is a **separate temporary policy** standing in for a
+certificate authority that does not exist yet, and it has been measured not reaching a client —
+the POC client had to be trusted by hand. Production's policy is recorded as delivering it. Read
+the dependency below with that in mind.
+
+That leaves an ordering dependency worth stating plainly. Measured on a live Server 2025 host, a
+PKCS#12 imported into `My` alone appears in no other store and chains to `UntrustedRoot`. So once
+`UsingSSL=1` is written, WSUS's own API calls go over HTTPS to this machine and fail their chain
+check until policy has delivered the root — on this server as much as on any client. A converge
+against a host Group Policy has not yet reached will fail at its first API read.
+
+The delivery is wrapped in a block whose `always` removes both staging directories, controller
+first: both hold the private key, but only the target copy can be stranded by an unreachable
+guest, so the one that cannot be stranded is removed first.
 
 ## Who may reach the server
 
@@ -154,8 +172,8 @@ web-shaped wanted it.
   is to be a WSUS server, and this deployment destroys the host instead. A file that only repeated
   the loader's refusal would be a second place to say one thing.
 - `clean` — present and deliberately empty, and not because nothing is staged. The TLS delivery
-  stages a PFX and a trust anchor on the guest and removes both in its own `always` block, so no
-  persistent cache survives a converge for `clean` to remove.
+  stages a PFX on the guest and removes it in its own `always` block, so no persistent cache
+  survives a converge for `clean` to remove.
 
 ## Design invariants
 

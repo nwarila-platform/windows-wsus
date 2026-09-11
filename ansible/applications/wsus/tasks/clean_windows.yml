@@ -7,8 +7,8 @@
 # the local style contract names it alongside present_windows.yml.
 #
 # It is deliberately empty, and not because nothing is ever staged. The TLS delivery stages a PFX
-# and a trust anchor on the guest, and removes both in its own 'always' block -- private key bytes
-# are not something to leave lying around until someone remembers to run 'clean'. So nothing
+# on the guest and removes it in its own 'always' block -- private key bytes are not something to
+# leave lying around until someone remembers to run 'clean'. So nothing
 # PERSISTENT survives a converge for this file to remove. The first artefact that is meant to
 # outlive its run brings its removal here with it.
 #
