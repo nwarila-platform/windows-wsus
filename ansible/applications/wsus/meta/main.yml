@@ -6,7 +6,7 @@
 #
 # REQUIRED INPUTS — supplied by the playbook, never defaulted here. The certificate leaves are
 # declared empty in defaults; the rest have no leaf there at all. validate.yml refuses a run
-# that omits any of the four below; the nine certificate leaves are refused the same way on a
+# that omits any of the four below; the six certificate leaves are refused the same way on a
 # present run with wsus.tls.enabled true, which is the shipped default.
 #
 #   wsus.db.drive_letter                 Volume SUSDB is created on. Refused if it equals the
@@ -20,22 +20,24 @@
 #   wsus.firewall.admitted_networks      Networks the host firewall admits to 8530 and 8531, in
 #                                        CIDR form, comma-separated. The only control that can
 #                                        scope traffic arriving over a tunnel.
-#   wsus.tls.certificate.bucket          S3 bucket holding the certificate and its password.
+#   wsus.tls.certificate.bucket          S3 bucket holding the PKCS#12.
 #   wsus.tls.certificate.dns_name        Name clients reach this server by, and the name the
 #                                        certificate must be valid for.
-#   wsus.tls.certificate.object          Object key of the PKCS#12 the listener presents.
-#   wsus.tls.certificate.password_object Object key of the file holding that PKCS#12's password.
-#   wsus.tls.certificate.password_sha256 Digest the password file must match.
-#   wsus.tls.certificate.public_object   Object key of the public half, installed as this
-#                                        server's own trust anchor so its API can reach itself
-#                                        over TLS.
-#   wsus.tls.certificate.public_sha256   Digest the public half must match.
+#   wsus.tls.certificate.object          Object key of the PKCS#12 the listener presents, and the
+#                                        only object this role fetches. Trusting it belongs to the
+#                                        directory, so no second object is delivered -- and a host
+#                                        whose policy has not delivered that root cannot read its
+#                                        own WSUS API once TLS is on.
+#   wsus.tls.certificate.password        The password that unlocks that PKCS#12, already resolved.
+#                                        A value and not a location, because reading a credential
+#                                        out of S3 is the framework secret lookup's job and the
+#                                        playbook calls it.
 #   wsus.tls.certificate.sha256          Digest the PKCS#12 must match.
 #   wsus.tls.certificate.thumbprint      The certificate the listener may present, pinned so a
 #                                        subject search cannot select another.
 #
-# The playbook resolves every S3 object on the CONTROLLER. The guest is never given cloud
-# credentials, and in this deployment has no route to S3 at all.
+# The playbook resolves the object and the password on the CONTROLLER. The guest is never given
+# cloud credentials, and in this deployment has no route to S3 at all.
 #
 # The SQL instance is NOT an input: the AWS images install the default instance and this role
 # writes MSSQLSERVER where it needs a service and the machine name where it needs a connection

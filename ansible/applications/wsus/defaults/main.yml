@@ -136,9 +136,9 @@ wsus_defaults:
   # and no TLS-enabled present run converges on what is left here. A run with tls.enabled false
   # skips the assertion and the delivery alike, and never reads them.
   #
-  # Which certificate a server presents -- its name, the objects it arrives as, the digests
-  # those objects must match, the thumbprint the listener is pinned to -- is a property of
-  # the DEPLOYMENT, not of this role. The role is the part that travels between
+  # Which certificate a server presents -- its name, the object it arrives as, the digest that
+  # object must match, the password that unlocks it, the thumbprint the listener is pinned to --
+  # is a property of the DEPLOYMENT, not of this role. The role is the part that travels between
   # deployments; a certificate identity baked into it would have to be edited in the travelling
   # file, which is exactly backwards. validate.yml refuses a present run with tls.enabled true
   # that omits any of them -- which is every run that intends to serve HTTPS at all.
@@ -148,15 +148,25 @@ wsus_defaults:
   # than here. Any one of them left behind produces a refusal rather than a server serving the
   # wrong identity.
   #
-  # The public half is its own object rather than the PFX re-used, because this server must TRUST
-  # the certificate as well as serve it: once wsusutil records UsingSSL=1, WSUS's own API calls go
-  # over HTTPS to this machine and .NET validates what it is presented. A self-signed certificate
-  # is its own anchor, so without the public half in Root every converge after the first fails on
-  # its first read of the WSUS API -- the second run, the one that is supposed to be the proof.
-  # Shipping the public half separately keeps the private key out of the Root store.
+  # ONE object arrives, and it is the PKCS#12. It is what this server PRESENTS, and presenting is
+  # the whole of what this role does with it: the container goes into the machine store and the
+  # listener is pinned to it.
   #
-  # The digests are what make the delivery trustworthy, and they are checked on the CONTROLLER
-  # because the target holds no S3 credential and, in this deployment, no route to S3 at all.
+  # TRUSTING it is somebody else's job. A directory delivers its trusted root to every domain
+  # member, exactly as a production CA's root would, so no second object is delivered here and no
+  # root store is written. Measured on a live Server 2025 host: a PKCS#12 imported into
+  # LocalMachine\My alone lands in no other store and chains to UntrustedRoot -- which is the
+  # point. Holding a certificate is not trusting it, and this role only holds.
+  #
+  # In THIS estate that delivery is a separate temporary policy pending a real certificate
+  # authority, and it has been measured not reaching a client. A server it has not reached cannot
+  # read its own WSUS API once TLS is on.
+  #
+  # The password is not an object either. It arrives already resolved, because the framework's
+  # secret lookup is the one mechanism this estate uses to read a credential out of S3.
+  #
+  # The digest is what makes the delivery trustworthy, and it is checked on the CONTROLLER because
+  # the target holds no S3 credential and, in this deployment, no route to S3 at all.
   tls:
     enabled: true
     port: 8531
@@ -166,10 +176,7 @@ wsus_defaults:
       bucket: ''
       dns_name: ''
       object: ''
-      password_object: ''
-      password_sha256: ''
-      public_object: ''
-      public_sha256: ''
+      password: ''
       sha256: ''
       thumbprint: ''
 

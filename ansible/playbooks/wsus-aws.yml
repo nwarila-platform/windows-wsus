@@ -196,21 +196,43 @@
             # that does not: a production WSUS presents a different name, different objects and a
             # different thumbprint, and none of that should mean editing the travelling file.
             #
-            # One artifact described from several angles, so rotating it is one coherent edit. The
-            # digests are checked on the controller before anything is imported; the thumbprint
-            # pins which certificate the listener may present; the public half is delivered
-            # separately so the server can TRUST what it serves without the private key entering
-            # its Root store.
+            # ONE object, described from several angles, so rotating it is one coherent edit. The
+            # PKCS#12 holds the certificate and its key; the digest is checked on the controller
+            # before it is imported; the thumbprint pins which certificate the listener may
+            # present.
+            #
+            # Nothing here says who TRUSTS it. The directory carries the estate's root to every
+            # domain member, this server included, which is the same shape a production CA would
+            # take and the reason the role writes no root store.
+            #
+            # In this development estate that is a separate temporary policy, recorded as a known
+            # gap and measured not reaching the POC client. This server depends on it now too.
             certificate:
-              # Account-scoped, and only the pipeline knows the account. Every fetch from it runs
-              # on the controller; this guest has no route to S3.
+              # Account-scoped, and only the pipeline knows the account. Both reads below run on
+              # the controller; this guest has no route to S3.
               bucket: "{{ aws_account_id | default('') }}-ansible"
               dns_name: 'tcnaw-wsus01.tcn.trinitytechnicalservices.com'
               object: 'applications/windows-wsus/tls/tcnaw-wsus01.tcn.trinitytechnicalservices.com.pfx'
-              password_object: 'applications/windows-wsus/tls/tcnaw-wsus01.tcn.trinitytechnicalservices.com.pfx.password'
-              password_sha256: '0ba43689e6f79a59fcf2ce0bfad2a868042d4e4eae92506b84ccb38f1bea6d59'
-              public_object: 'applications/windows-wsus/tls/tcnaw-wsus01.tcn.trinitytechnicalservices.com.cer'
-              public_sha256: '3afd03b1f19b0f28b8a221f52cd68bddc04a2fe6c3e6df99f67343c7604b2e3e'
+
+              # Read through the framework's secret lookup, which is how this estate reads a
+              # credential out of S3. The second term is the digest of the stored bytes, so an
+              # object that moved under an unchanged pin stops the play rather than handing the
+              # role a password that will only fail later, at the import.
+              #
+              # WRAPPED IN AN IF, and that is not decoration. The loader templates this whole map
+              # while building wsus_running, which is before the role reaches any of its own
+              # gates -- so a bare lookup here would read the secret on a state=clean or
+              # state=absent run that never opens a listener, and would fail those runs on a
+              # password object they have no use for. A Jinja if does not evaluate the branch it
+              # does not take, where a ternary would evaluate both. Anything other than present
+              # resolves to empty, which validate.yml does not look at outside a present run.
+              password: >-
+                {% if (state | default('present') | string | lower | trim) == 'present' -%}
+                {{ lookup('secret',
+                          's3://' ~ aws_account_id ~ '-ansible/applications/windows-wsus/tls/'
+                          ~ 'tcnaw-wsus01.tcn.trinitytechnicalservices.com.pfx.password',
+                          '0ba43689e6f79a59fcf2ce0bfad2a868042d4e4eae92506b84ccb38f1bea6d59') }}
+                {%- endif %}
               sha256: '473880d30d30fd3f6fc32b9aedd6e9fd410d9a63b31c0152d993d9ed0a585e16'
               thumbprint: '8760E9DA2B79D7FCFB5C8DADD72628649029B348'
 
@@ -306,10 +328,14 @@
     - role: 'wsus_client'
       vars:
         wsus_client:
-          # The anchor the client must already trust, which is the certificate the server role was
+          # The certificate the client must already trust, which is the one the server role was
           # told to present. The client does not take this on faith: it reads both root stores for
           # a key named by this thumbprint, so a Group Policy that delivered some OTHER certificate
           # leaves the named key absent and the run refuses.
+          #
+          # The server needs that same delivery and is checked by nothing here -- it is a domain
+          # member like any other, and its own API calls fail their chain check until policy has
+          # reached it.
           #
           # ONE deployment fact written twice, which is a real cost rather than a feature: nothing
           # here equates the two, so rotating the certificate means editing both blocks. The
