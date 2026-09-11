@@ -184,10 +184,28 @@
             # domain's DNS and this upstream is not a domain member.
             upstream_server: '10.69.112.6'
           tls:
+            # THE CERTIFICATE THIS DEPLOYMENT SERVES, whole. It lives here rather than in the role
+            # because the role is the part that travels between deployments and this is the part
+            # that does not: a production WSUS presents a different name, different objects and a
+            # different thumbprint, and none of that should mean editing the travelling file.
+            #
+            # One artifact described from several angles, so rotating it is one coherent edit. The
+            # digests are checked on the controller before anything is imported; the thumbprint
+            # pins which certificate the listener may present; the public half is delivered
+            # separately so the server can TRUST what it serves without the private key entering
+            # its Root store.
             certificate:
               # Account-scoped, and only the pipeline knows the account. Every fetch from it runs
               # on the controller; this guest has no route to S3.
               bucket: "{{ aws_account_id | default('') }}-ansible"
+              dns_name: 'tcnaw-wsus01.tcn.trinitytechnicalservices.com'
+              object: 'applications/windows-wsus/tls/tcnaw-wsus01.tcn.trinitytechnicalservices.com.pfx'
+              password_object: 'applications/windows-wsus/tls/tcnaw-wsus01.tcn.trinitytechnicalservices.com.pfx.password'
+              password_sha256: '0ba43689e6f79a59fcf2ce0bfad2a868042d4e4eae92506b84ccb38f1bea6d59'
+              public_object: 'applications/windows-wsus/tls/tcnaw-wsus01.tcn.trinitytechnicalservices.com.cer'
+              public_sha256: '3afd03b1f19b0f28b8a221f52cd68bddc04a2fe6c3e6df99f67343c7604b2e3e'
+              sha256: '473880d30d30fd3f6fc32b9aedd6e9fd410d9a63b31c0152d993d9ed0a585e16'
+              thumbprint: '8760E9DA2B79D7FCFB5C8DADD72628649029B348'
     #endregion --- [ Roles: WSUS ] ------------------------------------------------------------ #
   #endregion --- [ Roles ] -------------------------------------------------------------------- #
 
