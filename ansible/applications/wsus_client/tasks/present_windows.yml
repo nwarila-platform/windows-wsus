@@ -25,10 +25,20 @@
     __client__: "{{ wsus_client_running }}"
     __policy_root__: 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate'
     __policy_au__: 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU'
-    # A Group Policy deployment lands the anchor under the Policies subtree; a locally installed
-    # one lands under the machine's own. Windows honours either, so either satisfies the check.
+    # THREE hives, because Windows fills a different one depending on how the anchor arrived, and
+    # it honours all three. Measured on this deployment's own client, 2026-09-11.
+    #
+    #   Policies\...\SystemCertificates    a Group Policy certificate deployment
+    #   Microsoft\SystemCertificates       a certificate installed on the machine itself
+    #   Microsoft\EnterpriseCertificates   a root PUBLISHED TO THE DIRECTORY and pulled from it
+    #
+    # The third was missing and cost a converge. It is the one a real certificate authority uses:
+    # publish the root to AD, every member pulls it. The client trusted the certificate perfectly
+    # -- Cert:\LocalMachine\Root held it -- and this role refused anyway, because it was looking
+    # in the two hives an enterprise root never lands in.
     __anchor_policy__: 'HKLM:\SOFTWARE\Policies\Microsoft\SystemCertificates\Root\Certificates'
     __anchor_machine__: 'HKLM:\SOFTWARE\Microsoft\SystemCertificates\Root\Certificates'
+    __anchor_enterprise__: 'HKLM:\SOFTWARE\Microsoft\EnterpriseCertificates\Root\Certificates'
 
   # Begin The 'Process' Block
   block:
@@ -93,6 +103,13 @@
       ansible.windows.win_reg_stat:
         path: "{{ __anchor_machine__ }}\\{{ __client__.certificate.thumbprint | upper }}"
 
+    - name: 'PROCESS | Read Whether The Directory Published The Trust Anchor'
+      changed_when: false
+      register: '__wsus_client_anchor_enterprise__'
+
+      ansible.windows.win_reg_stat:
+        path: "{{ __anchor_enterprise__ }}\\{{ __client__.certificate.thumbprint | upper }}"
+
     #endregion --- [ Process: Read What Group Policy Left Behind ] ---------------------------- #
 
     #region ------ [ Process: Refuse A Machine Nothing Told About WSUS ] ---------------------- #
@@ -111,7 +128,8 @@
           {{ __client__.certificate.thumbprint | upper }} to a root store. It reports
           WUServer={{ __wsus_client_server__.value | default('<absent>') }},
           UseWUServer={{ __wsus_client_use__.value | default('<absent>') }},
-          anchor={{ (__wsus_client_anchor_policy__.exists or __wsus_client_anchor_machine__.exists) }}.
+          anchor={{ (__wsus_client_anchor_policy__.exists or __wsus_client_anchor_machine__.exists
+                     or __wsus_client_anchor_enterprise__.exists) }}.
           A scan from here would report no updates required and prove nothing.
         quiet: true
         that:
@@ -120,6 +138,7 @@
           - __wsus_client_use__.exists
           - (__wsus_client_use__.value | int) == 1
           - __wsus_client_anchor_policy__.exists or __wsus_client_anchor_machine__.exists
+            or __wsus_client_anchor_enterprise__.exists
 
     #endregion --- [ Process: Refuse A Machine Nothing Told About WSUS ] ---------------------- #
 
