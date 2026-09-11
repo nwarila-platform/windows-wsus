@@ -18,7 +18,6 @@
 #
 # =========================================================================================== #
 ---
-
 #region ------ [ Play: Inventory Contract ] --------------------------------------------------- #
 # The inventory already filters to this run's instance by its framework-set tags. This guards the
 # one state that filter cannot cover: an empty result, where nothing launched or nothing tagged.
@@ -38,6 +37,7 @@
     # The same argument, for the host that does the proving. Without this a run whose client never
     # appeared would skip both client plays, report success, and prove only that the server can be
     # built -- which is the half that was never in doubt.
+
     - name: 'INVENTORY | Require At Least One Filtered Client'
       ansible.builtin.assert:
         that: groups['wsus_clients'] | default([]) | length >= 1
@@ -49,6 +49,7 @@
 
     # The site roles template their bucket names from the account id, so a wrong one surfaces as a
     # download failure on the guest minutes later. Refuse it here, before anything is dialled.
+
     - name: 'INVENTORY | Require The Deploying Account'
       ansible.builtin.assert:
         that: aws_account_id is defined and aws_account_id is match('^[0-9]{12}$')
@@ -78,6 +79,7 @@
         # as "no platform" and SKIPS the EC2Launch wait -- and the next role renames the computer
         # and reboots, which is exactly what that wait exists to sequence against.
         host_readiness_platform: 'aws'
+
     #endregion --- [ Roles: Host Readiness ] -------------------------------------------------- #
 
     #region ------ [ Roles: OS Bootstrap ] ---------------------------------------------------- #
@@ -85,12 +87,14 @@
     # after it depends on that. Pass it NO vars: role params outrank the connection scoping it
     # relies on, and a stray one silently re-breaks the pre-flip stage.
     - role: 'os_bootstrap'
+
     #endregion --- [ Roles: OS Bootstrap ] ---------------------------------------------------- #
 
     #region ------ [ Roles: Remote Client ] --------------------------------------------------- #
     # Site policy: the role defaults every value openvpn_client needs, so this play states none.
     # 'aws_account_id' is an extra-var -- only the pipeline knows which account it deploys into.
     - role: 'remote_client'
+
     #endregion --- [ Roles: Remote Client ] --------------------------------------------------- #
 
     #region ------ [ Roles: Domain Member ] --------------------------------------------------- #
@@ -117,6 +121,7 @@
           password: { bucket: "{{ aws_account_id | default('') }}-ansible" }
           computer_ou: 'OU=WSUS,OU=Domain Servers,DC=tcn,DC=trinitytechnicalservices,DC=com'
           registration_address: "{{ aws_private_ip_address }}"
+
     #endregion --- [ Roles: Domain Member ] --------------------------------------------------- #
 
     #region ------ [ Roles: Windows Disk Manager ] -------------------------------------------- #
@@ -139,7 +144,9 @@
               drive_letter: 'G'
               label: 'WSUSIIS'
               allocation_unit: 4096
+
     #endregion --- [ Roles: Windows Disk Manager ] -------------------------------------------- #
+
   #endregion --- [ Roles ] -------------------------------------------------------------------- #
 
 #endregion --- [ Play: Configure The Guest ] -------------------------------------------------- #
@@ -184,11 +191,53 @@
             # domain's DNS and this upstream is not a domain member.
             upstream_server: '10.69.112.6'
           tls:
+            # THE CERTIFICATE THIS DEPLOYMENT SERVES, whole. It lives here rather than in the role
+            # because the role is the part that travels between deployments and this is the part
+            # that does not: a production WSUS presents a different name, different objects and a
+            # different thumbprint, and none of that should mean editing the travelling file.
+            #
+            # ONE object, described from several angles, so rotating it is one coherent edit. The
+            # PKCS#12 holds the certificate and its key; the digest is checked on the controller
+            # before it is imported; the thumbprint pins which certificate the listener may
+            # present.
+            #
+            # Nothing here says who TRUSTS it. The directory carries the estate's root to every
+            # domain member, this server included, which is the same shape a production CA would
+            # take and the reason the role writes no root store.
+            #
+            # In this development estate that is a separate temporary policy, recorded as a known
+            # gap and measured not reaching the POC client. This server depends on it now too.
             certificate:
-              # Account-scoped, and only the pipeline knows the account. Every fetch from it runs
-              # on the controller; this guest has no route to S3.
+              # Account-scoped, and only the pipeline knows the account. Both reads below run on
+              # the controller; this guest has no route to S3.
               bucket: "{{ aws_account_id | default('') }}-ansible"
+              dns_name: 'tcnaw-wsus01.tcn.trinitytechnicalservices.com'
+              object: 'applications/windows-wsus/tls/tcnaw-wsus01.tcn.trinitytechnicalservices.com.pfx'
+
+              # Read through the framework's secret lookup, which is how this estate reads a
+              # credential out of S3. The second term is the digest of the stored bytes, so an
+              # object that moved under an unchanged pin stops the play rather than handing the
+              # role a password that will only fail later, at the import.
+              #
+              # WRAPPED IN AN IF, and that is not decoration. The loader templates this whole map
+              # while building wsus_running, which is before the role reaches any of its own
+              # gates -- so a bare lookup here would read the secret on a state=clean or
+              # state=absent run that never opens a listener, and would fail those runs on a
+              # password object they have no use for. A Jinja if does not evaluate the branch it
+              # does not take, where a ternary would evaluate both. Anything other than present
+              # resolves to empty, which validate.yml does not look at outside a present run.
+              password: >-
+                {% if (state | default('present') | string | lower | trim) == 'present' -%}
+                {{ lookup('secret',
+                          's3://' ~ aws_account_id ~ '-ansible/applications/windows-wsus/tls/'
+                          ~ 'tcnaw-wsus01.tcn.trinitytechnicalservices.com.pfx.password',
+                          '0ba43689e6f79a59fcf2ce0bfad2a868042d4e4eae92506b84ccb38f1bea6d59') }}
+                {%- endif %}
+              sha256: '473880d30d30fd3f6fc32b9aedd6e9fd410d9a63b31c0152d993d9ed0a585e16'
+              thumbprint: '8760E9DA2B79D7FCFB5C8DADD72628649029B348'
+
     #endregion --- [ Roles: WSUS ] ------------------------------------------------------------ #
+
   #endregion --- [ Roles ] -------------------------------------------------------------------- #
 
 #endregion --- [ Play: WSUS ] ----------------------------------------------------------------- #
@@ -214,16 +263,19 @@
     - role: 'host_readiness'
       vars:
         host_readiness_platform: 'aws'
+
     #endregion --- [ Roles: Host Readiness ] -------------------------------------------------- #
 
     #region ------ [ Roles: OS Bootstrap ] ---------------------------------------------------- #
     # Pass it NO vars: role params outrank the connection scoping it relies on.
     - role: 'os_bootstrap'
+
     #endregion --- [ Roles: OS Bootstrap ] ---------------------------------------------------- #
 
     #region ------ [ Roles: Remote Client ] --------------------------------------------------- #
     # The tunnel, because the directory this machine joins is on the other side of it.
     - role: 'remote_client'
+
     #endregion --- [ Roles: Remote Client ] --------------------------------------------------- #
 
     #region ------ [ Roles: Domain Member ] --------------------------------------------------- #
@@ -244,7 +296,9 @@
           # converge that left registration as it found it would report success while the name
           # stayed wrong.
           registration_address: "{{ aws_private_ip_address }}"
+
     #endregion --- [ Roles: Domain Member ] --------------------------------------------------- #
+
   #endregion --- [ Roles ] -------------------------------------------------------------------- #
 
 #endregion --- [ Play: Configure The Client Guest ] ------------------------------------------- #
@@ -274,9 +328,27 @@
     - role: 'wsus_client'
       vars:
         wsus_client:
+          # The certificate the client must already trust, which is the one the server role was
+          # told to present. The client does not take this on faith: it reads both root stores for
+          # a key named by this thumbprint, so a Group Policy that delivered some OTHER certificate
+          # leaves the named key absent and the run refuses.
+          #
+          # The server needs that same delivery and is checked by nothing here -- it is a domain
+          # member like any other, and its own API calls fail their chain check until policy has
+          # reached it.
+          #
+          # ONE deployment fact written twice, which is a real cost rather than a feature: nothing
+          # here equates the two, so rotating the certificate means editing both blocks. The
+          # server and the client are configured by different plays and play vars do not cross,
+          # so no single declaration in this file reaches both. Recorded rather than hidden.
+          certificate:
+            thumbprint: '8760E9DA2B79D7FCFB5C8DADD72628649029B348'
+
           server:
             url: 'https://tcnaw-wsus01.tcn.trinitytechnicalservices.com:8531'
+
     #endregion --- [ Roles: WSUS Client ] ----------------------------------------------------- #
+
   #endregion --- [ Roles ] -------------------------------------------------------------------- #
 
 #endregion --- [ Play: Prove The Client ] ----------------------------------------------------- #

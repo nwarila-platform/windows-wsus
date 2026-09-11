@@ -58,7 +58,6 @@
       "Effect": "Allow",
       "Action": "s3:GetObject",
       "Resource": [
-        "arn:aws:s3:::<account-id>-ansible/applications/windows-wsus/tls/tcnaw-wsus01.tcn.trinitytechnicalservices.com.cer",
         "arn:aws:s3:::<account-id>-ansible/applications/windows-wsus/tls/tcnaw-wsus01.tcn.trinitytechnicalservices.com.pfx",
         "arn:aws:s3:::<account-id>-ansible/applications/windows-wsus/tls/tcnaw-wsus01.tcn.trinitytechnicalservices.com.pfx.password"
       ],

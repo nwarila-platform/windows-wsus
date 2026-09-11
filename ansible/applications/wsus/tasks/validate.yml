@@ -2,7 +2,9 @@
 # File: '{{ role_path }}/tasks/validate.yml'
 # --- [ Description ] ----------------------------------------------------------------------- #
 #
-# Validates the merged running config on the CONTROLLER, before anything touches the guest.
+# Validates the merged running config on the CONTROLLER, before the role's first mutation. The
+# loader gathers facts from the guest ahead of this, so it is the gate in front of every change
+# rather than in front of every contact.
 # Guards arrive with the action that needs them, so this grows one region at a time.
 #
 # 'state' is normalised EXACTLY as the loader normalises it for dispatch -- lower and trimmed --
@@ -15,9 +17,7 @@
 #
 # =========================================================================================== #
 ---
-
 - name: 'VALIDATE | Require A Usable Database Placement'
-  when: (state | default('present') | string | lower | trim) == 'present'
   vars:
     # One grammar for both subdirectories: segments of word characters, dots and hyphens, each
     # starting with an alphanumeric and never ending in a dot, joined by single backslashes. It
@@ -32,6 +32,7 @@
     __reserved__: '(?i)(^|\\)(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\.|\\|$)'
     __data__: "{{ wsus_running.db.data_subdir | default('', true) }}"
     __log__: "{{ wsus_running.db.log_subdir | default('', true) }}"
+  when: (state | default('present') | string | lower | trim) == 'present'
   ansible.builtin.assert:
     fail_msg: >-
       Refusing to configure: the database placement is malformed. wsus.db.drive_letter must be one
@@ -42,7 +43,7 @@
       different directories compared case-insensitively, because Windows treats 'MSSQL\Data' and
       'mssql\data' as one and the engine would then write logs and data to the same place.
       Each composed path must also be at most 128 characters, because that is what the engine
-      reports back and a longer one could never be proven placed.
+      reports back and a longer one could never be proven placed. See meta/main.yml.
     quiet: true
     that:
       - wsus_running.db.drive_letter | default('', true) is match('^[D-Z]$')
@@ -60,19 +61,20 @@
 # the vendor's own repair for a wrong CONTENT_DIR is exactly that re-run, which is a thing an
 # operator does and this role does not. The letter is therefore held to the same grammar as the
 # database letter, and the subdirectory to the same grammar as its subdirectories.
+
 - name: 'VALIDATE | Require A Usable Content Placement'
-  when: (state | default('present') | string | lower | trim) == 'present'
   vars:
     __subdir__: '^[A-Za-z0-9_]([A-Za-z0-9_.-]*[A-Za-z0-9_-])?(\\[A-Za-z0-9_]([A-Za-z0-9_.-]*[A-Za-z0-9_-])?)*$'
     __reserved__: '(?i)(^|\\)(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\.|\\|$)'
     __content__: "{{ wsus_running.content.subdir | default('', true) }}"
+  when: (state | default('present') | string | lower | trim) == 'present'
   ansible.builtin.assert:
     fail_msg: >-
       Refusing to configure: the content placement is malformed. wsus.content.drive_letter must be
       one capital letter in D-Z, because this role's gate never re-runs a completed
       post-installation to correct one. The subdirectory follows the same grammar as the database
       ones. It must also name a different volume from the database: SUSDB and the update store
-      grow independently, and sharing a disk lets either one stop the other.
+      grow independently, and sharing a disk lets either one stop the other. See meta/main.yml.
     quiet: true
     that:
       - wsus_running.content.drive_letter | default('', true) is match('^[D-Z]$')
@@ -86,11 +88,11 @@
       - (wsus_running.content.drive_letter | upper) != (wsus_running.db.drive_letter | upper)
 
 - name: 'VALIDATE | Require Usable Update Languages'
-  when: (state | default('present') | string | lower | trim) == 'present'
   vars:
     __languages__: >-
       {{ wsus_running.updates.languages | default([], true)
          | map('trim') | map('lower') | select() | unique | list }}
+  when: (state | default('present') | string | lower | trim) == 'present'
   ansible.builtin.assert:
     fail_msg: >-
       Refusing to configure: wsus.updates.languages must name at least one update language, as the
@@ -98,7 +100,7 @@
       refusal comes too late: the script clears AllUpdateLanguagesEnabled and saves BEFORE it can
       discover that the server kept none of the codes it was handed, which leaves a WSUS server
       that synchronises nothing at all. Nothing upstream can see this key, so it is this role's to
-      hold before its first mutation.
+      hold before its first mutation. See meta/main.yml.
     quiet: true
     that:
       - __languages__ | length > 0
@@ -111,14 +113,15 @@
 # -- hours later, on a server that reports itself configured. The controller is the last place a
 # wrong value is cheap. The flags are held to real booleans rather than coerced, because 'no' and
 # 'false' and a typo all coerce to false and only one of them was meant.
+
 - name: 'VALIDATE | Require A Usable Upstream Source'
-  when: (state | default('present') | string | lower | trim) == 'present'
   vars:
     # One grammar for both forms a WSUS upstream is written as -- a DNS name or an IPv4 literal --
     # because WSUS stores and dials whichever it was given.
     __host__: '^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*$'
     __upstream__: "{{ wsus_running.sync.upstream_server | default('', true) | trim }}"
     __port__: "{{ wsus_running.sync.upstream_port | default('', true) }}"
+  when: (state | default('present') | string | lower | trim) == 'present'
   ansible.builtin.assert:
     fail_msg: >-
       Refusing to configure: the upstream source is malformed. wsus.sync.upstream_server must name
@@ -128,7 +131,7 @@
       wsus.sync.upstream_use_ssl and wsus.sync.replica must each be a real boolean, written true or
       false, because a quoted string coerces silently and only one spelling was meant.
       wsus.sync.timeout_seconds and wsus.sync.content_timeout_seconds must each be at least 60
-      seconds; the script refuses anything above six hours.
+      seconds; the script refuses anything above six hours. See meta/main.yml.
     quiet: true
     that:
       - __upstream__ is match(__host__)
@@ -146,8 +149,8 @@
 # non-empty because every wrong shape fails the same silent way: netsh accepts what it is given,
 # the rule is created admitting something other than the estate, and nothing reports it until a
 # client cannot reach the server or the wrong network can.
+
 - name: 'VALIDATE | Require The Networks This Server Admits'
-  when: (state | default('present') | string | lower | trim) == 'present'
   vars:
     # Octet and prefix RANGES, not digit counts. '999.999.999.999/99' matches a count-based
     # pattern and is not an address; it would reach the firewall module, create a rule admitting
@@ -157,6 +160,7 @@
     __cidr__: "{{ '^' ~ __octet__ ~ '(\\.' ~ __octet__ ~ '){3}/' ~ __prefix__ ~ '$' }}"
     __networks__: >-
       {{ wsus_running.firewall.admitted_networks | default('', true) | split(',') | map('trim') | select() | list }}
+  when: (state | default('present') | string | lower | trim) == 'present'
   ansible.builtin.assert:
     fail_msg: >-
       Refusing to configure: wsus.firewall.admitted_networks must name at least one network in
@@ -164,6 +168,7 @@
       never defaulted: which networks exist and which of them this server serves is a property of
       the deployment, and a default would be either wide enough to be useless or narrow enough to
       lock out an estate silently. wsus.firewall.http_port must be a whole number in 1-65535.
+      See meta/main.yml.
     quiet: true
     that:
       - __networks__ | length > 0
@@ -176,6 +181,7 @@
 # this flag, so a flag that is not a boolean disables its own validation: 'fase' coerces to false
 # with a deprecation warning, the whole TLS region is skipped, and the play succeeds with the server
 # still serving plain HTTP. A gate has to be checked by something outside the gate.
+
 - name: 'VALIDATE | Require The TLS Gate To Be A Real Boolean'
   when: (state | default('present') | string | lower | trim) == 'present'
   ansible.builtin.assert:
@@ -183,6 +189,7 @@
       Refusing to configure: wsus.tls.enabled must be a real boolean, written true or false. A
       quoted string coerces silently, and because every other TLS check is gated on this value, a
       typo here would switch off its own validation and leave the server on plain HTTP.
+      See meta/main.yml.
     quiet: true
     that:
       - wsus_running.tls.enabled is boolean
@@ -192,34 +199,34 @@
 # certificate is already in the machine store; a missing bucket is a task failure four regions in,
 # on a host that has already been changed. Nothing upstream can see this key, so it is this role's
 # to hold before its first mutation.
+
 - name: 'VALIDATE | Require A Usable TLS Declaration'
-  when:
-    - (state | default('present') | string | lower | trim) == 'present'
-    - wsus_running.tls.enabled | bool
   vars:
     __host__: '^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*$'
     __cert__: "{{ wsus_running.tls.certificate }}"
     __port__: "{{ wsus_running.tls.port | default('', true) }}"
+  when:
+    - (state | default('present') | string | lower | trim) == 'present'
+    - wsus_running.tls.enabled | bool
   ansible.builtin.assert:
     fail_msg: >-
-      Refusing to configure: the TLS declaration is malformed. wsus.tls.certificate.bucket must
-      name the S3 bucket holding the delivery and is deliberately never defaulted, because only
-      the pipeline knows which account it runs in. object, password_object and public_object must
-      each be a non-empty key, and sha256, password_sha256 and public_sha256 each sixty-four
-      hexadecimal characters -- an object is trusted only once it matches the digest pinned here. thumbprint must be forty
-      hexadecimal characters, naming the exact certificate the listener is pinned to rather than
-      whichever one happens to carry the right subject. dns_name must be the name clients reach
-      this server by, and wsus.tls.port a whole number in 1-65535. wsus.tls.secured_paths must
-      name at least one directory, and wsus.tls.site_name the IIS site WSUS installed.
+      Refusing to configure: the TLS declaration is malformed. wsus.tls.certificate.bucket
+      must name the S3 bucket holding the PKCS#12. It is declared empty by the role and never
+      given a usable default, because only the pipeline knows which account it runs in. object
+      must be a non-empty key and sha256 sixty-four hexadecimal characters -- the container is
+      trusted only once it matches the digest pinned here. password must be the non-empty
+      secret that unlocks it, resolved by the caller rather than named as an object.
+      thumbprint must be forty hexadecimal characters, naming the exact certificate the
+      listener is pinned to rather than whichever one happens to carry the right subject.
+      dns_name must be the name clients reach this server by, and wsus.tls.port a whole number
+      in 1-65535. wsus.tls.secured_paths must name at least one directory, and
+      wsus.tls.site_name the IIS site WSUS installed. See meta/main.yml.
     quiet: true
     that:
       - __cert__.bucket | default('', true) | length > 0
       - __cert__.object | default('', true) | length > 0
-      - __cert__.password_object | default('', true) | length > 0
+      - __cert__.password | default('', true) | length > 0
       - __cert__.sha256 | default('', true) is match('^[0-9a-f]{64}$')
-      - __cert__.password_sha256 | default('', true) is match('^[0-9a-f]{64}$')
-      - __cert__.public_object | default('', true) | length > 0
-      - __cert__.public_sha256 | default('', true) is match('^[0-9a-f]{64}$')
       - __cert__.thumbprint | default('', true) is match('^[0-9A-Fa-f]{40}$')
       - __cert__.dns_name | default('', true) | trim is match(__host__)
       - __port__ is match('^[0-9]+$')

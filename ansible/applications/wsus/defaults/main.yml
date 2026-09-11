@@ -20,10 +20,10 @@
 #
 # =========================================================================================== #
 ---
-
 wsus_defaults:
 
   #region ------ [ Database placement ] ------------------------------------------------------ #
+
   # WHERE SUSDB IS CREATED, and the reason this is the role's first action. wsusutil postinstall
   # creates the database wherever the instance's default directories point, and moving it
   # afterwards is the unsupported detach/copy/attach path (TD-005). Placement has to be right
@@ -37,9 +37,11 @@ wsus_defaults:
   db:
     data_subdir: 'MSSQL\Data'
     log_subdir: 'MSSQL\Log'
+
   #endregion --- [ Database placement ] ------------------------------------------------------ #
 
   #region ------ [ Content placement ] ------------------------------------------------------- #
+
   # WHERE UPDATE FILES LAND. Post-installation takes this as CONTENT_DIR and will not create a
   # missing tree, so the directory exists before it runs. Measured on the target: the feature
   # install writes ContentDir = C:\Program Files\Update Services, so passing this is what keeps
@@ -49,18 +51,22 @@ wsus_defaults:
   # is this role's own shape.
   content:
     subdir: 'WSUS'
+
   #endregion --- [ Content placement ] ------------------------------------------------------- #
 
   #region ------ [ Update languages ] -------------------------------------------------------- #
+
   # WHICH LANGUAGES THIS SERVER WILL ACCEPT. A WSUS server installs accepting every language
   # Microsoft publishes, which on a single-estate server is a permanent cost in disk and sync time
   # for content nobody will approve. Genuine deployer configuration -- an estate in Quebec wants
   # 'fr' here -- so it is declared rather than written into the role.
   updates:
     languages: ['en']
+
   #endregion --- [ Update languages ] -------------------------------------------------------- #
 
   #region ------ [ Upstream source ] --------------------------------------------------------- #
+
   # WHERE THIS SERVER GETS ITS UPDATES. A WSUS server installs pointed at Microsoft Update, and a
   # downstream server is the estate declaring it would rather approve once upstream and mirror the
   # result than approve the same update on every server.
@@ -93,9 +99,11 @@ wsus_defaults:
     timeout_seconds: 1800
     upstream_port: 8530
     upstream_use_ssl: false
+
   #endregion --- [ Upstream source ] --------------------------------------------------------- #
 
   #region ------ [ Who may reach this server ] ----------------------------------------------- #
+
   # WHICH NETWORKS THE HOST ITSELF ADMITS. Measured on a live server: WSUS opens two firewall rules
   # of its own at post-installation, both named 'WSUS', for TCP 8530 and 8531, with program Any,
   # service Any and remote address ANY. That is the whole internet admitted to the update service.
@@ -114,49 +122,63 @@ wsus_defaults:
     # HTTPS port is wsus.tls.port and is NOT repeated here: one server has one HTTPS port, and two
     # declarations of it would be two places to disagree.
     http_port: 8530
+
   #endregion --- [ Who may reach this server ] ----------------------------------------------- #
 
   #region ------ [ Client-facing TLS ] ------------------------------------------------------- #
+
   # WHETHER CLIENTS TALK TO THIS SERVER OVER HTTPS, and with which certificate. Genuine deployer
   # configuration: a server with no certificate to serve cannot converge with this on, and an
   # estate that terminates TLS somewhere else does not want it.
   #
-  # Everything under 'certificate' is ONE artifact described from several angles -- the name it is
-  # valid for, the objects it is delivered as, the digests those objects must match, and the
-  # thumbprint the listener is pinned to. They are declared together because they change together:
-  # rotating the certificate that clients trust is a single coherent edit here, and any one of
-  # them left behind produces a refusal rather than a server serving the wrong identity.
+  # EVERY VALUE UNDER 'certificate' IS DECLARED EMPTY HERE. The keys are written out so a reader
+  # can see the whole shape; the values are the deployment's, exactly as the drive letters are,
+  # and no TLS-enabled present run converges on what is left here. A run with tls.enabled false
+  # skips the assertion and the delivery alike, and never reads them.
   #
-  # The bucket is deliberately absent, as the drive letters are. Only the pipeline knows which
-  # account it is running in, so validate.yml refuses a run that omits it.
+  # Which certificate a server presents -- its name, the object it arrives as, the digest that
+  # object must match, the password that unlocks it, the thumbprint the listener is pinned to --
+  # is a property of the DEPLOYMENT, not of this role. The role is the part that travels between
+  # deployments; a certificate identity baked into it would have to be edited in the travelling
+  # file, which is exactly backwards. validate.yml refuses a present run with tls.enabled true
+  # that omits any of them -- which is every run that intends to serve HTTPS at all.
   #
-  # The digests are what make the delivery trustworthy. The target has no outbound HTTPS of its
-  # own -- measured in terraform/aws.tfvars, whose only egress rule is the VPN tunnel -- so both
-  # objects are fetched on the CONTROLLER and the target never holds an S3 credential.
+  # They are still ONE artifact described from several angles, and they still change together:
+  # rotating the certificate a server presents is a single coherent edit, just in the play rather
+  # than here. Any one of them left behind produces a refusal rather than a server serving the
+  # wrong identity.
+  #
+  # ONE object arrives, and it is the PKCS#12. It is what this server PRESENTS, and presenting is
+  # the whole of what this role does with it: the container goes into the machine store and the
+  # listener is pinned to it.
+  #
+  # TRUSTING it is somebody else's job. A directory delivers its trusted root to every domain
+  # member, exactly as a production CA's root would, so no second object is delivered here and no
+  # root store is written. Measured on a live Server 2025 host: a PKCS#12 imported into
+  # LocalMachine\My alone lands in no other store and chains to UntrustedRoot -- which is the
+  # point. Holding a certificate is not trusting it, and this role only holds.
+  #
+  # In THIS estate that delivery is a separate temporary policy pending a real certificate
+  # authority, and it has been measured not reaching a client. A server it has not reached cannot
+  # read its own WSUS API once TLS is on.
+  #
+  # The password is not an object either. It arrives already resolved, because the framework's
+  # secret lookup is the one mechanism this estate uses to read a credential out of S3.
+  #
+  # The digest is what makes the delivery trustworthy, and it is checked on the CONTROLLER because
+  # the target holds no S3 credential and, in this deployment, no route to S3 at all.
   tls:
     enabled: true
     port: 8531
     site_name: 'WSUS Administration'
 
     certificate:
-      dns_name: 'tcnaw-wsus01.tcn.trinitytechnicalservices.com'
-      object: 'applications/windows-wsus/tls/tcnaw-wsus01.tcn.trinitytechnicalservices.com.pfx'
-      password_object: 'applications/windows-wsus/tls/tcnaw-wsus01.tcn.trinitytechnicalservices.com.pfx.password'
-      password_sha256: '0ba43689e6f79a59fcf2ce0bfad2a868042d4e4eae92506b84ccb38f1bea6d59'
-
-      # The SAME certificate, public half only, because this server has to trust it as well as
-      # serve it. Once wsusutil records UsingSSL=1, WSUS's own API calls go over HTTPS to this
-      # machine and .NET validates what it is presented; a self-signed certificate is its own trust
-      # anchor, so without this in Root every converge AFTER the first fails on its first read of
-      # the WSUS API -- which is the second run, the one that is supposed to be the proof.
-      #
-      # Delivered as its own object rather than re-using the PFX, so the private key never enters
-      # the Root store.
-      public_object: 'applications/windows-wsus/tls/tcnaw-wsus01.tcn.trinitytechnicalservices.com.cer'
-      public_sha256: '3afd03b1f19b0f28b8a221f52cd68bddc04a2fe6c3e6df99f67343c7604b2e3e'
-
-      sha256: '473880d30d30fd3f6fc32b9aedd6e9fd410d9a63b31c0152d993d9ed0a585e16'
-      thumbprint: '8760E9DA2B79D7FCFB5C8DADD72628649029B348'
+      bucket: ''
+      dns_name: ''
+      object: ''
+      password: ''
+      sha256: ''
+      thumbprint: ''
 
     # WHICH DIRECTORIES REFUSE PLAIN HTTP. Vendor-fixed rather than a preference: these five are
     # the endpoints a client authenticates and reports through, and Microsoft's own instructions
@@ -175,4 +197,5 @@ wsus_defaults:
       - 'DssAuthWebService'
       - 'ServerSyncWebService'
       - 'SimpleAuthWebService'
+
   #endregion --- [ Client-facing TLS ] ------------------------------------------------------- #

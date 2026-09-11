@@ -120,8 +120,8 @@ recursive walk yields, so this table diffs directly against the file.
 | 59 | `MAIN \| Create A Unique TLS Staging Directory On The Controller` | reproduce | Controller-side `tempfile` with prefix `windows-wsus-tls-`, delegated to localhost with `become: false` and `changed_when: false`. |
 | 60 | `MAIN \| Restrict The Controller TLS Staging Directory` | reproduce | Mode `0700`. |
 | 61 | `MAIN \| Resolve The Unique TLS Delivery Coordinates` | reproduce | Host facts, because the included role's scope boundary discards task vars. |
-| 62 | `MAIN \| Download The TLS Certificate And Password To The Controller` | reproduce | Controller-side `s3_artifact_delivery`; the target never holds an S3 credential. |
-| 63 | `MAIN \| Read The PFX Password Into Protected Memory` | reproduce | `no_log`. |
+| 62 | `MAIN \| Download The TLS Certificate And Password To The Controller` | superseded | Half of it stands and half dissolved. The certificate is still fetched controller-side and the target still holds no S3 credential; the password is no longer downloaded at all, because the play resolves it with the framework's `secret` lookup and hands the role a value. Decision 59. |
+| 63 | `MAIN \| Read The PFX Password Into Protected Memory` | superseded | No such task exists and none is owed. The password never lands on either side: it reaches the import as a value from the merged configuration under `no_log`. The lookup's own docstring is explicit that it does not hide a secret, so the `no_log` this row asked for is where the consumer is, not where the read is. Decision 59. |
 | 64 | `MAIN \| Create A Unique TLS Staging Directory On The Target` | reproduce | `win_tempfile` with the same `windows-wsus-tls-` prefix. Unique per run, so a failed or concurrent run cannot leave PFX bytes for the next one to reuse. |
 | 65 | `MAIN \| Copy The Certificate To The Unique Target Path` | reproduce | `changed_when: false` — delivering the artifact is not convergence, and only the import and binding below may report change. |
 | 66 | `MAIN \| Validate The PFX Before Import` | reproduce | `EphemeralKeySet` with the documented `MachineKeySet` fallback for legacy CAPI keys; sanitised verdict markers only. |
@@ -418,7 +418,16 @@ marker that is in fact current.
 
 ### `WsusApiConnectionContractTest`
 
-**`test_persisted_ssl_uses_a_process_scoped_pinned_loopback_session`** — `reproduce`. The helper
+**`test_persisted_ssl_uses_a_process_scoped_pinned_loopback_session`** — `superseded` for the
+pinned-session half, `complied with` for the prohibitions. The prohibitions below are exactly what
+the role now does: decision 43 had it writing `LocalMachine\Root`, decision 59 removed that, and
+the role again writes no machine trust anchor. The pinned loopback session is not owed. It was a
+way to make the API reachable WITHOUT trusting the certificate; this deployment requires that trust
+from the directory instead, and records the consequence where an operator reads it rather than
+routing around it. Decision 59. The original text follows, unaltered, as the record of what was
+owed.
+
+The helper
 contains `$usingSsl = [int]$setup.UsingSSL`; `if ($usingSsl -eq 0)`; `IIS:\SslBindings\0.0.0.0!`;
 `$boundThumbprint -notmatch '^[0-9A-F]{40}$'`; `$certificate.GetCertHashString().Replace(' ', '')`;
 `}.GetNewClosure()`; `[System.Net.Security.RemoteCertificateValidationCallback]$pinnedCallback`;
