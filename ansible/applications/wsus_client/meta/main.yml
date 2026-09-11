@@ -4,40 +4,37 @@
 # Role metadata for wsus_client. Description-only (style guide 8): NOT an enforcing argument
 # spec. The role's tasks/validate.yml enforces its merged-config guards.
 #
-# REQUIRED INPUTS: 'wsus_client.server.url'. WHICH WSUS a machine reports to is a property of the
-# deployment, so the play publishes it and validate.yml refuses a run that omits it. It is an
-# EXPECTATION, not a setting: the role compares it against what Group Policy actually wrote.
+# REQUIRED INPUTS — supplied by the playbook and declared empty in defaults, never defaulted to
+# a usable value. validate.yml refuses a present run that omits one.
 #
-# THIS ROLE CONFIGURES NOTHING. Group Policy owns what a machine is told about WSUS -- the server
-# it reports to and the certificate it must trust -- and rewrites those values at its own
-# convenience, so a role writing them would be a second owner losing intermittently. What this
-# role does is the one thing nothing else does: ask that server for updates, take them, and prove
-# it worked. What it is OFFERED remains the server's decision, which is the whole point of
+#   wsus_client.server.url  The URL Group Policy is expected to have named, with scheme, host and
+#                           port. An EXPECTATION, not a setting: the role compares it against what
+#                           policy actually wrote and refuses a machine nothing told.
+#
+# THIS ROLE WRITES NO WSUS CONFIGURATION. Group Policy owns what a machine is told about WSUS --
+# the server it reports to and the certificate it must trust -- and rewrites those values at its
+# own convenience, so a role writing them would be a second owner losing intermittently. Every
+# registry operation here is a read. It does refresh policy and it does install what it is
+# offered, which is the one thing nothing else does: ask that server for updates, take them, and
+# prove it worked. What it is OFFERED remains the server's decision, which is the whole point of
 # pointing a client at one.
 #
 # =========================================================================================== #
 ---
 galaxy_info:
-
   role_name: 'wsus_client'
   namespace: 'nwarila_platform'
   author: 'nwarila-platform'
   description: >-
     Triggers a Windows Update synchronisation against an estate WSUS server and proves it worked.
-    Configures nothing: Group Policy owns what the machine is told, and this role checks that it
-    was told, then takes what the server offers.
-
+    Writes no WSUS configuration: Group Policy owns what the machine is told, so this role
+    refreshes policy, checks that it was told, then takes what the server offers.
   license: 'MIT'
   min_ansible_version: '2.17'
-
   platforms:
     - name: 'Windows'
       versions:
         - '2025'
-
-  galaxy_tags:
-    - 'wsus'
-    - 'windowsupdate'
-    - 'windows'
+  galaxy_tags: ['windows', 'wsus', 'windowsupdate']
 
 dependencies: []
