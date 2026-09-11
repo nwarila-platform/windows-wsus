@@ -36,10 +36,15 @@ enforces its shape on the controller: scheme, a well-formed host, and an explici
 whole number in range. The port is required because WSUS serves on neither 80 nor 443, and five
 digits is a shape rather than a port — `99999` matches the shape and cannot be dialled.
 
+`wsus_client.certificate.thumbprint` — the trust anchor Group Policy is expected to have
+delivered. The same kind of expectation, and declared empty for the same reason the server role
+declares its own certificate keys empty: which certificate an estate trusts belongs to the
+deployment, not to a role that travels. A present run that omits it is refused.
+
 ## Configuration
 
-`defaults/main.yml` carries the thumbprint of the trust anchor Group Policy should have delivered,
-and what to ask for.
+`defaults/main.yml` carries only the shape of those expectations and what to ask for; the
+trust-anchor identity itself comes from the deployment.
 
 The categories default to `['*']` deliberately. The module's own default names three and excludes
 Definition Updates, so a client asking for the default set finds nothing whenever the server's

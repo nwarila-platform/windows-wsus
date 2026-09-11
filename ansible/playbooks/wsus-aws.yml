@@ -306,6 +306,18 @@
     - role: 'wsus_client'
       vars:
         wsus_client:
+          # The anchor the client must already trust, which is the certificate the server role was
+          # told to present. The client does not take this on faith: it reads both root stores for
+          # a key named by this thumbprint, so a Group Policy that delivered some OTHER certificate
+          # leaves the named key absent and the run refuses.
+          #
+          # ONE deployment fact written twice, which is a real cost rather than a feature: nothing
+          # here equates the two, so rotating the certificate means editing both blocks. The
+          # server and the client are configured by different plays and play vars do not cross,
+          # so no single declaration in this file reaches both. Recorded rather than hidden.
+          certificate:
+            thumbprint: '8760E9DA2B79D7FCFB5C8DADD72628649029B348'
+
           server:
             url: 'https://tcnaw-wsus01.tcn.trinitytechnicalservices.com:8531'
 
