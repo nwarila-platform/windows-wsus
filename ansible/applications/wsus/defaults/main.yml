@@ -71,34 +71,49 @@ wsus_defaults:
   # downstream server is the estate declaring it would rather approve once upstream and mirror the
   # result than approve the same update on every server.
   #
-  # WHICH upstream is a property of the deployment, exactly as the drive letters are, so
-  # upstream_server is published by the play and deliberately absent here -- validate.yml refuses a
-  # run that omits it, and the script refuses an empty one, because a defaulted upstream would
-  # silently point a production server at whatever the last deployer's lab was.
+  # EVERY VALUE HERE IS DECLARED EMPTY AND PUBLISHED BY THE PLAY. None of them is a property of
+  # this role: which parent to mirror, on which port, over which transport, whether to inherit its
+  # approvals, and how long to wait for what it holds are all properties of the DEPLOYMENT, and a
+  # default for any of them is a production server quietly taking a development answer.
   #
-  # The rest are genuine deployer choices with a defensible default. 8530 is the port WSUS itself
-  # listens on, so an upstream that has not been re-pointed is reachable there. The link is plain
-  # HTTP by default because turning it on requires the upstream to be serving SSL, which is the
-  # upstream's property and not something this role can arrange. replica true is the mirror
-  # topology the port and the upstream imply: approvals are made once, upstream, and inherited.
+  # upstream_server takes either form WSUS stores and dials -- a DNS name or an IPv4 literal.
+  # The three that describe the endpoint are declared separately, because that is how a deployer
+  # thinks about them, and the role composes them into one URL before handing it to the actor. A
+  # URL cannot carry a transport flag that arrives as the string 'False' and binds as true.
+  #
+  # MODE decides what this role does about the catalogue, and there are three honest answers
+  # rather than two. A first synchronisation against a full Microsoft mirror is measured in WEEKS,
+  # and a converge that blocks on one never returns.
+  #
+  #   wait      Start a synchronisation and do not return until the catalogue and the files behind
+  #             it are down. The only mode that can report what the server actually holds.
+  #   start     Start one and return. The server is fetching; nothing here can say it arrived.
+  #             This is the mode a full-mirror estate wants -- the work is under way and the
+  #             converge still finishes today.
+  #   disabled  Point the server at its upstream and fetch nothing. For an estate that
+  #             synchronises entirely out of band.
+  #
+  # There WAS a flag like this once, removed in decision 50 because the deployment it served
+  # always synchronised and no disabled case existed to be honest about. Two exist now.
+  #
+  # Anything but 'wait' leaves the one gap in this role a CLIENT can see and cannot diagnose: an
+  # empty server answers "no updates required", which reads exactly like success. The role says
+  # which of the three it took rather than leaving that to be inferred from a recap.
+  #
+  # THE TIMEOUTS are a property of the link and of what the upstream holds, not of this role: a
+  # downstream of a small curated upstream converges in minutes, and one of a full Microsoft mirror
+  # does not. They run SEQUENTIALLY inside one CI step, so their sum is the number that matters,
+  # and the worst case is THREE waits rather than two -- a synchronisation already in flight is
+  # polled to a full stop under timeout_seconds before a new one starts. Whoever publishes them
+  # owns that arithmetic against the budget of the step that calls this role.
   sync:
-    # HOW LONG TO WAIT for the catalogue, and then for the files behind it. Deployer values because
-    # they are a property of the link and of what the upstream holds, not of this role: a downstream
-    # of a small curated upstream converges in minutes, and one of a full Microsoft mirror does not.
-    #
-    # These run SEQUENTIALLY inside one CI step, so their sum is the number that matters -- and it
-    # has to leave room for everything else in that step, which now includes building a second
-    # Windows guest. The worst case is THREE waits, not two: a synchronisation already in flight is
-    # polled to a full stop under timeout_seconds before a new one starts, so 75 minutes is the
-    # ceiling and 45 the ordinary path. On a fresh bed nothing is in flight and the stop-poll never
-    # fires. Generous by a wide margin for a curated upstream measured at 66 MB across one approved
-    # update; three hours would not be generous, it would be a step killed by its caller before the
-    # script could say what went wrong.
-    content_timeout_seconds: 900
-    replica: true
-    timeout_seconds: 1800
-    upstream_port: 8530
-    upstream_use_ssl: false
+    content_timeout_seconds: ''
+    mode: ''
+    replica: ''
+    timeout_seconds: ''
+    upstream_port: ''
+    upstream_server: ''
+    upstream_use_ssl: ''
 
   #endregion --- [ Upstream source ] --------------------------------------------------------- #
 

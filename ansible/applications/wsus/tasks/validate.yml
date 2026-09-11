@@ -128,8 +128,10 @@
       the downstream's parent as a DNS name or an IPv4 literal, at most 255 characters, and is
       deliberately never defaulted -- a defaulted upstream points a server at whatever the last
       deployer's lab was. wsus.sync.upstream_port must be a whole number in 1-65535.
-      wsus.sync.upstream_use_ssl and wsus.sync.replica must each be a real boolean, written true or
-      false, because a quoted string coerces silently and only one spelling was meant.
+      wsus.sync.upstream_use_ssl and wsus.sync.replica must each be a real boolean, written true
+      or false, because a quoted string coerces silently and only one spelling was meant.
+      wsus.sync.mode must be wait, start or disabled -- wait fetches the catalogue and reports
+      what arrived, start begins one and returns, disabled fetches nothing.
       wsus.sync.timeout_seconds and wsus.sync.content_timeout_seconds must each be at least 60
       seconds; the script refuses anything above six hours. See meta/main.yml.
     quiet: true
@@ -141,6 +143,7 @@
       - (__port__ | int) <= 65535
       - wsus_running.sync.upstream_use_ssl is boolean
       - wsus_running.sync.replica is boolean
+      - wsus_running.sync.mode in ['wait', 'start', 'disabled']
       - wsus_running.sync.timeout_seconds | default(0, true) | int >= 60
       - wsus_running.sync.content_timeout_seconds | default(0, true) | int >= 60
 

@@ -44,17 +44,25 @@ else.
 
 Deployment-specific inputs carry an account id, a certificate identity or a network topology, and
 they change with every site, so the playbook states them where a reader can see them rather than
-defaulting them in the role. `meta/main.yml` names all ten, and gives the reason where the
+defaulting them in the role. `meta/main.yml` names all fifteen, and gives the reason where the
 answer is not obvious from the key. `tasks/validate.yml` enforces them on the controller before
-the role's first mutation -- the loader gathers facts from the guest first, so this is the gate in
+the role's first mutation — the loader gathers facts from the guest first, so this is the gate in
 front of every change, not in front of every contact. The six certificate leaves are required
-when `wsus.tls.enabled` is true, which is the shipped default; the other four are required
+when `wsus.tls.enabled` is true, which is the shipped default; the other nine are required
 always.
 
-Two drive letters (database and content, refused if equal), the upstream WSUS server, the networks
-the host firewall admits, and six keys describing the certificate: bucket, DNS name, the object
-key of the PKCS#12, its digest, the password that unlocks it, and the thumbprint the listener is
-pinned to.
+Two drive letters (database and content, refused if equal); six keys describing the upstream —
+the server as a DNS name or an IPv4 literal, its port, whether the link is encrypted, whether this
+server inherits its approvals, and the two synchronisation timeouts; the networks the host
+firewall admits; and six keys describing the certificate — bucket, DNS name, the object key of the
+PKCS#12, its digest, the password that unlocks it, and the thumbprint the listener is pinned to.
+
+The upstream's endpoint is declared in three parts because that is how a deployer thinks about it,
+and the role composes them into a single URL before handing it to the actor. That is not
+decoration: a transport flag crossing the Ansible boundary as the string `'False'` binds to
+`[System.Boolean]` as **true**, because every non-empty string casts true. A URL cannot go wrong
+that way, and `[System.Uri]` takes it apart on the far side with the same parser the rest of .NET
+uses.
 
 The password is a **value, not a location**. Reading a credential out of S3 is the framework
 `secret` lookup's job, so the playbook calls it and passes what comes back; the role is handed a

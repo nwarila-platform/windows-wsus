@@ -186,10 +186,40 @@
             # rule, so the host firewall is the only thing that can scope it.
             admitted_networks: '10.0.0.0/16,10.69.0.0/16'
           sync:
+            # HOW LONG TO WAIT for the catalogue, and then for the files behind it. These run
+            # sequentially inside one CI step, so their sum is what has to fit -- and the worst
+            # case is THREE waits, not two, because a synchronisation already in flight is polled
+            # to a full stop under timeout_seconds before a new one starts. 75 minutes is the
+            # ceiling that arithmetic allows and 45 the ordinary path, inside a step that also
+            # builds a second Windows guest.
+            content_timeout_seconds: 900
+            timeout_seconds: 1800
+
+            # THE MIRROR TOPOLOGY. Approvals are made once, upstream, and inherited here, which is
+            # the whole reason this server is a downstream rather than its own island.
+            replica: true
+
+            # WAIT, because this deployment's whole purpose is to prove a client takes an update
+            # from the server it just built, and only this mode can say the catalogue arrived. It
+            # is affordable here for one reason: the upstream is a curated lab server holding one
+            # approved update. A production estate mirroring the full Microsoft catalogue would
+            # say 'start' and let the first synchronisation run for as long as it takes.
+            mode: 'wait'
+
+            # THE ENDPOINT, in the three parts a deployer thinks in. The role composes them into
+            # one URL before handing them to the actor.
+            #
             # The lab WSUS this POC mirrors, reached over the OpenVPN tunnel this host joins in
             # the play above. An address rather than a name because the guest resolves through the
-            # domain's DNS and this upstream is not a domain member.
+            # domain's DNS and this upstream is not a domain member; a name would be the right
+            # answer for an upstream that is one.
             upstream_server: '10.69.112.6'
+
+            # 8530 because that is the port WSUS itself listens on, and plain HTTP because
+            # encrypting this link needs the UPSTREAM to be serving SSL -- its property, not
+            # something this deployment can arrange.
+            upstream_port: 8530
+            upstream_use_ssl: false
           tls:
             # THE CERTIFICATE THIS DEPLOYMENT SERVES, whole. It lives here rather than in the role
             # because the role is the part that travels between deployments and this is the part

@@ -30,16 +30,22 @@
     .PARAMETER LogLevel
         Six digits, one per stream: Verbose, Debug, Information, Warning, Error, Fatal.
 
-    .PARAMETER UpstreamServer
-        The upstream WSUS server, by name or address. Required and never defaulted: pointing a
-        downstream at the wrong source is worse than pointing it at nothing.
+    .PARAMETER UpstreamUrl
+        The upstream WSUS server as a URL, with scheme, host and an EXPLICIT port --
+        'http://wsus.example.com:8530'. Required and never defaulted: pointing a downstream at the
+        wrong source is worse than pointing it at nothing.
 
-    .PARAMETER UpstreamPort
-        The upstream's port. 8530 for HTTP, 8531 for HTTPS.
+        One value rather than three because the three are never independently true: a host without
+        its port names nothing dialable, and a scheme that disagrees with the port is a
+        misconfiguration this shape cannot express. It is also the one place the boolean could go
+        wrong -- an SSL flag crossing the Ansible boundary as the string 'False' binds to
+        [System.Boolean] as TRUE, because every non-empty string casts true. A scheme cannot do
+        that.
 
-    .PARAMETER UseSsl
-        Whether the upstream link itself is encrypted. Independent of whether this server serves
-        its own clients over SSL.
+        The port must be written out. [System.Uri] supplies 80 or 443 when one is omitted, so a
+        URL without a port silently names an endpoint the caller never chose. Written out, any
+        port in range is accepted -- including 80 and 443. Which port is sensible is the
+        operator's business; this refuses only the port nobody typed.
 
     .PARAMETER Replica
         True mirrors the upstream's selections and approvals; false manages approvals locally.
@@ -83,28 +89,7 @@ Param (
   )]
   [ValidateNotNullOrEmpty()]
   [System.String]
-  $UpstreamServer,
-
-  [Parameter(
-    DontShow = $False,
-    Mandatory = $True,
-    ParameterSetName = 'default',
-    ValueFromPipeline = $False,
-    ValueFromPipelineByPropertyName = $False
-  )]
-  [ValidateRange(1, 65535)]
-  [System.Int32]
-  $UpstreamPort,
-
-  [Parameter(
-    DontShow = $False,
-    Mandatory = $True,
-    ParameterSetName = 'default',
-    ValueFromPipeline = $False,
-    ValueFromPipelineByPropertyName = $False
-  )]
-  [System.Boolean]
-  $UseSsl,
+  $UpstreamUrl,
 
   [Parameter(
     DontShow = $False,
@@ -217,7 +202,43 @@ Write-Debug -Message:'Entering Stage: Main'
 # change this run never made.
 $Ansible.Changed = $False
 
-$Wanted = $UpstreamServer.Trim()
+# The URL is taken apart here and the three values below are what the API actually wants. Parsed
+# rather than pattern-matched because [System.Uri] is the same parser the rest of .NET uses, and a
+# regex of my own would disagree with it at some edge nobody would find until it mattered.
+$Uri = $Null
+If (-not [System.Uri]::TryCreate($UpstreamUrl.Trim(), [System.UriKind]::Absolute, [Ref]$Uri)) {
+  Throw "The upstream URL '$UpstreamUrl' is not an absolute URL. Expected scheme, host and port -- 'http://wsus.example.com:8530'."
+}
+
+$Scheme = $Uri.Scheme.ToLowerInvariant()
+If ($Scheme -ne 'http' -and $Scheme -ne 'https') {
+  Throw "The upstream URL '$UpstreamUrl' uses scheme '$Scheme'. WSUS is reached over http or https and nothing else."
+}
+
+# The port has to be WRITTEN, because [System.Uri] invents 80 or 443 when it is not and the caller
+# would never know which endpoint was configured. IsDefaultPort cannot be used to detect that: it
+# is equally true for a URL that omitted the port and one that spelled out 80. Only the text says
+# which happened, so the text is what is checked.
+#
+# An explicitly written 80 or 443 is ACCEPTED. Whether WSUS is sensibly reached there is the
+# operator's business, not this script's -- the technical limits are the range, checked upstream
+# of here, and the scheme, checked above.
+If ($UpstreamUrl.Trim() -notmatch '^[A-Za-z][A-Za-z0-9+.-]*://[^/?#]*:[0-9]+(?:[/?#]|$)') {
+  Throw "The upstream URL '$UpstreamUrl' names no port, and one will not be guessed -- write it out, as in 'http://wsus.example.com:8530'."
+}
+
+$Wanted = $Uri.Host
+$UpstreamPort = $Uri.Port
+$UseSsl = ($Scheme -eq 'https')
+
+# [System.Uri] refuses anything above 65535 and anything negative, but it accepts 0, which cannot
+# be dialled. The parameter binder used to catch that with ValidateRange when the port arrived as
+# its own argument; it arrives inside a URL now, so the range is checked here instead. Range is a
+# technical limit and stays enforced -- WHICH port in that range is the operator's business.
+If ($UpstreamPort -lt 1) {
+  Throw "The upstream URL '$UpstreamUrl' names port $UpstreamPort. A port has to be between 1 and 65535 to be dialled."
+}
+
 If ([System.String]::IsNullOrWhiteSpace($Wanted)) {
   Throw 'An upstream server is required for a downstream topology and is deliberately never defaulted.'
 }

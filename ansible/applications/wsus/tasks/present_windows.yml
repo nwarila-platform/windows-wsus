@@ -922,18 +922,25 @@
     # and win_powershell serialises it as JSON true/false, so PowerShell binds it directly. That is
     # load-bearing -- had it arrived as the string 'False', [System.Boolean] would have made it
     # true, because every non-empty string casts true.
+    #
+    # Which is why the endpoint crosses as a URL rather than as a host, a port and a second
+    # boolean. The three are declared separately, because that is how a deployer thinks about
+    # them, and composed into one string here. A string cannot be mis-cast on the other side, and
+    # the script takes it apart with the same parser the rest of .NET uses.
 
     - name: 'PROCESS | Point This Server At Its Upstream WSUS Source'
       register: '__wsus_upstream__'
+      vars:
+        __upstream_scheme__: "{{ (wsus_running.sync.upstream_use_ssl | bool) | ternary('https', 'http') }}"
 
       ansible.windows.win_powershell:
         depth: 3
         error_action: 'stop'
         parameters:
           Replica: "{{ wsus_running.sync.replica }}"
-          UpstreamPort: "{{ wsus_running.sync.upstream_port }}"
-          UpstreamServer: "{{ wsus_running.sync.upstream_server }}"
-          UseSsl: "{{ wsus_running.sync.upstream_use_ssl }}"
+          UpstreamUrl: >-
+            {{ __upstream_scheme__ }}://{{ wsus_running.sync.upstream_server
+            }}:{{ wsus_running.sync.upstream_port }}
         script: "{{ lookup('ansible.builtin.file', 'Set-WsusUpstream.ps1') }}"
 
     #endregion --- [ Process: Point This Server At Its Upstream WSUS Source ] ----------------- #
@@ -952,8 +959,21 @@
     #
     # default({}) because under --check the module reports what it would do without a result, and
     # a run that cannot read the flag should decline to force rather than fail reading it.
+    #
+    # TURNED OFF, this region is the one thing in the role whose absence a client can see and
+    # cannot diagnose. The server is still pointed at its upstream by the region above; it simply
+    # holds whatever catalogue it already had, which on a fresh build is none. A client asking an
+    # empty server reports "no updates required" -- indistinguishable from success.
+    #
+    # It exists because an initial synchronisation against a full Microsoft mirror is measured in
+    # WEEKS, not minutes, and a converge that blocks on it is a converge that never returns. An
+    # estate that takes that path runs the synchronisation on its own schedule, out of band, and
+    # accepts the empty window in between. The END task below says which of the two happened, so
+    # the silence is at least written down.
 
     - name: 'PROCESS | Bring The Catalogue And Its Content Down From The Upstream'
+      register: '__wsus_sync__'
+      when: wsus_running.sync.mode != 'disabled'
 
       ansible.windows.win_powershell:
         depth: 3
@@ -961,8 +981,25 @@
         parameters:
           ContentTimeoutSeconds: "{{ wsus_running.sync.content_timeout_seconds }}"
           Force: "{{ (__wsus_upstream__.result | default({})).changed | default(false) }}"
+          Mode: "{{ wsus_running.sync.mode }}"
           TimeoutSeconds: "{{ wsus_running.sync.timeout_seconds }}"
         script: "{{ lookup('ansible.builtin.file', 'Invoke-WsusSynchronisation.ps1') }}"
+
+    # Printed rather than asserted, and printed on BOTH paths. A run that skipped the
+    # synchronisation looks identical in a recap to one that ran it and found nothing, and those
+    # are very different servers. This is the only place that difference is stated.
+
+    - name: 'PROCESS | Report Whether This Server Fetched A Catalogue'
+      changed_when: false
+
+      ansible.builtin.debug:
+        msg: >-
+          {{ ((__wsus_sync__.result | default({})).msg | default('no result'))
+             if wsus_running.sync.mode != 'disabled'
+             else 'Synchronisation is DISABLED for this deployment. This server is pointed at '
+                  ~ wsus_running.sync.upstream_server ~ ' and holds whatever catalogue it already
+                  had -- on a fresh build, none. A client asking it will report no updates
+                  required, which is not the same as being up to date.' }}
 
     #endregion --- [ Process: Bring The Catalogue And Its Content Down From The Upstream ] ---- #
 

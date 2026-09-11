@@ -37,6 +37,18 @@
     .PARAMETER ContentTimeoutSeconds
         How long to wait for the content download to finish after the metadata arrives.
 
+    .PARAMETER Mode
+        'wait' starts a synchronisation and does not return until the catalogue and the files
+        behind it are down, or a deadline passes. 'start' starts one and returns.
+
+        'start' exists because a first synchronisation against a full Microsoft mirror is measured
+        in WEEKS. A converge cannot hold a step open that long, and an estate on that path still
+        wants the work under way. What it buys is a server that is fetching; what it costs is that
+        nothing here can say the catalogue arrived, because it has not.
+
+        The in-flight stop below is done in BOTH modes. Starting underneath a running
+        synchronisation throws, and that is true whether or not this intends to wait for its own.
+
     .PARAMETER TimeoutSeconds
         How long to wait for the synchronisation itself to reach a terminal state.
 
@@ -104,7 +116,18 @@ Param (
   )]
   [ValidateRange(60, 21600)]
   [System.Int32]
-  $TimeoutSeconds
+  $TimeoutSeconds,
+
+  [Parameter(
+    DontShow = $False,
+    Mandatory = $False,
+    ParameterSetName = 'default',
+    ValueFromPipeline = $False,
+    ValueFromPipelineByPropertyName = $False
+  )]
+  [ValidateSet('wait', 'start')]
+  [System.String]
+  $Mode = 'wait'
 )
 #region ------ [ Script ] -------------------------------------------------------------------- #
 
@@ -280,6 +303,25 @@ If ($NeedsSync -and $PSCmdlet.ShouldProcess($Server.Name, 'Synchronise from the 
   $Ansible.Changed = $True
   $Synchronised = $True
 
+  # START AND GO. Everything below this point reads a FINISHED synchronisation -- the terminal
+  # status, the last result, the counts, the files behind them -- and none of it is answerable
+  # about one still running. So this returns instead of reporting numbers it would have to invent.
+  If ($Mode -eq 'start') {
+    $Ansible.Result = @{
+      changed       = $True
+      check_mode    = [System.Boolean]$Ansible.CheckMode
+      mode          = 'start'
+      msg           = 'Synchronisation started and not waited for. This server is fetching; whether it arrives is not known here.'
+      needing_files = -1
+      result        = 'NotWaited'
+      started       = $True
+      update_count  = -1
+      waited        = $False
+    }
+
+    Return
+  }
+
   $Deadline = (Get-Date).AddSeconds($TimeoutSeconds)
   Do {
     Start-Sleep -Seconds 10
@@ -370,10 +412,13 @@ If (($Synchronised -or ($NeedingFiles -gt 0)) -and $PSCmdlet.ShouldProcess($Serv
 $Result = [PSCustomObject]@{
   changed       = [System.Boolean]$NeedsSync
   check_mode    = [System.Boolean]$Ansible.CheckMode
+  mode          = 'wait'
   msg           = 'synchronisation {0}, {1} updates, {2} still needing files' -f $LastResult, $Server.GetUpdateCount(), $NeedingFiles
   needing_files = [System.Int32]$NeedingFiles
   result        = [System.String]$LastResult
+  started       = [System.Boolean]$Synchronised
   update_count  = [System.Int32]$Server.GetUpdateCount()
+  waited        = $True
 }
 #endregion --- [ Main ] ---------------------------------------------------------------------- #
 #region ------ [ Output ] -------------------------------------------------------------------- #

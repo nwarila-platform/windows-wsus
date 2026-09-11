@@ -66,10 +66,10 @@ BeforeAll {
   }
 
   $script:Invoke = {
-    & $script:ScriptPath -UpstreamServer '10.69.112.6' -UpstreamPort 8530 -UseSsl $false -Replica $true
+    & $script:ScriptPath -UpstreamUrl 'http://10.69.112.6:8530' -Replica $true
   }
   $script:InvokeWhatIf = {
-    & $script:ScriptPath -UpstreamServer '10.69.112.6' -UpstreamPort 8530 -UseSsl $false -Replica $true -WhatIf
+    & $script:ScriptPath -UpstreamUrl 'http://10.69.112.6:8530' -Replica $true -WhatIf
   }
 }
 
@@ -244,4 +244,76 @@ Describe 'Set-WsusUpstream' {
       $global:Ansible.Result.changed | Should -BeTrue
     }
   }
+
+  Context 'The upstream URL is taken apart before anything is written' {
+
+    It 'derives host, port and transport from the URL' {
+      $global:FakeSyncFromMU = $true
+      & $script:ScriptPath -UpstreamUrl 'https://wsus.example.com:8531' -Replica $true
+      $global:FakeUpstream | Should -Be 'wsus.example.com'
+      $global:FakePort     | Should -Be 8531
+      $global:FakeSsl      | Should -BeTrue
+    }
+
+    It 'reads http as a plain link rather than an encrypted one' {
+      $global:FakeSyncFromMU = $true
+      & $script:ScriptPath -UpstreamUrl 'http://wsus.example.com:8530' -Replica $true
+      $global:FakeSsl | Should -BeFalse
+    }
+
+    It 'tolerates a trailing slash' {
+      $global:FakeSyncFromMU = $true
+      & $script:ScriptPath -UpstreamUrl 'http://10.69.112.6:8530/' -Replica $true
+      $global:FakeUpstream | Should -Be '10.69.112.6'
+      $global:FakePort     | Should -Be 8530
+    }
+
+    It 'refuses a URL that names no port, rather than letting one be invented' {
+      { & $script:ScriptPath -UpstreamUrl 'http://wsus.example.com' -Replica $true } |
+        Should -Throw -ExpectedMessage '*names no port*'
+    }
+
+    It 'accepts an explicitly written 80, because which port is sensible is not its call' {
+      $global:FakeSyncFromMU = $true
+      & $script:ScriptPath -UpstreamUrl 'http://wsus.example.com:80' -Replica $true
+      $global:FakePort | Should -Be 80
+    }
+
+    It 'accepts an explicitly written 443 over https for the same reason' {
+      $global:FakeSyncFromMU = $true
+      & $script:ScriptPath -UpstreamUrl 'https://wsus.example.com:443' -Replica $true
+      $global:FakePort | Should -Be 443
+      $global:FakeSsl  | Should -BeTrue
+    }
+
+    It 'refuses port 0, which Uri accepts and nothing can dial' {
+      { & $script:ScriptPath -UpstreamUrl 'http://wsus.example.com:0' -Replica $true } |
+        Should -Throw -ExpectedMessage '*between 1 and 65535*'
+    }
+
+    It 'accepts the top of the range' {
+      $global:FakeSyncFromMU = $true
+      & $script:ScriptPath -UpstreamUrl 'http://wsus.example.com:65535' -Replica $true
+      $global:FakePort | Should -Be 65535
+    }
+
+    It 'refuses a scheme WSUS is not reached over' {
+      { & $script:ScriptPath -UpstreamUrl 'ftp://wsus.example.com:8530' -Replica $true } |
+        Should -Throw -ExpectedMessage "*scheme 'ftp'*"
+    }
+
+    It 'refuses a bare host and port, which is not an absolute URL' {
+      { & $script:ScriptPath -UpstreamUrl '10.69.112.6:8530' -Replica $true } |
+        Should -Throw -ExpectedMessage '*not an absolute URL*'
+    }
+
+    It 'writes nothing when the URL is malformed' {
+      $global:FakeSyncFromMU = $true
+      $global:FakeUpstream   = ''
+      { & $script:ScriptPath -UpstreamUrl 'http://wsus.example.com' -Replica $true } | Should -Throw
+      $global:FakeUpstream     | Should -Be ''
+      $global:FakeSyncFromMU   | Should -BeTrue
+    }
+  }
+
 }

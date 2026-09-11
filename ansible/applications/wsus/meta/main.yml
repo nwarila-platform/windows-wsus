@@ -6,7 +6,7 @@
 #
 # REQUIRED INPUTS — supplied by the playbook, never defaulted here. The certificate leaves are
 # declared empty in defaults; the rest have no leaf there at all. validate.yml refuses a run
-# that omits any of the four below; the six certificate leaves are refused the same way on a
+# that omits any of the nine below; the six certificate leaves are refused the same way on a
 # present run with wsus.tls.enabled true, which is the shipped default.
 #
 #   wsus.db.drive_letter                 Volume SUSDB is created on. Refused if it equals the
@@ -15,8 +15,26 @@
 #                                        the other.
 #   wsus.content.drive_letter            Volume the update store is created on.
 #   wsus.sync.upstream_server            The upstream WSUS this server mirrors, as a DNS name or
-#                                        an IPv4 literal. Never defaulted: a defaulted upstream
-#                                        points a server at whatever the last deployment's was.
+#                                        an IPv4 literal -- WSUS stores and dials whichever it is
+#                                        given. Never defaulted: a defaulted upstream points a
+#                                        server at whatever the last deployment's was.
+#   wsus.sync.upstream_port              The port that upstream serves on. 8530 plain, 8531 TLS.
+#   wsus.sync.upstream_use_ssl           Whether the link to it is encrypted. A property of the
+#                                        UPSTREAM, which has to be serving SSL for this to be
+#                                        true. The role composes these three into one URL before
+#                                        handing them to the actor.
+#   wsus.sync.replica                    Whether this server inherits the upstream's approvals
+#                                        rather than managing its own.
+#   wsus.sync.mode                       What to do about the catalogue: 'wait' fetches it and
+#                                        reports what arrived, 'start' begins a synchronisation
+#                                        and returns, 'disabled' fetches nothing. A first
+#                                        synchronisation against a full mirror takes weeks, which
+#                                        is why the last two exist. Under either, the server
+#                                        answers clients from whatever catalogue it already has.
+#   wsus.sync.timeout_seconds            How long to wait for the catalogue.
+#   wsus.sync.content_timeout_seconds    How long to wait for the files behind it. Runs after the
+#                                        catalogue wait, inside the same step, so the caller owns
+#                                        the sum against its own budget.
 #   wsus.firewall.admitted_networks      Networks the host firewall admits to 8530 and 8531, in
 #                                        CIDR form, comma-separated. The only control that can
 #                                        scope traffic arriving over a tunnel.
