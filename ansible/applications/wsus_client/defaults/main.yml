@@ -6,31 +6,34 @@
 # vars/ over this map and publishes the result as 'wsus_client_running'; tasks read only the
 # merged map.
 #
-# THIS ROLE CONFIGURES NOTHING. It triggers a Windows Update synchronisation against the WSUS
-# server this deployment built, and verifies that it worked. Group Policy owns what a machine is
-# told about WSUS -- the server it reports to, and the certificate it must trust -- so every value
-# here is an EXPECTATION the role checks, never a setting it writes. A role that wrote them would
-# be a second owner of keys Group Policy rewrites at its own convenience, and would lose
-# intermittently.
+# THIS ROLE WRITES NO WSUS CONFIGURATION. It refreshes Group Policy, triggers a Windows Update
+# synchronisation against the WSUS server this deployment built, and verifies that it worked.
+# Group Policy owns what a machine is told about WSUS -- the server it reports to, and the
+# certificate it must trust -- so every value here is an EXPECTATION the role checks, never a
+# setting it writes. A role that wrote them would be a second owner of keys Group Policy rewrites
+# at its own convenience, and would lose intermittently.
 #
 # =========================================================================================== #
 ---
-
 wsus_client_defaults:
 
   #region ------ [ Which server policy should have named ] ----------------------------------- #
+
   # WHAT THE MACHINE SHOULD ALREADY HAVE BEEN TOLD, as the URL clients dial -- scheme, host and
-  # port. A property of the deployment, so it is published by the play and deliberately absent
-  # here; validate.yml refuses a run that omits it.
+  # port. A property of the deployment, so it is published by the play and declared empty here;
+  # validate.yml refuses a run that omits it.
   #
   # Checked, not written. If Group Policy has not reached this machine, or reached it with a
   # different server, that is what this value exists to surface -- because the alternative is a
   # scan that succeeds against nothing and reports "no updates required", which is
   # indistinguishable from success.
-  server: {}
+  server:
+    url: ''
+
   #endregion --- [ Which server policy should have named ] ----------------------------------- #
 
   #region ------ [ Which anchor policy should have delivered ] ------------------------------- #
+
   # The WSUS server presents a self-signed certificate, so a client that cannot chain it fails
   # every scan with a transport error naming TLS and never mentioning WSUS. Group Policy delivers
   # that anchor; this is the thumbprint it should have delivered.
@@ -40,17 +43,21 @@ wsus_client_defaults:
   # Microsoft\SystemCertificates. Windows honours either, so either satisfies this.
   certificate:
     thumbprint: '8760E9DA2B79D7FCFB5C8DADD72628649029B348'
+
   #endregion --- [ Which anchor policy should have delivered ] ------------------------------- #
 
   #region ------ [ What to take ] ------------------------------------------------------------ #
+
   # EVERY category, because the point is to take what the SERVER approved rather than to have an
   # opinion here. The module's own default names three categories and excludes Definition Updates,
-  # which is exactly what this deployment approves -- a default left alone would find nothing and
-  # report success.
+  # so a client asking for the default set finds nothing whenever the server's approvals fall
+  # outside it -- and reports success. Approvals are made upstream and inherited, and this
+  # repository declares none of them, so the only safe ask is everything.
   #
   # No reboot: the run has to report what happened, and a machine that reboots mid-task reports
   # nothing. reboot_required comes back in the result instead, for a human to act on.
   updates:
     categories: ['*']
     reboot: false
+
   #endregion --- [ What to take ] ------------------------------------------------------------ #
