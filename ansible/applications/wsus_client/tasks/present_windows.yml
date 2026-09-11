@@ -5,11 +5,12 @@
 # Triggers a Windows Update synchronisation against the WSUS server this deployment built, and
 # proves it worked. That is the whole role.
 #
-# It CONFIGURES NOTHING. Group Policy owns what a machine is told about WSUS -- the server it
-# reports to and the certificate it must trust -- and Group Policy rewrites
+# It WRITES NO WSUS CONFIGURATION. Group Policy owns what a machine is told about WSUS -- the
+# server it reports to and the certificate it must trust -- and Group Policy rewrites
 # HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate at its own convenience. A role that
 # also wrote those values would be a second owner losing intermittently, which is worse to
-# diagnose than losing outright.
+# diagnose than losing outright. It does refresh policy and it does install what it is offered;
+# every registry operation here is a read.
 #
 # There is no BEGIN stage: nothing here decides between actions. There is no END stage either --
 # what this role does is itself the proof, and the one thing worth asserting is that nothing WSUS
@@ -17,7 +18,6 @@
 #
 # ============================================================================================= #
 ---
-
 #region ------ [ Process: Ask WSUS For Updates, And Prove It Answered ] ----------------------- #
 
 - name: 'PROCESS | Ask WSUS For Updates, And Prove It Answered'
@@ -55,6 +55,7 @@
         argv:
           - 'gpupdate.exe'
           - '/target:computer'
+
     #endregion --- [ Process: Make Group Policy Current Before Reading It ] ------------------- #
 
     #region ------ [ Process: Read What Group Policy Left Behind ] ---------------------------- #
@@ -91,6 +92,7 @@
 
       ansible.windows.win_reg_stat:
         path: "{{ __anchor_machine__ }}\\{{ __client__.certificate.thumbprint | upper }}"
+
     #endregion --- [ Process: Read What Group Policy Left Behind ] ---------------------------- #
 
     #region ------ [ Process: Refuse A Machine Nothing Told About WSUS ] ---------------------- #
@@ -118,6 +120,7 @@
           - __wsus_client_use__.exists
           - (__wsus_client_use__.value | int) == 1
           - __wsus_client_anchor_policy__.exists or __wsus_client_anchor_machine__.exists
+
     #endregion --- [ Process: Refuse A Machine Nothing Told About WSUS ] ---------------------- #
 
     #region ------ [ Process: Take What WSUS Offers ] ----------------------------------------- #
@@ -127,8 +130,10 @@
     # module runs the work through a scheduled task on the machine itself, which is the supported
     # way around that.
     #
-    # managed_server, explicitly. The default follows whatever the agent decides, and this run
-    # exists to prove one specific server answered -- so it asks that server by name.
+    # managed_server, explicitly. No server name is passed here and none could be: it tells the
+    # agent to use the service Group Policy configured it with, where the default would let the
+    # agent decide for itself. Naming the right server is the refusal above, which proves WUServer
+    # is the URL the caller expects before anything asks the agent for anything.
     #
     # Naturally idempotent, without anything here making it so: a second run finds nothing left to
     # install and reports no change, because the first run installed it.
@@ -137,6 +142,7 @@
     # update WSUS offered and this machine could not install is a failure of the work this task
     # performed, not a fact about it for something else to judge. The module's own failure signal
     # is preserved alongside, since failed_when REPLACES it rather than adding to it.
+
     - name: 'PROCESS | Take What WSUS Offers'
       register: '__wsus_client_updates__'
       failed_when: >-
@@ -152,6 +158,7 @@
     # The counts ARE the proof, and a registered result nobody prints is a proof nobody can read.
     # Printed rather than asserted: a converged machine is offered nothing, so there is no number
     # here worth failing on that failed_when above has not already caught.
+
     - name: 'PROCESS | Report What WSUS Delivered'
       changed_when: false
 
@@ -161,6 +168,7 @@
           installed {{ __wsus_client_updates__.installed_update_count | default(0) }},
           failed {{ __wsus_client_updates__.failed_update_count | default(0) }},
           reboot required {{ __wsus_client_updates__.reboot_required | default(false) }}.
+
     #endregion --- [ Process: Take What WSUS Offers ] ----------------------------------------- #
 
 #endregion --- [ Process: Ask WSUS For Updates, And Prove It Answered ] ----------------------- #
