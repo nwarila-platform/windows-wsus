@@ -7,9 +7,14 @@
 # REQUIRED INPUTS — supplied by the playbook and declared empty in defaults, never defaulted to
 # a usable value. validate.yml refuses a present run that omits one.
 #
-#   wsus_client.server.url  The URL Group Policy is expected to have named, with scheme, host and
-#                           port. An EXPECTATION, not a setting: the role compares it against what
-#                           policy actually wrote and refuses a machine nothing told.
+#   wsus_client.server.url               The URL Group Policy is expected to have named, with
+#                                        scheme, host and port. An EXPECTATION, not a setting: the
+#                                        role compares it against what policy actually wrote and
+#                                        refuses a machine nothing told.
+#   wsus_client.certificate.thumbprint   The trust anchor Group Policy is expected to have
+#                                        delivered. The same expectation in the same sense, and
+#                                        the same reason it is not written here: which certificate
+#                                        an estate trusts belongs to the deployment.
 #
 # THIS ROLE WRITES NO WSUS CONFIGURATION. Group Policy owns what a machine is told about WSUS --
 # the server it reports to and the certificate it must trust -- and rewrites those values at its

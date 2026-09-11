@@ -38,11 +38,17 @@ wsus_client_defaults:
   # every scan with a transport error naming TLS and never mentioning WSUS. Group Policy delivers
   # that anchor; this is the thumbprint it should have delivered.
   #
+  # DECLARED EMPTY, exactly as the server role declares its certificate keys. Which certificate an
+  # estate trusts is a property of the deployment, and a thumbprint written here would be one
+  # deployment's identity baked into a role that travels -- the same thing the server role refuses
+  # to do one directory over. The play publishes it and validate.yml refuses a present run that
+  # omits it.
+  #
   # Checked in BOTH stores, because they are different mechanisms: a Group Policy deployment lands
   # under Policies\Microsoft\SystemCertificates, and a locally installed certificate under
   # Microsoft\SystemCertificates. Windows honours either, so either satisfies this.
   certificate:
-    thumbprint: '8760E9DA2B79D7FCFB5C8DADD72628649029B348'
+    thumbprint: ''
 
   #endregion --- [ Which anchor policy should have delivered ] ------------------------------- #
 
