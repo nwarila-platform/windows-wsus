@@ -2,7 +2,9 @@
 # File: '{{ role_path }}/tasks/validate.yml'
 # --- [ Description ] ----------------------------------------------------------------------- #
 #
-# Validates the merged running config on the CONTROLLER, before anything touches the guest.
+# Validates the merged running config on the CONTROLLER, before the role's first mutation. The
+# loader gathers facts from the guest ahead of this, so it is the gate in front of every change
+# rather than in front of every contact.
 #
 # 'state' is normalised EXACTLY as the loader normalises it for dispatch -- lower and trimmed --
 # because a guard that reads the value differently from the dispatcher is a guard the dispatcher
@@ -14,26 +16,28 @@
 #
 # =========================================================================================== #
 ---
-
 # The URL is held to a shape rather than merely to being non-empty, because it is compared against
 # what Group Policy wrote, byte for byte. A trailing slash or a missing port here does not fail
 # loosely -- it fails as "Group Policy named a different server", which sends whoever reads it to
 # the wrong place entirely.
+
 - name: 'VALIDATE | Require A Usable WSUS Server URL'
-  when: (state | default('present') | string | lower | trim) == 'present'
   vars:
     __host__: '[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*'
     __url__: "{{ wsus_client_running.server.url | default('', true) }}"
     # Five digits is a shape, not a port. 99999 and 00000 both match the shape and neither can be
     # dialled.
     __port__: "{{ __url__ | regex_search(':([0-9]{1,5})/?$', '\\1') | first | default('0', true) }}"
+  when: (state | default('present') | string | lower | trim) == 'present'
   ansible.builtin.assert:
     fail_msg: >-
       Refusing to test: wsus_client.server.url must be the URL Group Policy is expected to have
       named, written with its scheme, host and port -- 'https://wsus.example.com:8531'. It is
-      deliberately never defaulted, because this role compares it against what the machine was
-      actually told and a defaulted one would compare against the last deployer's lab. The port is
+      declared empty by the role and never given a usable default, because this role compares it
+      against what the machine was actually told and a defaulted one would compare against the
+      last deployer's lab. The port is
       required because WSUS does not serve on 80 or 443, and it must be one that can be dialled.
+      See meta/main.yml.
     quiet: true
     that:
       - __url__ is match('^https?://' ~ __host__ ~ ':[0-9]{1,5}/?$')
@@ -49,13 +53,16 @@
       naming the certificate Group Policy is expected to have delivered. It is read as a registry
       key name under both root stores, so a malformed one does not fail as "wrong thumbprint" --
       it fails as "no anchor anywhere", which is a different and much more alarming answer.
+      See meta/main.yml.
     quiet: true
     that:
       - wsus_client_running.certificate.thumbprint | default('', true) is match('^[0-9A-Fa-f]{40}$')
 
-# The module's own default names three categories and excludes Definition Updates, which is
-# exactly what this deployment approves. An empty or defaulted list here finds nothing and reports
-# success, so the list is required to say something.
+# The module's own default names three categories and excludes Definition Updates, so a client
+# asking for the default set finds nothing whenever the server's approvals fall outside it -- and
+# reports success. This repository declares no approvals, so the list is required to say
+# something rather than inherit a default that might match nothing.
+
 - name: 'VALIDATE | Require Something To Ask For'
   when: (state | default('present') | string | lower | trim) == 'present'
   ansible.builtin.assert:
@@ -64,7 +71,7 @@
       '*' for every category. A machine that asks for categories the server never approves finds
       nothing and reports success, which is the one outcome this run must not produce by accident.
       wsus_client.updates.reboot must be a real boolean, because a quoted string coerces silently
-      and a machine that reboots mid-task reports nothing at all.
+      and a machine that reboots mid-task reports nothing at all. See meta/main.yml.
     quiet: true
     that:
       - wsus_client_running.updates.categories | default([], true) | length > 0
