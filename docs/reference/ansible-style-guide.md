@@ -266,4 +266,5 @@ clobber, verified at the module source). These stay `quiet: true` with an action
   documentation of the `<role>:` dict shape.
 - Handler usage and service-restart conventions on Windows.
 - A Molecule (or equivalent) test story for Windows roles.
-- Secrets handling for Windows; this repository uses none.
+- Secrets handling for Windows: two, the domain-join and PKCS#12 passwords, both read by the play
+  through the framework `secret` lookup and never written to a file by a role.

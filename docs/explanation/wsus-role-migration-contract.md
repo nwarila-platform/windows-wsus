@@ -105,7 +105,7 @@ recursive walk yields, so this table diffs directly against the file.
 | 44 | `MAIN \| Restrict WSUS Update Languages` | reproduce | `AllUpdateLanguagesEnabled = false` plus an order-insensitive compare and post-`Save()` re-read. |
 | 45 | `MAIN \| Configure Upstream WSUS Source` | reproduce | Five-field diff, stop any in-flight sync before `Save()`, verify the persisted five. |
 | 46 | `MAIN \| Wait For The Configured Upstream WSUS Endpoint` | superseded | `sync.bootstrap_enabled` no longer exists, and no reachability probe replaces this: an unreachable upstream surfaces as a failed synchronisation inside its own deadline. Decision 50.
-| 47 | `INFO \| Synchronization Proof Is Deliberately Disabled` | superseded | Dissolved with the flag it described. The synchronisation always runs, so there is no disabled case to be honest about. Decision 50.
+| 47 | `INFO \| Synchronization Proof Is Deliberately Disabled` | superseded | Dissolved with the flag it described. Decision 50 as amended: `sync.mode` reintroduced a disabled case, and the honesty this row asked for is the report task that says which mode ran. Decision 50.
 | 48 | `MAIN \| Bootstrap WSUS Category Sync To Terminal Success` | superseded | Implemented with the fingerprint replaced by the upstream actor's own change report, and invocation ownership consciously dropped -- one caller, one synchronisation, stopped to a full halt before a new one starts. Decision 50.
 | 49 | `MAIN \| Relocate IIS Logs To G:` | reproduce | `siteDefaults` and every site's `logFile.directory`/`enabled`, literal drive-qualified path, `%VAR%` treated as drift. |
 | 50 | `MAIN \| Validate + Normalize IIS wwwroot Target` | reproduce | Validate before any native module can expand a bad override. |
@@ -817,7 +817,8 @@ cannot make on its own.
   recorded that the AWS play set `sync.bootstrap_enabled: false` against a deliberately unreachable
   placeholder upstream, so rows 46 and 48 and the marker and fingerprint contracts had never
   executed against a real source. Both halves of that are now out of date. A real upstream exists,
-  `bootstrap_enabled` does not, and the synchronisation always runs. Rows 46, 47 and 48 are
+  `bootstrap_enabled` does not, and the synchronisation runs unless `sync.mode` says otherwise
+  (decision 50 as amended). Rows 46, 47 and 48 are
   superseded, each with its reason, in decision 50 of the agreement -- the fingerprint is replaced
   by the upstream actor's own change report, row 47's honesty marker is dissolved with the flag it
   described, and row 46's reachability probe is consciously absent. Row 73 is discharged there too,

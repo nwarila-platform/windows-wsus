@@ -19,7 +19,8 @@ In this deployment it has no route to S3 at all.
 > `MSSQLSERVER` instance; the role writes that name where it needs a service and the machine name
 > where it needs a connection target. There is no instance-name input, and deliberately so --
 > offering one would be offering a choice the rest of the role does not honour.
-> Replica topology is the shipped default — approvals are made once, upstream, and inherited.
+> Replica topology is what this deployment declares — approvals are made once, upstream, and
+> inherited.
 
 ## Composition and prerequisites
 
@@ -155,8 +156,9 @@ Measured on a live server, WSUS opens two inbound rules of its own at post-insta
 named `WSUS`, TCP 8530 and 8531, with program `Any`, service `Any` and remote address **`Any`**.
 The role replaces them with two rules that name the ports and the program, and then removes the
 vendor's, in that order, because Windows evaluates every matching allow and the overlap keeps the
-service answering throughout. Remote address stays `Any` on the host: which networks may reach the
-ports is the security group's to say.
+service answering throughout. Remote address stays `Any` on the host: the security group states
+the admitted networks for traffic that reaches the ENI, and nothing scopes traffic arriving inside
+the VPN tunnel — see below.
 
 The replacements are scoped two ways: to the two ports WSUS serves, and to program `System`,
 because the listener is HTTP.SYS in kernel mode and the sockets belong to PID 4 rather than to

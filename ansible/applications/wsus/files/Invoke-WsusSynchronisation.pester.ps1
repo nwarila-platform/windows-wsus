@@ -453,6 +453,16 @@ Describe 'Invoke-WsusSynchronisation' {
       $global:Ansible.Result.changed | Should -BeFalse
     }
 
+    It 'on an already-synchronised server with files still outstanding, start mode does not sleep' {
+      $global:FakeNeverSynced = $false
+      $global:FakeLastResult = 'Succeeded'
+      $global:FakeNeedingFiles = 3
+      $null = & $script:InvokeStart
+      $global:FakeSleeps            | Should -Be 0
+      $global:Ansible.Result.waited | Should -BeFalse
+      $global:Ansible.Result.mode   | Should -Be 'start'
+    }
+
     It 'refuses a mode it does not implement' {
       { & $script:ScriptPath @script:Arguments -Mode 'disabled' } | Should -Throw
     }

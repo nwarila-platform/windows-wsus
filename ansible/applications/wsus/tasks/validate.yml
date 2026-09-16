@@ -58,8 +58,9 @@
   ansible.builtin.assert:
     fail_msg: >-
       Refusing to configure: wsus.updates.languages must name at least one update language, as
-      the short codes WSUS uses -- ['en'], ['en', 'fr'], 'zh-cn'. It is declared empty by the
-      role because which languages an estate speaks is the estate's to say. See meta/main.yml.
+      the short codes WSUS uses -- ['en'], ['en', 'fr'], ['zh-cn']. A bare string is refused:
+      it is a list. Declared empty by the role because which languages an estate speaks is the
+      estate's to say. See meta/main.yml.
     quiet: true
     that:
       - __languages__ | length > 0

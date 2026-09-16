@@ -4,7 +4,9 @@
 #
 # Builds a WSUS server on SQL Server from ephemeral EC2, then a client that proves it. Runs only
 # from the composed tree: the workflow overlays this repository onto the pinned ansible-framework
-# and runs it against a dynamic EC2 inventory filtered to one run.
+# and runs it against a dynamic EC2 inventory filtered to one run. gather_facts and become are
+# absent throughout: the framework's ansible.cfg makes gathering explicit and escalation off, and
+# implicit gathering would run a module over the shell os_bootstrap has not yet fixed.
 # =========================================================================================== #
 ---
 #region ------ [ Play: Inventory Contract ] --------------------------------------------------- #
@@ -58,7 +60,8 @@
   roles:
 
     #region ------ [ Roles: Host Readiness ] -------------------------------------------------- #
-    # Declared, not detected: a failed probe reads as "no platform" and skips the EC2Launch wait.
+    # Declared, not detected: a failed probe reads as "no platform" and skips the EC2Launch wait
+    # that the rename-and-reboot below depends on.
     - role: 'host_readiness'
       vars: { host_readiness_platform: 'aws' }
 

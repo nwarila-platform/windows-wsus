@@ -384,7 +384,10 @@ If ($ServerErrors -gt 0) {
   )
 }
 
-If (($Synchronised -or ($NeedingFiles -gt 0)) -and $PSCmdlet.ShouldProcess($Server.Name, 'Wait for the update content to arrive')) {
+# start mode never waits, not for the catalogue above and not for the files behind it: a server
+# that already synchronised and still has files outstanding is reported as such, not slept on.
+If (($Mode -eq 'wait') -and ($Synchronised -or ($NeedingFiles -gt 0)) -and
+    $PSCmdlet.ShouldProcess($Server.Name, 'Wait for the update content to arrive')) {
   $ContentDeadline = (Get-Date).AddSeconds($ContentTimeoutSeconds)
 
   While (((Get-Date) -lt $ContentDeadline) -and ($NeedingFiles -gt 0)) {
