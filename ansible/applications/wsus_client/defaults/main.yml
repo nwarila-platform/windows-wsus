@@ -20,13 +20,10 @@ wsus_client_defaults:
   #region ------ [ Which server policy should have named ] ----------------------------------- #
 
   # WHAT THE MACHINE SHOULD ALREADY HAVE BEEN TOLD, as the URL clients dial -- scheme, host and
-  # port. A property of the deployment, so it is published by the play and declared empty here;
-  # validate.yml refuses a run that omits it.
-  #
-  # Checked, not written. If Group Policy has not reached this machine, or reached it with a
-  # different server, that is what this value exists to surface -- because the alternative is a
-  # scan that succeeds against nothing and reports "no updates required", which is
-  # indistinguishable from success.
+  # port. Published by the play and declared empty here; validate.yml refuses a present run that
+  # omits it. CHECKED, NOT WRITTEN: if Group Policy has not reached this machine, or reached it
+  # with a different server, that is what this value exists to surface -- the alternative is a scan
+  # that succeeds against nothing and reports "no updates required", indistinguishable from success.
   server:
     url: ''
 
@@ -35,18 +32,14 @@ wsus_client_defaults:
   #region ------ [ Which anchor policy should have delivered ] ------------------------------- #
 
   # The WSUS server presents a self-signed certificate, so a client that cannot chain it fails
-  # every scan with a transport error naming TLS and never mentioning WSUS. Group Policy delivers
-  # that anchor; this is the thumbprint it should have delivered.
-  #
-  # DECLARED EMPTY, exactly as the server role declares its certificate keys. Which certificate an
-  # estate trusts is a property of the deployment, and a thumbprint written here would be one
-  # deployment's identity baked into a role that travels -- the same thing the server role refuses
-  # to do one directory over. The play publishes it and validate.yml refuses a present run that
-  # omits it.
-  #
-  # Checked in BOTH stores, because they are different mechanisms: a Group Policy deployment lands
-  # under Policies\Microsoft\SystemCertificates, and a locally installed certificate under
-  # Microsoft\SystemCertificates. Windows honours either, so either satisfies this.
+  # every scan with a transport error naming TLS and never mentioning WSUS. This is the thumbprint
+  # the directory should have delivered. Declared empty exactly as the server role declares its
+  # certificate keys: which certificate an estate trusts belongs to the deployment, and one written
+  # here would be baked into a role that travels. Checked in THREE hives because Windows fills a
+  # different one per delivery mechanism and honours all of them -- Policies\SystemCertificates for
+  # a Group Policy deployment, Microsoft\SystemCertificates for a local install, and
+  # Microsoft\EnterpriseCertificates for a root published to the directory, which is what a real
+  # certificate authority uses.
   certificate:
     thumbprint: ''
 
@@ -58,10 +51,9 @@ wsus_client_defaults:
   # opinion here. The module's own default names three categories and excludes Definition Updates,
   # so a client asking for the default set finds nothing whenever the server's approvals fall
   # outside it -- and reports success. Approvals are made upstream and inherited, and this
-  # repository declares none of them, so the only safe ask is everything.
-  #
-  # No reboot: the run has to report what happened, and a machine that reboots mid-task reports
-  # nothing. reboot_required comes back in the result instead, for a human to act on.
+  # repository declares none of them, so the only safe ask is everything. No reboot: the run has to
+  # report what happened, and a machine that reboots mid-task reports nothing -- reboot_required
+  # comes back in the result instead, for a human to act on.
   updates:
     categories: ['*']
     reboot: false

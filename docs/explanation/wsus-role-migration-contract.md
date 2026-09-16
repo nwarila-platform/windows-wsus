@@ -105,7 +105,7 @@ recursive walk yields, so this table diffs directly against the file.
 | 44 | `MAIN \| Restrict WSUS Update Languages` | reproduce | `AllUpdateLanguagesEnabled = false` plus an order-insensitive compare and post-`Save()` re-read. |
 | 45 | `MAIN \| Configure Upstream WSUS Source` | reproduce | Five-field diff, stop any in-flight sync before `Save()`, verify the persisted five. |
 | 46 | `MAIN \| Wait For The Configured Upstream WSUS Endpoint` | superseded | `sync.bootstrap_enabled` no longer exists, and no reachability probe replaces this: an unreachable upstream surfaces as a failed synchronisation inside its own deadline. Decision 50.
-| 47 | `INFO \| Synchronization Proof Is Deliberately Disabled` | superseded | Dissolved with the flag it described. The synchronisation always runs, so there is no disabled case to be honest about. Decision 50.
+| 47 | `INFO \| Synchronization Proof Is Deliberately Disabled` | superseded | Dissolved with the flag it described. Decision 50 as amended: `sync.mode` reintroduced a disabled case, and the honesty this row asked for is the report task that says which mode ran. Decision 50.
 | 48 | `MAIN \| Bootstrap WSUS Category Sync To Terminal Success` | superseded | Implemented with the fingerprint replaced by the upstream actor's own change report, and invocation ownership consciously dropped -- one caller, one synchronisation, stopped to a full halt before a new one starts. Decision 50.
 | 49 | `MAIN \| Relocate IIS Logs To G:` | reproduce | `siteDefaults` and every site's `logFile.directory`/`enabled`, literal drive-qualified path, `%VAR%` treated as drift. |
 | 50 | `MAIN \| Validate + Normalize IIS wwwroot Target` | reproduce | Validate before any native module can expand a bad override. |
@@ -160,9 +160,9 @@ Every task is gated on `state == 'present'`; the TLS pair is additionally gated 
 | # | Task | Disposition | Note |
 |---:|---|---|---|
 | 1 | `BEGIN \| Assert Data Disk Drive Letters Are Distinct` | reproduce | Three distinct `^[D-Z]$` letters. The disk-manager role validates its own declaration and cannot see this role's independently overrideable targets. |
-| 2 | `BEGIN \| Assert Application Paths Match Their Declared Disks` | reproduce against SQL | Same predicates — relative, non-traversing, no `:`/`%`/`..`, IIS paths literal on the IIS letter — with `db_subdir` no longer defaulting to a WID-shaped name. |
+| 2 | `BEGIN \| Assert Application Paths Match Their Declared Disks` | superseded | Decision 61: validate guards only what the caller supplies, and the subdirectories are the role's own declaration -- a wrong one fails at directory creation and at END's re-read, which is the proof two converges give. The drive-letter predicates survive in rows 1 and 3. Formerly: same predicates — relative, non-traversing, no `:`/`%`/`..`, IIS paths literal on the IIS letter — with `db_subdir` no longer defaulting to a WID-shaped name. |
 | 3 | `BEGIN \| Assert Upstream WSUS Server Provided` | reproduce | Required input, no default. |
-| 4 | `BEGIN \| Assert Synchronization Contract` | superseded | Port and language predicates survive, in `validate.yml`'s upstream and language guards. The rest describes a design that no longer exists: `bootstrap_enabled` is gone with the placeholder upstream it protected, and with it the refusal of `wsus-upstream.corp.local` — this deployment names a real upstream and always synchronises. The accept/completion/poll triple is replaced by two deadlines, `sync.timeout_seconds` and `sync.content_timeout_seconds`. See decision 50 in the agreement, which disposes of rows 46, 47, 48 and 73 for the same reason. |
+| 4 | `BEGIN \| Assert Synchronization Contract` | superseded | Port and language predicates survive, in `validate.yml`'s upstream and language guards. The rest describes a design that no longer exists: `bootstrap_enabled` is gone with the placeholder upstream it protected, and with it the refusal of `wsus-upstream.corp.local` — this deployment names a real upstream and synchronises unless `sync.mode` says otherwise (decision 50 as amended). The accept/completion/poll triple is replaced by two deadlines, `sync.timeout_seconds` and `sync.content_timeout_seconds`. See decision 50 in the agreement, which disposes of rows 46, 47, 48 and 73 for the same reason. |
 | 5 | `BEGIN \| Assert TLS Delivery Inputs` | reproduce | Bucket name pattern, non-traversing non-absolute `pfx_key`, port 1–65535, `minimum_validity_days >= 1`, and a multi-label FQDN `dns_name`. |
 | 6 | `BEGIN \| Assert TLS Thumbprint Pin Format` | reproduce | Exactly 40 hex characters, checked before delivery so a malformed pin cannot fail after the import. |
 
@@ -817,7 +817,8 @@ cannot make on its own.
   recorded that the AWS play set `sync.bootstrap_enabled: false` against a deliberately unreachable
   placeholder upstream, so rows 46 and 48 and the marker and fingerprint contracts had never
   executed against a real source. Both halves of that are now out of date. A real upstream exists,
-  `bootstrap_enabled` does not, and the synchronisation always runs. Rows 46, 47 and 48 are
+  `bootstrap_enabled` does not, and the synchronisation runs unless `sync.mode` says otherwise
+  (decision 50 as amended). Rows 46, 47 and 48 are
   superseded, each with its reason, in decision 50 of the agreement -- the fingerprint is replaced
   by the upstream actor's own change report, row 47's honesty marker is dissolved with the flag it
   described, and row 46's reachability probe is consciously absent. Row 73 is discharged there too,

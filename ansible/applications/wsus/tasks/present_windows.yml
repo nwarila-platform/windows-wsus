@@ -2,22 +2,15 @@
 # File: '{{ role_path }}/tasks/present_windows.yml'
 # --- [ Description ] ----------------------------------------------------------------------- #
 #
-# Windows / state=present provider.
-#
-# Built one action at a time against docs/explanation/wsus-role-migration-contract.md. Three
-# stages: BEGIN reads the machine and decides, PROCESS acts on that decision, END proves the
-# result. END is ungated on purpose, so a converged host proves the same state as a fresh one.
-#
-# Guest PowerShell is a first-class file under files/, never inline, and END re-runs the SAME
-# script BEGIN ran, so the read and the proof cannot disagree about what counts as placed. Unlike
-# the reference this repository tracks the .ps1 itself rather than a .stub, because the local rule
-# forbids the materialization step that would otherwise produce it.
-#
-# --check against a host that has never converged does not complete: win_file predicts the
-# directories rather than creating them, and the access-control actor reads a descriptor from a
-# path that does not exist yet. That is the ordinary limit of check mode on tasks that depend on
-# an earlier task's side effect, not something this role can repair without carrying conditionals
-# for a path the lifecycle never runs. --check against a converged host reads normally.
+# Windows / state=present provider, built against docs/explanation/wsus-role-migration-contract.md.
+# Three stages: BEGIN reads the machine and decides, PROCESS acts, END proves. END is ungated on
+# purpose, so a converged host proves the same state as a fresh one, and it re-runs the SAME script
+# BEGIN ran so read and proof cannot disagree. Guest PowerShell is a first-class file under files/,
+# never inline; unlike the reference this repository tracks the .ps1 rather than a .stub, because
+# the local rule forbids the materialization step. --check against a host that has never converged
+# does not complete -- win_file predicts directories rather than creating them and the ACL actor
+# reads a descriptor from a path that does not exist yet, which is the ordinary limit of check mode
+# on tasks depending on an earlier side effect. Against a converged host it reads normally.
 #
 # ============================================================================================= #
 ---
@@ -27,15 +20,12 @@
   vars:
     __desired_data__: "{{ wsus_running.db.drive_letter }}:\\{{ wsus_running.db.data_subdir }}"
     __desired_log__: "{{ wsus_running.db.drive_letter }}:\\{{ wsus_running.db.log_subdir }}"
-    # What the machine holds of SUSDB, from two independent answers: the engine's (is it
-    # attached, and from where) and the filesystem's (did its pair survive). Stage vars rather
-    # than set_fact, per the style guide -- these are role-internal derived values, and a fact
-    # would persist into every later role in the play. Lazily evaluated, so the registers they
-    # read exist by the time anything consumes them.
-    #
-    # ONE backslash in these folded scalars and TWO in the double-quoted paths below, because
-    # YAML processes escapes in a double-quoted scalar and leaves a folded one alone. Both reach
-    # Jinja as the same single separator; writing either in the other's place does not.
+    # What the machine holds of SUSDB, from two independent answers: the engine's (attached, and
+    # from where) and the filesystem's (did its pair survive). Stage vars rather than set_fact --
+    # these are role-internal and a fact would persist into every later role in the play. ONE
+    # backslash in these folded scalars and TWO in the double-quoted paths below: YAML processes
+    # escapes in a double-quoted scalar and leaves a folded one alone, so both reach Jinja as the
+    # same separator and swapping them does not.
     __susdb_present__: >-
       {{ __wsus_susdb_files__.results | selectattr('stat.exists') | list }}
     __susdb_attached__: "{{ __wsus_placement__.result.susdb_file_count > 0 }}"
@@ -54,19 +44,13 @@
   block:
 
     #region ------ [ Begin: Read The Engine's Effective Placement ] --------------------------- #
-    # One read answers every question this stage has: whether the engine is up to be asked, which
-    # directory the instance publishes itself under, where it would ACTUALLY put a database right
-    # now, and what access the two directories give it.
-    #
-    # A stopped instance is read, not raised. PROCESS starts it; failing here would deny the very
-    # repair the next stage exists to perform. The script declares SupportsShouldProcess, so this
-    # read still runs under --check and PROCESS can predict against a real answer.
-    #
-    # The service reconcile therefore sits in PROCESS, AFTER this read, which means the first
-    # connection is opened against a service this role has not yet reconciled. That is deliberate:
-    # BEGIN does not mutate the target, and every mutation belongs to PROCESS. It costs nothing --
-    # a down instance is reported rather than queried, and the restart below fires on what this
-    # read established rather than on what it could not.
+    # One read answers every question this stage has: whether the engine is up, which directory the
+    # instance publishes, where it would ACTUALLY put a database now, and what access those
+    # directories give it. A stopped instance is reported, not raised -- PROCESS starts it, and
+    # failing here would deny the repair the next stage exists to perform. The service reconcile
+    # therefore sits in PROCESS after this read, so the first connection is opened against a service
+    # not yet reconciled. That is deliberate: BEGIN never mutates. The script declares
+    # SupportsShouldProcess, so this still runs under --check.
 
     # The same startup race END retries for, on the same terms: an instance that has just come
     # back -- from a reboot, or from a converge killed mid-restart -- reports Running before it
@@ -283,16 +267,14 @@
     #endregion --- [ Process: Create The Database Directories On The Data Volume ] ------------ #
 
     #region ------ [ Process: Grant The Instance FullControl On The Database Directories ] ---- #
-    # The per-service account, whose SID Windows derives from the service NAME rather than from the
-    # machine -- so the entry this writes is the one a REPLACEMENT operating system reading the same
-    # volume would also resolve, which is what lets the data volume outlive the host. Passed as the
-    # SID the placement read already resolved, because a name comparison would be satisfied by a
-    # renamed or localised principal that grants nothing.
-    #
-    # Set rather than added, for the same reason the content paths are: an additive grant leaves a
-    # DENY on the same identity standing, and Windows evaluates deny first -- so the allow would be
-    # written, the task would report ok on every later run, and SUSDB still could not grow. That is
-    # the one thing two clean runs cannot prove here, so the actor removes it instead.
+    # The per-service account, whose SID Windows derives from the service NAME rather than the
+    # machine -- so a REPLACEMENT operating system reading the same volume resolves the same entry,
+    # which is what lets the data volume outlive the host. Passed as the SID the placement read
+    # already resolved: a name comparison would be satisfied by a renamed or localised principal
+    # that grants nothing. SET rather than added, because an additive grant leaves a DENY on the
+    # same identity standing and Windows evaluates deny first -- the allow would be written, the
+    # task would report ok forever, and SUSDB still could not grow. Two clean runs cannot catch
+    # that, so the actor removes the deny instead.
 
     - name: 'PROCESS | Grant The Instance FullControl On The Database Directories'
       loop:
@@ -335,25 +317,15 @@
     #endregion --- [ Process: Pin The Instance Default Data And Log Directories ] ------------- #
 
     #region ------ [ Process: Restart The Instance So It Adopts The Pinned Directories ] ------ #
-    # A restart is a service outage, so it fires on evidence, never on ignorance. Two cases earn
-    # one, and no others:
-    #
-    #   the registry just changed -- the engine is still serving what it read at startup, and
-    #   measured on a live instance, writing the registry moved neither SERVERPROPERTY nor where a
-    #   database landed until the service came back;
-    #
-    #   BEGIN reached the engine and it named the wrong directory.
-    #
-    # An instance that was DOWN when BEGIN looked earns nothing by itself: it has since been
-    # started, and it read the registry on the way up. If that registry was already right it is
-    # already serving the right directories, and bouncing it would be an outage bought with a
-    # question nobody asked. If it was wrong, the pin above changed and the first case fires. END
-    # proves the outcome either way, so a wrong guess here fails the run rather than passing it.
-    #
-    # force_dependent_services because the instance carries dependents -- on this image
+    # A restart is an outage, so it fires on evidence rather than ignorance. Exactly two cases earn
+    # one: the registry just changed (measured on a live instance, writing it moved neither
+    # SERVERPROPERTY nor where a database landed until the service came back), or BEGIN reached the
+    # engine and it named the wrong directory. An instance that was DOWN when BEGIN looked earns
+    # nothing by itself -- it has since started and read the registry on the way up, so either it is
+    # already correct or the pin above changed and the first case fires. END proves the outcome
+    # either way. force_dependent_services because the instance carries dependents -- on this image
     # MSSQLLaunchpad runs and SQLSERVERAGENT is installed -- and Windows refuses to stop a service
-    # that has them. Measured on the guest: after this restart the running Launchpad came back
-    # with the engine, and a stopped SQLSERVERAGENT stayed stopped.
+    # that has them; measured, the running Launchpad came back and a stopped agent stayed stopped.
 
     - name: 'PROCESS | Restart The Instance So It Adopts The Pinned Directories'
       when: >-
@@ -448,20 +420,15 @@
     #endregion --- [ Process: Create The Content Directory On The Content Volume ] ------------ #
 
     #region ------ [ Process: Complete The Post-Installation Against The SQL Instance ] ------- #
-    # The region SUSDB comes out of, by one of two routes. On a first converge it CREATES the
-    # database, and everything before it exists so that this is a creation rather than a repair:
-    # the engine already points at the data volume, so the database is born there and never has
-    # to be moved. On a converge that adopted a preserved SUSDB, the adoption region attached it
-    # already and this configures the database it found. The command is the same either way --
-    # what differs is whether the engine holds SUSDB when it runs.
-    #
-    # Both arguments are mandatory, and neither is tidiness. Measured on the target: the feature
-    # install leaves SqlServerName pointing at the Windows Internal Database instance -- a
-    # backend this host does not have -- and ContentDir on the system volume. Left to its own
-    # defaults, post-installation would aim at the wrong database and put the store on C:.
-    #
-    # argv form so the module hands the arguments over as given, rather than parsing a command
-    # line back into them.
+    # Where SUSDB comes from, by one of two routes: on a first converge this CREATES it, and
+    # everything before exists so that it is a creation rather than a repair -- the engine already
+    # points at the data volume, so the database is born there and never has to move. On a converge
+    # that adopted a preserved SUSDB the adoption region attached it and this configures what it
+    # found. Same command either way. Both arguments are mandatory: measured, the feature install
+    # leaves SqlServerName pointing at the Windows Internal Database -- a backend this host does not
+    # have -- and ContentDir on the system volume, so left to its defaults post-installation would
+    # aim at the wrong database and put the store on C:. argv form so the module hands the arguments
+    # over as given rather than parsing a command line back into them.
 
     - name: 'PROCESS | Complete The Post-Installation Against The SQL Instance'
       when: __wsus_postinstall_incomplete__
@@ -496,42 +463,25 @@
     #endregion --- [ Process: Ensure The WSUS Services Are Running ] -------------------------- #
 
     #region ------ [ Process: Serve WSUS To Its Clients Over HTTPS ] -------------------------- #
-    # FIRST of the regions that talk to the WSUS API, and the position is load-bearing. Once
-    # wsusutil records UsingSSL=1, every later bare Get-WsusServer dials this machine over HTTPS
-    # and validates the certificate it is presented, so this has to be settled before any of them
-    # run.
-    #
-    # TRUSTING that certificate is NOT this role's job. A directory delivers its trusted root to
-    # every domain member, which is what a production CA does and what production's policy here is
-    # recorded as doing; a role that also wrote the root store would be a second owner of a
-    # decision the directory already makes. This role loads the machine store and stops.
-    #
-    # DEVELOPMENT IS NOT THERE YET. The anchor arrives by a separate temporary policy, and that
-    # policy was measured NOT delivering it -- the POC client had to be trusted by hand. Until it
-    # reaches this server too, the dependency below is not theoretical.
-    #
-    # That is a real ordering dependency rather than a tidy separation. Measured on a live Server
-    # 2025 host: a PKCS#12 imported into LocalMachine\My alone lands in no other store and chains
-    # to UntrustedRoot -- holding a certificate is not trusting it. So a server whose Group Policy
-    # has not yet delivered the root will fail its first API read after UsingSSL=1 is written.
-    #
-    # It also removes an asymmetry that would otherwise make the two runs different things. Here,
-    # run one and run two both drive the API over the same transport; last, run one would use HTTP
-    # and run two HTTPS, and only run two would exercise the path the estate actually uses.
-    #
-    # Everything it needs -- the WSUS site, the Setup key, the services -- exists by this point.
-    #
-    # The delivery is controller-side and the target never holds an S3 credential. That is not a
-    # preference: measured in terraform/aws.tfvars, this guest's only egress rule is the VPN
-    # tunnel, so it has no route to S3 at all. ONE object is fetched here -- the PKCS#12 -- and it
-    # is what this machine PRESENTS; the password that unlocks it arrives already resolved,
-    # because reading a credential out of S3 is the framework secret lookup's job.
-    #
-    # Wrapped in its own block so the staging directories are removed on the way out whether this
-    # converged, refused or threw. A PFX left on either side is a private key left on disk.
-    #
-    # The password is never written to either side. It reaches the import as a value from the
-    # merged configuration under no_log, so there is no password file to stage and none to remove.
+    # FIRST of the regions that talk to the WSUS API, and the position is load-bearing: once
+    # wsusutil records UsingSSL=1 every later bare Get-WsusServer dials this machine over HTTPS and
+    # validates what it is presented. Running it first also keeps both converges on one transport,
+    # where running it last would have run one on HTTP and only run two on the path the estate uses.
+    # Everything it needs -- the WSUS site, the Setup key, the services -- exists by here. TRUSTING
+    # that certificate is NOT this role's job: a directory delivers its root to every domain member
+    # as a production CA would, and a role writing the root store would be a second owner of that
+    # decision. This role loads the machine store and stops. That is a real ordering dependency, not
+    # a tidy separation -- measured on a live Server 2025 host, a PKCS#12 imported into
+    # LocalMachine\My alone lands in no other store and chains to UntrustedRoot, so a server whose
+    # policy has not delivered the root fails its first API read after UsingSSL=1. In development it
+    # was measured reaching the POC client through the EnterpriseCertificates hive on 2026-09-11 --
+    # and the client role refused anyway, because it did not look there, which b5431ee fixed.
+    # Delivery is controller-side because the guest's only egress rule is the VPN tunnel (measured
+    # in terraform/aws.tfvars) and it has no route to S3 at all. ONE object is fetched, the PKCS#12,
+    # and the password arrives already resolved through the framework secret lookup -- never written
+    # to either side, so there is no password file to stage or remove. Wrapped in its own block so
+    # the staging directories go on the way out whether this converged, refused or threw: a PFX left
+    # behind is a private key left on disk.
 
     - name: 'PROCESS | Deliver And Install The WSUS TLS Certificate'
       vars:
@@ -622,13 +572,11 @@
             checksum_algorithm: 'sha256'
             path: "{{ __wsus_tls_controller__.path }}/certificate.pfx"
 
-        # One object now, so one digest. It is held to the pin because an unverified private key is
-        # not one this server should present.
-        #
-        # The password is no longer checked here and no longer could be: it arrives already
-        # resolved through the framework's secret lookup, which takes the digest itself and refuses
-        # the read when the stored bytes have moved. The guard did not go away, it moved to the
-        # only place that still sees the object.
+        # One object, so one digest, held to the pin because an unverified private key is not one
+        # this server should present. The password is not checked here and could not be: it arrives
+        # already resolved through the framework's secret lookup, which takes the digest itself and
+        # refuses the read when the stored bytes have moved. The guard moved to the only place that
+        # still sees the object.
 
         - name: 'PROCESS | Verify The TLS Delivery Against Its Pinned Digest'
 
@@ -731,42 +679,26 @@
 
     #endregion --- [ Process: Serve WSUS To Its Clients Over HTTPS ] -------------------------- #
 
-    #region ------ [ Process: Admit Only The Estate To The Update Service ] ------------------- #
-    # WSUS opens two firewall rules of its own at post-installation. Measured on a live server:
-    # both named 'WSUS', inbound, TCP 8530 and TCP 8531, with program Any, service Any and remote
-    # address ANY. That is the entire internet admitted to the update service.
-    #
-    # This is NOT the security group repeated. A group cannot see traffic that arrives over the VPN
-    # tunnel: it sees a UDP envelope on 1194, and the payload is decapsulated inside the guest past
-    # every group rule. For everything reaching this server from the lab, the host firewall is not
-    # defence in depth -- it is the only defence there is.
-    #
-    # SCOPED THREE WAYS. To the ports WSUS serves; to System, because the listener is HTTP.SYS in
-    # kernel mode and the sockets belong to PID 4 rather than to w3wp.exe -- measured, and the same
-    # program Windows names in its own built-in IIS rules; and to the networks the estate actually
-    # occupies, which is the control the group cannot provide.
-    #
-    # NOT scoped to a service, and that is a limit rather than an omission. A service filter
-    # matches traffic owned by a named service, and HTTP.SYS answers these ports from the kernel --
-    # measured, PID 4 -- so no service owns them. Naming one would match nothing and close the port
-    # to the very clients the rule exists to admit. Windows' own IIS rules leave it unset for the
-    # same reason, and so do the two WSUS installs of its own.
-    #
-    # The network list is given in CIDR and Windows stores it in dotted-mask form -- 10.0.0.0/16
-    # becomes 10.0.0.0/255.255.0.0. Measured that this does NOT churn: the COM object normalises on
-    # ASSIGNMENT, so the module compares a normalised stored value against a normalised new one and
-    # finds them equal. Declaring the mask form here would be the same rule and a worse comment.
-    #
-    # Written in the shape Windows writes its own rules -- '<Product> (<PROTOCOL> Traffic-In)', a
-    # group, and a description ending '[TCP <port>]' -- but saying WSUS things rather than IIS
-    # things, so an administrator reading the rule list learns why the port is open and not merely
-    # that something web-shaped wanted it.
-    #
-    # ADDED BEFORE THE VENDOR'S ARE REMOVED. Windows evaluates every matching allow, so during the
-    # overlap the wider rule simply wins and the service never stops answering. Removing first
-    # would leave a window where a client is refused for no reason anyone would later find.
+    #region ------ [ Process: Admit Clients To The Update Service ] -------------------------- #
+    # WSUS opens two rules of its own at post-installation. Measured: both named 'WSUS', inbound,
+    # TCP 8530 and 8531, program Any, service Any, remote address ANY -- the vendor's are replaced
+    # by rules that say which ports and which program. SCOPED TO PROGRAM System, because the
+    # listener is HTTP.SYS in kernel mode and the sockets belong to PID 4 rather than w3wp.exe --
+    # measured, and the program Windows names in its own IIS rules. NOT scoped to a service, which
+    # is a limit rather than an omission: no service owns a kernel-mode socket, so naming one would
+    # match nothing and close the port to the clients the rule exists to admit; Windows' own IIS
+    # rules leave it unset for the same reason. NOT scoped to a network, by decision 60. For
+    # traffic that reaches the ENI the security group states the networks once; for traffic that
+    # arrives inside the VPN tunnel NOTHING now scopes it -- the group sees only the UDP envelope
+    # and the payload is decapsulated inside the guest. Accepted because production is AWS-only
+    # with no tunnel (decisions 57, 58); in this dev estate any authenticated tunnel source can
+    # reach 8530 and 8531. Written in the shape Windows writes
+    # its own -- '<Product> (<PROTOCOL> Traffic-In)', a group, a description ending '[TCP <port>]'
+    # -- but saying WSUS things, so an administrator learns why the port is open. ADDED BEFORE THE
+    # VENDOR'S ARE REMOVED: Windows evaluates every matching allow, so the wider rule wins during
+    # the overlap and the service never stops answering.
 
-    - name: 'PROCESS | Admit Only The Estate To The Update Service'
+    - name: 'PROCESS | Admit Clients To The Update Service'
       loop: "{{ __firewall_rules__ }}"
       loop_control:
         label: "{{ item.name }}"
@@ -782,7 +714,6 @@
         profiles: [ 'domain', 'private', 'public' ]
         program: 'System'
         protocol: 'tcp'
-        remoteip: "{{ wsus_running.firewall.admitted_networks }}"
         state: 'present'
 
     # Both of the vendor's rules share one display name, which is not something a declarative
@@ -796,23 +727,18 @@
         name: 'WSUS'
         state: 'absent'
 
-    #endregion --- [ Process: Admit Only The Estate To The Update Service ] ------------------- #
+    #endregion --- [ Process: Admit Clients To The Update Service ] -------------------------- #
 
     #region ------ [ Process: Reconcile Where WSUS Keeps Its Content ] ------------------------ #
-    # WSUS records where its content lives in three places -- the registry root, the API cache one
-    # level below it, and the IIS Content virtual directory that actually serves files -- and only
-    # wsusutil movecontent updates them together. The realistic path to disagreement is a
-    # re-declaration: an operator changes the content drive letter and converges, leaving the store
-    # where it was while this role now asks for somewhere else.
-    #
-    # After the services, because the script asks the WSUS API where the content is and the API
-    # answers only once the server is up. Reading a stopped server as an empty answer would compare
-    # as "wrong place" and start copying a populated store, so the script refuses that read rather
-    # than guessing -- but the ordering is what keeps the refusal from firing on every reboot.
-    #
-    # One task, not a read and a decision and a command. The script owns the whole concern: it
-    # refuses the split brain movecontent cannot repair, moves when the API names the wrong cache,
-    # and checks all three records against the declaration afterwards.
+    # WSUS records where content lives in three places -- the registry root, the API cache below
+    # it, and the IIS Content virtual directory that serves files -- and only wsusutil movecontent
+    # updates them together. The realistic path to disagreement is a re-declaration: an operator
+    # changes the drive letter and converges, leaving the store where it was. After the services,
+    # because the script asks the API and the API answers only once the server is up; reading a
+    # stopped server as empty would compare as "wrong place" and start copying a populated store,
+    # so the script refuses that read and the ordering keeps the refusal from firing on reboots.
+    # One task, not a read and a decision and a command: the script refuses the split brain
+    # movecontent cannot repair, moves when the API names the wrong cache, and checks all three.
 
     - name: 'PROCESS | Reconcile Where WSUS Keeps Its Content'
 
@@ -854,15 +780,11 @@
     #endregion --- [ Process: Grant The WSUS Service Rights On The Content Cache ] ------------ #
 
     #region ------ [ Process: Grant Interactive Users Browse Access On The Content Root ] ----- #
-    # Ratified convention: every interactive user on these servers is an administrator, and a
-    # folder Explorer cannot read makes it offer "Continue", which stamps that administrator's
-    # personal ACE onto the tree and leaves a stale SID behind when they depart. One shared
-    # read-and-execute entry costs nothing and prevents that.
-    #
-    # Written EXPLICITLY though the volume root already grants the same rights by inheritance.
-    # An inherited entry is the parent's to withdraw -- break inheritance here, or re-permission
-    # the volume, and the access vanishes with no change to this role. The role owns what it
-    # depends on.
+    # Ratified convention: every interactive user here is an administrator, and a folder Explorer
+    # cannot read makes it offer "Continue", which stamps that administrator's personal ACE onto the
+    # tree and leaves a stale SID when they depart. One shared read-and-execute entry prevents that.
+    # Written EXPLICITLY though the volume root already grants it by inheritance -- an inherited
+    # entry is the parent's to withdraw, and the role owns what it depends on.
 
     - name: 'PROCESS | Grant Interactive Users Browse Access On The Content Root'
 
@@ -879,18 +801,14 @@
     #endregion --- [ Process: Grant Interactive Users Browse Access On The Content Root ] ----- #
 
     #region ------ [ Process: Restrict The Update Languages WSUS Will Accept ] ---------------- #
-    # A WSUS server installs with every language Microsoft publishes enabled, so a synchronisation
-    # would pull metadata and binaries for all of them. On a server that patches one estate that is
-    # a permanent cost in disk and sync time for content nobody will ever approve.
-    #
-    # After the services, because the configuration is read and written through the WSUS API rather
-    # than the registry, and the API answers only once the server is up.
-    #
-    # The script does both halves and verifies from a freshly acquired configuration object:
-    # clearing the
-    # all-languages flag without writing a list leaves the old list, writing a list without
-    # clearing the flag leaves the flag overriding it, and the configuration object is a
-    # client-side cache that would report either assignment back whether or not it persisted.
+    # A WSUS installs with every language Microsoft publishes enabled, so a synchronisation pulls
+    # metadata and binaries for all of them -- a permanent cost in disk and sync time for content
+    # nobody will approve. After the services, because this is written through the WSUS API and the
+    # API answers only once the server is up. The script does both halves and verifies from a
+    # freshly acquired configuration object: clearing the all-languages flag without writing a list
+    # leaves the old list, writing a list without clearing the flag leaves the flag overriding it,
+    # and the configuration object is a client-side cache that reports either assignment back
+    # whether or not it persisted.
 
     - name: 'PROCESS | Restrict The Update Languages WSUS Will Accept'
 
@@ -904,56 +822,55 @@
     #endregion --- [ Process: Restrict The Update Languages WSUS Will Accept ] ---------------- #
 
     #region ------ [ Process: Point This Server At Its Upstream WSUS Source ] ----------------- #
-    # A WSUS server installs pointed at Microsoft Update. Leaving it there on a downstream means
-    # every server in the estate approves the same update independently and pulls the same bytes
-    # from the internet, which is the cost a downstream topology exists to remove.
-    #
-    # After the languages, because both are written through the same configuration object and the
-    # API only answers once the server is up. Order between them does not matter to the product;
-    # keeping the two API writes adjacent is what makes that obvious.
-    #
-    # All five values are one act. Recording the upstream without clearing SyncFromMicrosoftUpdate
-    # leaves the address in the console and Microsoft Update as the actual source -- a server that
-    # reads as configured and is not -- so the script writes and verifies the five together, and
-    # stops any synchronisation in flight first, because a sync mid-run is still talking to the old
-    # source and saving underneath it lands the server in a state neither configuration describes.
-    #
-    # The booleans arrive as booleans: Ansible templates a bare '{{ bool }}' back to a real bool
-    # and win_powershell serialises it as JSON true/false, so PowerShell binds it directly. That is
-    # load-bearing -- had it arrived as the string 'False', [System.Boolean] would have made it
-    # true, because every non-empty string casts true.
+    # A WSUS installs pointed at Microsoft Update; leaving it there on a downstream means every
+    # server approves the same update independently and pulls the same bytes from the internet.
+    # After the languages, because both are written through the same configuration object once the
+    # server is up -- order between them does not matter to the product, but keeping the two API
+    # writes adjacent makes that obvious. All five values are ONE act: recording the upstream
+    # without clearing SyncFromMicrosoftUpdate leaves the address in the console and Microsoft
+    # Update as the actual source, so the script writes and verifies them together and stops any
+    # synchronisation in flight first, because a sync mid-run still talks to the old source. The
+    # booleans arrive as booleans -- Ansible templates a bare '{{ bool }}' back to a real bool and
+    # win_powershell serialises JSON true/false -- which is load-bearing: as the string 'False',
+    # [System.Boolean] would have made it TRUE, because every non-empty string casts true. That is
+    # why the endpoint crosses as a URL rather than a host, a port and a second boolean; the three
+    # are declared separately because that is how a deployer thinks, and composed here.
 
     - name: 'PROCESS | Point This Server At Its Upstream WSUS Source'
       register: '__wsus_upstream__'
+      vars:
+        __upstream_scheme__: "{{ (wsus_running.sync.upstream_use_ssl | bool) | ternary('https', 'http') }}"
 
       ansible.windows.win_powershell:
         depth: 3
         error_action: 'stop'
         parameters:
           Replica: "{{ wsus_running.sync.replica }}"
-          UpstreamPort: "{{ wsus_running.sync.upstream_port }}"
-          UpstreamServer: "{{ wsus_running.sync.upstream_server }}"
-          UseSsl: "{{ wsus_running.sync.upstream_use_ssl }}"
+          UpstreamUrl: >-
+            {{ __upstream_scheme__ }}://{{ wsus_running.sync.upstream_server | trim
+            }}:{{ wsus_running.sync.upstream_port }}
         script: "{{ lookup('ansible.builtin.file', 'Set-WsusUpstream.ps1') }}"
 
     #endregion --- [ Process: Point This Server At Its Upstream WSUS Source ] ----------------- #
 
     #region ------ [ Process: Bring The Catalogue And Its Content Down From The Upstream ] ---- #
-    # Pointing a server at an upstream fetches nothing. Until a synchronisation completes this
-    # server offers its clients an empty catalogue -- and a client that asks an empty server
-    # reports "no updates required" and looks exactly like success. That silence is the failure
-    # this region exists to remove, and it is the only one in the role a client can see.
-    #
-    # Force is the upstream actor's OWN change report rather than a fingerprint recomputed here.
-    # The question is "does the catalogue on disk come from the source we are now pointed at", and
-    # the task that re-pointed the server has already answered it. The contract reached the same
-    # answer by hashing five values into a registry marker; this reaches it by asking the task
-    # that knows.
-    #
-    # default({}) because under --check the module reports what it would do without a result, and
-    # a run that cannot read the flag should decline to force rather than fail reading it.
+    # Pointing a server at an upstream fetches nothing: until a synchronisation completes this
+    # server offers an empty catalogue, and a client asking an empty server reports "no updates
+    # required", which looks exactly like success. That silence is the one failure in this role a
+    # client can see and cannot diagnose, which is why any mode but 'wait' leaves it open -- the
+    # server is still pointed upstream, it simply holds whatever it already had, none on a fresh
+    # build. Those modes exist because a first synchronisation against a full Microsoft mirror is
+    # measured in WEEKS and a converge that blocks on one never returns; an estate on that path
+    # synchronises out of band and accepts the empty window. The report task below says which
+    # happened, so the silence is at least written down. Force is the upstream actor's own change
+    # report rather than a fingerprint recomputed here -- the task that re-pointed the server
+    # already answered "is this catalogue from the source we now point at". default({}) because
+    # under --check the module reports what it would do without a result, and a run that cannot
+    # read the flag should decline to force rather than fail reading it.
 
     - name: 'PROCESS | Bring The Catalogue And Its Content Down From The Upstream'
+      register: '__wsus_sync__'
+      when: wsus_running.sync.mode != 'disabled'
 
       ansible.windows.win_powershell:
         depth: 3
@@ -961,8 +878,25 @@
         parameters:
           ContentTimeoutSeconds: "{{ wsus_running.sync.content_timeout_seconds }}"
           Force: "{{ (__wsus_upstream__.result | default({})).changed | default(false) }}"
+          Mode: "{{ wsus_running.sync.mode }}"
           TimeoutSeconds: "{{ wsus_running.sync.timeout_seconds }}"
         script: "{{ lookup('ansible.builtin.file', 'Invoke-WsusSynchronisation.ps1') }}"
+
+    # Printed rather than asserted, and printed on BOTH paths. A run that skipped the
+    # synchronisation looks identical in a recap to one that ran it and found nothing, and those
+    # are very different servers. This is the only place that difference is stated.
+
+    - name: 'PROCESS | Report Whether This Server Fetched A Catalogue'
+      changed_when: false
+
+      ansible.builtin.debug:
+        msg: >-
+          {{ ((__wsus_sync__.result | default({})).msg | default('no result'))
+             if wsus_running.sync.mode != 'disabled'
+             else 'Synchronisation is DISABLED for this deployment. This server is pointed at '
+                  ~ wsus_running.sync.upstream_server ~ ' and holds whatever catalogue it already
+                  had -- on a fresh build, none. A client asking it will report no updates
+                  required, which is not the same as being up to date.' }}
 
     #endregion --- [ Process: Bring The Catalogue And Its Content Down From The Upstream ] ---- #
 
@@ -984,17 +918,14 @@
     # same read BEGIN performed, against the same script, so the two cannot disagree about what
     # counts as placed -- and it asks the ENGINE, because the registry is only a request.
 
-    # A restarted instance reports Running before it accepts connections, so opening the
-    # connection can throw for a few seconds after PROCESS. Retrying covers that, and with it
-    # every other throw this read can raise -- a host missing the service or the settings key
-    # spends the full minute before failing.
-    #
-    # Reading successfully is not the same as the engine being up. win_reboot returns at the
-    # logon prompt, before the auto-start services have finished, and the script reports a
-    # Start Pending instance as a clean read with placement_read false. The until condition
-    # therefore requires placement_read as well as success, so the retry covers a half-started
-    # engine rather than accepting its answer. `and` short-circuits, so a genuinely failed read
-    # never dereferences .result.
+    # A restarted instance reports Running before it accepts connections, so this can throw for a
+    # few seconds after PROCESS; retrying covers that, at the cost of a host genuinely missing the
+    # service spending the full minute before failing. Reading successfully is not the same as the
+    # engine being up -- win_reboot returns at the logon prompt, before auto-start services finish,
+    # and the script reports a Start Pending instance as a clean read with placement_read false. The
+    # until condition therefore requires placement_read as well as success, so the retry covers a
+    # half-started engine rather than accepting its answer. `and` short-circuits, so a genuinely
+    # failed read never dereferences .result.
 
     - name: 'END | Re-Read Where This Instance Creates Databases'
       register: '__wsus_placement_proof__'

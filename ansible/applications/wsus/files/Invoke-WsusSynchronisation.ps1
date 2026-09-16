@@ -37,11 +37,25 @@
     .PARAMETER ContentTimeoutSeconds
         How long to wait for the content download to finish after the metadata arrives.
 
+    .PARAMETER Mode
+        'wait' starts a synchronisation and does not return until the catalogue and the files
+        behind it are down, or a deadline passes. 'start' starts one and returns.
+
+        'start' exists because a first synchronisation against a full Microsoft mirror is measured
+        in WEEKS. A converge cannot hold a step open that long, and an estate on that path still
+        wants the work under way. What it buys is a server that is fetching; what it costs is that
+        nothing here can say the catalogue arrived, because it has not.
+
+        The in-flight stop below is done in BOTH modes. Starting underneath a running
+        synchronisation throws, and that is true whether or not this intends to wait for its own.
+
     .PARAMETER TimeoutSeconds
         How long to wait for the synchronisation itself to reach a terminal state.
 
     .OUTPUTS
-        One object carrying changed, check_mode, msg, needing_files, result and update_count.
+        One object carrying changed, check_mode, mode, msg, needing_files, result, started,
+        update_count and waited. 'started' is whether this run began a synchronisation; 'waited'
+        is whether it slept, in any mode -- polling an in-flight run to a stop counts.
 
         Deliberately NOT a downloaded byte count. GetContentDownloadProgress reports the updates
         currently DOWNLOADING, so by the time this has finished waiting it reads zero -- and a
@@ -104,7 +118,18 @@ Param (
   )]
   [ValidateRange(60, 21600)]
   [System.Int32]
-  $TimeoutSeconds
+  $TimeoutSeconds,
+
+  [Parameter(
+    DontShow = $False,
+    Mandatory = $False,
+    ParameterSetName = 'default',
+    ValueFromPipeline = $False,
+    ValueFromPipelineByPropertyName = $False
+  )]
+  [ValidateSet('wait', 'start')]
+  [System.String]
+  $Mode = 'wait'
 )
 #region ------ [ Script ] -------------------------------------------------------------------- #
 
@@ -246,6 +271,8 @@ $NeedsSync = ($Force -or (-not $Succeeded))
 
 #region ------ [ The catalogue ] ------------------------------------------------------------- #
 $Synchronised = $False
+$Waited = $False
+$Stopped = $False
 
 If ($NeedsSync -and $PSCmdlet.ShouldProcess($Server.Name, 'Synchronise from the upstream WSUS server')) {
   # A synchronisation already running is not this one, and starting underneath it throws. Waiting
@@ -257,12 +284,14 @@ If ($NeedsSync -and $PSCmdlet.ShouldProcess($Server.Name, 'Synchronise from the 
   # a full stop first, with the same deadline the synchronisation itself gets.
   If ([System.String]$Subscription.GetSynchronizationStatus() -ne 'NotProcessing') {
     $Subscription.StopSynchronization()
+    $Stopped = $True
 
     $StopDeadline = (Get-Date).AddSeconds($TimeoutSeconds)
     While (
       ((Get-Date) -lt $StopDeadline) -and
       ([System.String]$Subscription.GetSynchronizationStatus() -ne 'NotProcessing')
     ) {
+      $Waited = $True
       Start-Sleep -Seconds 10
     }
 
@@ -280,8 +309,30 @@ If ($NeedsSync -and $PSCmdlet.ShouldProcess($Server.Name, 'Synchronise from the 
   $Ansible.Changed = $True
   $Synchronised = $True
 
+  # START AND GO. Everything below this point reads a FINISHED synchronisation -- the terminal
+  # status, the last result, the counts, the files behind them -- and none of it is answerable
+  # about one still running. So this returns instead of reporting numbers it would have to invent.
+  If ($Mode -eq 'start') {
+    $StartedAfter = If ($Stopped) { ' after the previous one was stopped,' } Else { '' }
+    $Ansible.Result = @{
+      changed       = $True
+      check_mode    = [System.Boolean]$Ansible.CheckMode
+      mode          = 'start'
+      msg           = ('Synchronisation started{0} and not waited for. This server is fetching; ' +
+        'whether it arrives is not known here.') -f $StartedAfter
+      needing_files = -1
+      result        = 'NotWaited'
+      started       = $True
+      update_count  = -1
+      waited        = [System.Boolean]$Waited
+    }
+
+    Return
+  }
+
   $Deadline = (Get-Date).AddSeconds($TimeoutSeconds)
   Do {
+    $Waited = $True
     Start-Sleep -Seconds 10
   } While (
     ((Get-Date) -lt $Deadline) -and
@@ -342,10 +393,16 @@ If ($ServerErrors -gt 0) {
   )
 }
 
-If (($Synchronised -or ($NeedingFiles -gt 0)) -and $PSCmdlet.ShouldProcess($Server.Name, 'Wait for the update content to arrive')) {
+# start mode never waits for content, whatever the catalogue did: a server that already
+# synchronised and still has files outstanding is reported as such, not slept on. 'waited' in
+# the report means a sleep happened in this run, in any mode -- polling an in-flight run to a
+# stop before starting another is one.
+If (($Mode -eq 'wait') -and ($Synchronised -or ($NeedingFiles -gt 0)) -and
+  $PSCmdlet.ShouldProcess($Server.Name, 'Wait for the update content to arrive')) {
   $ContentDeadline = (Get-Date).AddSeconds($ContentTimeoutSeconds)
 
   While (((Get-Date) -lt $ContentDeadline) -and ($NeedingFiles -gt 0)) {
+    $Waited = $True
     Start-Sleep -Seconds 10
     $Status = $Server.GetStatus()
     $NeedingFiles = [System.Int32]$Status.UpdatesNeedingFilesCount
@@ -367,13 +424,19 @@ If (($Synchronised -or ($NeedingFiles -gt 0)) -and $PSCmdlet.ShouldProcess($Serv
 
 #endregion --- [ The bytes the catalogue points at ] ----------------------------------------- #
 
+# Reached by a wait-mode run, and by a start-mode run that had nothing to start: the last
+# synchronisation already succeeded, so no start and no wait happened, and the report says so
+# rather than claiming a mode the caller did not select.
 $Result = [PSCustomObject]@{
   changed       = [System.Boolean]$NeedsSync
   check_mode    = [System.Boolean]$Ansible.CheckMode
+  mode          = [System.String]$Mode
   msg           = 'synchronisation {0}, {1} updates, {2} still needing files' -f $LastResult, $Server.GetUpdateCount(), $NeedingFiles
   needing_files = [System.Int32]$NeedingFiles
   result        = [System.String]$LastResult
+  started       = [System.Boolean]$Synchronised
   update_count  = [System.Int32]$Server.GetUpdateCount()
+  waited        = [System.Boolean]$Waited
 }
 #endregion --- [ Main ] ---------------------------------------------------------------------- #
 #region ------ [ Output ] -------------------------------------------------------------------- #

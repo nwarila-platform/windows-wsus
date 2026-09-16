@@ -123,6 +123,10 @@ clobber, verified at the module source). These stay `quiet: true` with an action
 - Guard pieces carry a negative proof (deliberately-wrong input fails on the intended assert;
   sibling specs still pass)..
 
+- **RATIFIED (Director, 2026-09-12):** validate.yml guards only values the caller supplies
+  (declared empty or absent in defaults). Role-declared values are proved by two converges at
+  changed=0, never asserted about. Decision 61.
+
 ## 4c. Mutation safety
 
 - A piece that MUTATES a declared resource carries a **state-aware safety assert BEFORE
@@ -262,4 +266,5 @@ clobber, verified at the module source). These stay `quiet: true` with an action
   documentation of the `<role>:` dict shape.
 - Handler usage and service-restart conventions on Windows.
 - A Molecule (or equivalent) test story for Windows roles.
-- Secrets handling for Windows; this repository uses none.
+- Secrets handling for Windows: two, the domain-join and PKCS#12 passwords, both read by the play
+  through the framework `secret` lookup and never written to a file by a role.

@@ -65,10 +65,10 @@ durable live evidence. Both are waiting on a scope decision being written down, 
 
 One converge now places SUSDB on its own volume before anything can create it, installs the WSUS
 features, completes post-installation against the SQL instance, serves clients over TLS with a
-certificate delivered through the controller, scopes the host firewall to the estate and removes
-the wide-open rules WSUS opens for itself, reconciles the content store and its permissions,
-restricts the update languages, points the server at its upstream, and synchronises the catalogue
-and the files behind it.
+certificate delivered through the controller, scopes the host firewall by port and program and
+removes the wide-open rules WSUS opens for itself, reconciles the content store and its
+permissions, restricts the update languages, points the server at its upstream, and synchronises
+the catalogue and the files behind it.
 
 The lifecycle proves it rather than asserting it. Every run builds a second guest, joins it to the
 directory, and runs `wsus_client` against it. That client has no direct egress to 80 or 443 — its

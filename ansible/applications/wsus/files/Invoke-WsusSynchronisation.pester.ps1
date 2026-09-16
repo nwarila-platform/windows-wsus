@@ -82,7 +82,7 @@ BeforeAll {
 
     If ($global:FakeServerNull) { Return $Null }
 
-    $Server = [PSCustomObject]@{ Name = 'tcnaw-wsus01' }
+    $Server = [PSCustomObject]@{ Name = 'wsus01' }
 
     $Server | Add-Member -MemberType ScriptMethod -Name 'GetUpdateCount' -Value {
       Return $global:FakeUpdateCount
@@ -161,6 +161,7 @@ BeforeAll {
   $script:Invoke = { & $script:ScriptPath @script:Arguments }
   $script:InvokeForced = { & $script:ScriptPath @script:Arguments -Force $true }
   $script:InvokeWhatIf = { & $script:ScriptPath @script:Arguments -WhatIf }
+  $script:InvokeStart = { & $script:ScriptPath @script:Arguments -Mode 'start' }
 }
 
 Describe 'Invoke-WsusSynchronisation' {
@@ -400,4 +401,90 @@ Describe 'Invoke-WsusSynchronisation' {
       $global:Ansible.Result.changed | Should -BeTrue
     }
   }
+
+  Context 'Mode start begins a synchronisation and does not wait for it' {
+
+    It 'starts exactly one synchronisation, as wait mode does' {
+      $null = & $script:InvokeStart
+      $global:FakeStartCalls | Should -Be 1
+    }
+
+    It 'reports the host changed, because a started synchronisation is already writing' {
+      $null = & $script:InvokeStart
+      $global:Ansible.Result.changed | Should -BeTrue
+    }
+
+    It 'says plainly that it did not wait' {
+      $null = & $script:InvokeStart
+      $global:Ansible.Result.mode   | Should -Be 'start'
+      $global:Ansible.Result.waited | Should -BeFalse
+      $global:Ansible.Result.msg    | Should -BeLike '*not waited for*'
+    }
+
+    It 'reports counts as -1 rather than 0, because it measured nothing' {
+      $null = & $script:InvokeStart
+      $global:Ansible.Result.update_count  | Should -Be -1
+      $global:Ansible.Result.needing_files | Should -Be -1
+      $global:Ansible.Result.result        | Should -Be 'NotWaited'
+    }
+
+    It 'returns the same key set as wait mode, so a reader never has to guess which ran' {
+      $null = & $script:InvokeStart
+      $startKeys = ($global:Ansible.Result.Keys | Sort-Object) -join ','
+      $null = & $script:Invoke
+      $waitKeys = ($global:Ansible.Result.PSObject.Properties.Name | Sort-Object) -join ','
+      $startKeys | Should -Be $waitKeys
+    }
+
+    It 'wait mode still waits, and still reports what it measured' {
+      $null = & $script:Invoke
+      $global:Ansible.Result.mode   | Should -Be 'wait'
+      $global:Ansible.Result.waited | Should -BeTrue
+    }
+
+    It 'on a server that already synchronised, reports start mode with nothing started or waited' {
+      $global:FakeNeverSynced = $false
+      $global:FakeLastResult = 'Succeeded'
+      $null = & $script:InvokeStart
+      $global:FakeStartCalls        | Should -Be 0
+      $global:Ansible.Result.mode   | Should -Be 'start'
+      $global:Ansible.Result.started | Should -BeFalse
+      $global:Ansible.Result.waited  | Should -BeFalse
+      $global:Ansible.Result.changed | Should -BeFalse
+    }
+
+    It 'on an already-synchronised server with files still outstanding, start mode does not sleep' {
+      $global:FakeNeverSynced = $false
+      $global:FakeLastResult = 'Succeeded'
+      $global:FakeNeedingFiles = 3
+      $null = & $script:InvokeStart
+      $global:FakeSleeps            | Should -Be 0
+      $global:Ansible.Result.waited | Should -BeFalse
+      $global:Ansible.Result.mode   | Should -Be 'start'
+    }
+
+    It 'wait mode on an already-synchronised server with files outstanding sleeps and says so' {
+      $global:FakeNeverSynced = $false
+      $global:FakeLastResult = 'Succeeded'
+      $global:FakeNeedingFiles = 3
+      $null = & $script:Invoke
+      $global:FakeSleeps            | Should -BeGreaterThan 0
+      $global:Ansible.Result.waited | Should -BeTrue
+      $global:Ansible.Result.started | Should -BeFalse
+    }
+
+    It 'start mode that had to stop a previous run first says it waited for the stop' {
+      $global:FakeStatus = 'Running'
+      $null = & $script:InvokeStart
+      $global:FakeSleeps            | Should -BeGreaterThan 0
+      $global:Ansible.Result.waited | Should -BeTrue
+      $global:Ansible.Result.started | Should -BeTrue
+      $global:Ansible.Result.msg    | Should -BeLike '*previous one was stopped*'
+    }
+
+    It 'refuses a mode it does not implement' {
+      { & $script:ScriptPath @script:Arguments -Mode 'disabled' } | Should -Throw
+    }
+  }
+
 }
