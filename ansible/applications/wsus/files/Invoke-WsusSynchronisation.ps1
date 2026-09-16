@@ -53,7 +53,9 @@
         How long to wait for the synchronisation itself to reach a terminal state.
 
     .OUTPUTS
-        One object carrying changed, check_mode, msg, needing_files, result and update_count.
+        One object carrying changed, check_mode, mode, msg, needing_files, result, started,
+        update_count and waited. 'started' is whether this run began a synchronisation; 'waited'
+        is whether it slept, in any mode -- polling an in-flight run to a stop counts.
 
         Deliberately NOT a downloaded byte count. GetContentDownloadProgress reports the updates
         currently DOWNLOADING, so by the time this has finished waiting it reads zero -- and a
@@ -269,6 +271,7 @@ $NeedsSync = ($Force -or (-not $Succeeded))
 
 #region ------ [ The catalogue ] ------------------------------------------------------------- #
 $Synchronised = $False
+$Waited = $False
 
 If ($NeedsSync -and $PSCmdlet.ShouldProcess($Server.Name, 'Synchronise from the upstream WSUS server')) {
   # A synchronisation already running is not this one, and starting underneath it throws. Waiting
@@ -286,6 +289,7 @@ If ($NeedsSync -and $PSCmdlet.ShouldProcess($Server.Name, 'Synchronise from the 
       ((Get-Date) -lt $StopDeadline) -and
       ([System.String]$Subscription.GetSynchronizationStatus() -ne 'NotProcessing')
     ) {
+      $Waited = $True
       Start-Sleep -Seconds 10
     }
 
@@ -316,7 +320,7 @@ If ($NeedsSync -and $PSCmdlet.ShouldProcess($Server.Name, 'Synchronise from the 
       result        = 'NotWaited'
       started       = $True
       update_count  = -1
-      waited        = $False
+      waited        = [System.Boolean]$Waited
     }
 
     Return
@@ -324,6 +328,7 @@ If ($NeedsSync -and $PSCmdlet.ShouldProcess($Server.Name, 'Synchronise from the 
 
   $Deadline = (Get-Date).AddSeconds($TimeoutSeconds)
   Do {
+    $Waited = $True
     Start-Sleep -Seconds 10
   } While (
     ((Get-Date) -lt $Deadline) -and
@@ -384,13 +389,16 @@ If ($ServerErrors -gt 0) {
   )
 }
 
-# start mode never waits, not for the catalogue above and not for the files behind it: a server
-# that already synchronised and still has files outstanding is reported as such, not slept on.
+# start mode never waits for content, whatever the catalogue did: a server that already
+# synchronised and still has files outstanding is reported as such, not slept on. 'waited' in
+# the report means a sleep happened in this run, in any mode -- polling an in-flight run to a
+# stop before starting another is one.
 If (($Mode -eq 'wait') -and ($Synchronised -or ($NeedingFiles -gt 0)) -and
     $PSCmdlet.ShouldProcess($Server.Name, 'Wait for the update content to arrive')) {
   $ContentDeadline = (Get-Date).AddSeconds($ContentTimeoutSeconds)
 
   While (((Get-Date) -lt $ContentDeadline) -and ($NeedingFiles -gt 0)) {
+    $Waited = $True
     Start-Sleep -Seconds 10
     $Status = $Server.GetStatus()
     $NeedingFiles = [System.Int32]$Status.UpdatesNeedingFilesCount
@@ -424,7 +432,7 @@ $Result = [PSCustomObject]@{
   result        = [System.String]$LastResult
   started       = [System.Boolean]$Synchronised
   update_count  = [System.Int32]$Server.GetUpdateCount()
-  waited        = [System.Boolean]($Synchronised -and ($Mode -eq 'wait'))
+  waited        = [System.Boolean]$Waited
 }
 #endregion --- [ Main ] ---------------------------------------------------------------------- #
 #region ------ [ Output ] -------------------------------------------------------------------- #
