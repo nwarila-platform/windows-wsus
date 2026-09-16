@@ -319,7 +319,7 @@ If ($NeedsSync -and $PSCmdlet.ShouldProcess($Server.Name, 'Synchronise from the 
       check_mode    = [System.Boolean]$Ansible.CheckMode
       mode          = 'start'
       msg           = ('Synchronisation started{0} and not waited for. This server is fetching; ' +
-                       'whether it arrives is not known here.') -f $StartedAfter
+        'whether it arrives is not known here.') -f $StartedAfter
       needing_files = -1
       result        = 'NotWaited'
       started       = $True
@@ -398,7 +398,7 @@ If ($ServerErrors -gt 0) {
 # the report means a sleep happened in this run, in any mode -- polling an in-flight run to a
 # stop before starting another is one.
 If (($Mode -eq 'wait') -and ($Synchronised -or ($NeedingFiles -gt 0)) -and
-    $PSCmdlet.ShouldProcess($Server.Name, 'Wait for the update content to arrive')) {
+  $PSCmdlet.ShouldProcess($Server.Name, 'Wait for the update content to arrive')) {
   $ContentDeadline = (Get-Date).AddSeconds($ContentTimeoutSeconds)
 
   While (((Get-Date) -lt $ContentDeadline) -and ($NeedingFiles -gt 0)) {
