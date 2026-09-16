@@ -80,7 +80,8 @@
     # Three things are this environment's: the realm and join account, the OU a WSUS server is filed
     # under, and which address the host publishes in DNS. The VPC address, because the host is
     # multi-homed and would otherwise register its tunnel address -- VPC clients would then reach it
-    # the long way round. On-prem clients cannot resolve that until pfSense routes the AWS CIDR.
+    # the long way round. That on-prem clients cannot resolve it is a dev-estate gap, not a
+    # production one -- decision 57: production has no on-prem clients.
     - role: 'domain_member'
       vars:
         domain_member:

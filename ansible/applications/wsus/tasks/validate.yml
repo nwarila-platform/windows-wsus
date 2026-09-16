@@ -49,6 +49,7 @@
       # handed; this one holds the role's own merged configuration to a shape nothing upstream
       # can see, so it is not that class and does not travel with them.
       - (wsus_running.content.drive_letter | upper) != (wsus_running.db.drive_letter | upper)
+
 - name: 'VALIDATE | Require Usable Update Languages'
   when: (state | default('present') | string | lower | trim) == 'present'
   ansible.builtin.assert:
@@ -92,6 +93,7 @@
       - wsus_running.sync.mode in ['wait', 'start', 'disabled']
       - wsus_running.sync.timeout_seconds | default(0, true) | int >= 60
       - wsus_running.sync.content_timeout_seconds | default(0, true) | int >= 60
+
 - name: 'VALIDATE | Require A Usable TLS Declaration'
   vars:
     __host__: '^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*$'
