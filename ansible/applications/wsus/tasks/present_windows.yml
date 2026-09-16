@@ -687,12 +687,12 @@
     # measured, and the program Windows names in its own IIS rules. NOT scoped to a service, which
     # is a limit rather than an omission: no service owns a kernel-mode socket, so naming one would
     # match nothing and close the port to the clients the rule exists to admit; Windows' own IIS
-    # rules leave it unset for the same reason. NOT scoped to a network either, deliberately --
-    # which networks may reach this server is stated once, in the security group, and a second copy
-    # on the host is a second place to edit and a second place to be wrong. What that gives up is
-    # traffic arriving over the VPN tunnel, which a security group cannot see: it is decapsulated
-    # inside the guest past every group rule. Reaching the tunnel means having authenticated to it,
-    # so the tunnel is the boundary there rather than this rule. Written in the shape Windows writes
+    # rules leave it unset for the same reason. NOT scoped to a network, by decision 60. For
+    # traffic that reaches the ENI the security group states the networks once; for traffic that
+    # arrives inside the VPN tunnel NOTHING now scopes it -- the group sees only the UDP envelope
+    # and the payload is decapsulated inside the guest. Accepted because production is AWS-only
+    # with no tunnel (decisions 57, 58); in this dev estate any authenticated tunnel source can
+    # reach 8530 and 8531. Written in the shape Windows writes
     # its own -- '<Product> (<PROTOCOL> Traffic-In)', a group, a description ending '[TCP <port>]'
     # -- but saying WSUS things, so an administrator learns why the port is open. ADDED BEFORE THE
     # VENDOR'S ARE REMOVED: Windows evaluates every matching allow, so the wider rule wins during
@@ -847,7 +847,7 @@
         parameters:
           Replica: "{{ wsus_running.sync.replica }}"
           UpstreamUrl: >-
-            {{ __upstream_scheme__ }}://{{ wsus_running.sync.upstream_server
+            {{ __upstream_scheme__ }}://{{ wsus_running.sync.upstream_server | trim
             }}:{{ wsus_running.sync.upstream_port }}
         script: "{{ lookup('ansible.builtin.file', 'Set-WsusUpstream.ps1') }}"
 

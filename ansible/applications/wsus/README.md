@@ -165,12 +165,12 @@ service owns a kernel-mode socket, so naming one would match nothing and close t
 clients the rule exists to admit. Windows' own built-in IIS rules leave it unset for the same
 reason.
 
-They are **not** scoped to a network either, and that is deliberate: which networks may reach this
-server is stated once, in the security group, and a second copy on the host would be a second
-place to edit and a second place to be wrong. What that gives up is traffic arriving over a VPN
-tunnel, which a security group cannot see — it is decapsulated inside the guest past every group
-rule. Reaching the tunnel means having authenticated to it, so the tunnel is the boundary there
-rather than this rule.
+They are **not** scoped to a network, by decision 60. For traffic that reaches the ENI, the
+security group states the admitted networks once. For traffic that arrives inside the VPN tunnel,
+**nothing now scopes it** — the group sees only the UDP envelope, and the payload is decapsulated
+inside the guest past every group rule. That is accepted because production is AWS-only and has no
+tunnel (decisions 57, 58). In this development estate it means any authenticated tunnel source
+can reach 8530 and 8531; the earlier rules admitted only the two `/16`s there.
 
 The rules are written in the shape Windows writes its own — `<Product> (<PROTOCOL> Traffic-In)`, a
 group, and a description ending `[TCP <port>]` — but saying WSUS things rather than IIS things, so

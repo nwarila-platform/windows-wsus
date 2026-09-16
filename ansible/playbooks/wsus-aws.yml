@@ -234,7 +234,9 @@
                 ~ 'svc-domainjoin-password.txt',
                 '07493ed779c2962bff0b5e19cfa00b8cdb95defcf477f6b5bac36ddef55087ae') }}
           computer_ou: 'OU=Domain Servers,DC=tcn,DC=trinitytechnicalservices,DC=com'
-          # Its VPC address, as the server. Declared because the framework refuses an empty value.
+          # Its VPC address, as the server. Optional at this pin -- unset publishes the
+          # default-route address -- and declared because on a multi-homed guest that would be
+          # the tunnel.
           registration_address: "{{ aws_private_ip_address }}"
 
     #endregion --- [ Roles: Domain Member ] --------------------------------------------------- #

@@ -51,15 +51,21 @@
       - (wsus_running.content.drive_letter | upper) != (wsus_running.db.drive_letter | upper)
 
 - name: 'VALIDATE | Require Usable Update Languages'
+  vars:
+    __languages__: >-
+      {{ wsus_running.updates.languages | default([], true) | map('string') | map('trim') | list }}
   when: (state | default('present') | string | lower | trim) == 'present'
   ansible.builtin.assert:
     fail_msg: >-
       Refusing to configure: wsus.updates.languages must name at least one update language, as
-      the short codes WSUS uses -- ['en'], ['en', 'fr']. It is declared empty by the role because
+      the short codes WSUS uses -- ['en'], ['en', 'fr'], 'zh-cn'. It is declared empty by the role because
       which languages an estate speaks is the estate's to say. See meta/main.yml.
     quiet: true
     that:
-      - wsus_running.updates.languages | default([], true) | length > 0
+      - __languages__ | length > 0
+      - >-
+        __languages__ | select('match', '^[a-z]{2}(-[a-z]{2,4})?$') | list | length
+        == __languages__ | length
 
 - name: 'VALIDATE | Require A Usable Upstream Source'
   vars:

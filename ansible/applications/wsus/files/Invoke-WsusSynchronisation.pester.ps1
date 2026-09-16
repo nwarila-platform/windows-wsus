@@ -442,6 +442,17 @@ Describe 'Invoke-WsusSynchronisation' {
       $global:Ansible.Result.waited | Should -BeTrue
     }
 
+    It 'on a server that already synchronised, reports start mode with nothing started or waited' {
+      $global:FakeNeverSynced = $false
+      $global:FakeLastResult = 'Succeeded'
+      $null = & $script:InvokeStart
+      $global:FakeStartCalls        | Should -Be 0
+      $global:Ansible.Result.mode   | Should -Be 'start'
+      $global:Ansible.Result.started | Should -BeFalse
+      $global:Ansible.Result.waited  | Should -BeFalse
+      $global:Ansible.Result.changed | Should -BeFalse
+    }
+
     It 'refuses a mode it does not implement' {
       { & $script:ScriptPath @script:Arguments -Mode 'disabled' } | Should -Throw
     }

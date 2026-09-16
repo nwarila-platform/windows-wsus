@@ -409,16 +409,19 @@ If (($Synchronised -or ($NeedingFiles -gt 0)) -and $PSCmdlet.ShouldProcess($Serv
 
 #endregion --- [ The bytes the catalogue points at ] ----------------------------------------- #
 
+# Reached by a wait-mode run, and by a start-mode run that had nothing to start: the last
+# synchronisation already succeeded, so no start and no wait happened, and the report says so
+# rather than claiming a mode the caller did not select.
 $Result = [PSCustomObject]@{
   changed       = [System.Boolean]$NeedsSync
   check_mode    = [System.Boolean]$Ansible.CheckMode
-  mode          = 'wait'
+  mode          = [System.String]$Mode
   msg           = 'synchronisation {0}, {1} updates, {2} still needing files' -f $LastResult, $Server.GetUpdateCount(), $NeedingFiles
   needing_files = [System.Int32]$NeedingFiles
   result        = [System.String]$LastResult
   started       = [System.Boolean]$Synchronised
   update_count  = [System.Int32]$Server.GetUpdateCount()
-  waited        = $True
+  waited        = [System.Boolean]($Synchronised -and ($Mode -eq 'wait'))
 }
 #endregion --- [ Main ] ---------------------------------------------------------------------- #
 #region ------ [ Output ] -------------------------------------------------------------------- #

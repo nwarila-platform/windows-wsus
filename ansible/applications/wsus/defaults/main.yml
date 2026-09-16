@@ -84,9 +84,9 @@ wsus_defaults:
 
   # WSUS serves metadata over TLS and update payloads over plain HTTP, on adjacent ports. The HTTPS
   # port is wsus.tls.port and is NOT repeated here: one server has one HTTPS port, and two
-  # declarations of it would be two places to disagree. WHICH networks may reach either port is not
-  # stated in this role at all -- that belongs to the security group, and a second copy on the host
-  # would be a second place to edit.
+  # declarations of it would be two places to disagree. WHICH networks may reach either port is
+  # not stated in this role at all: the security group states it for ENI traffic, and nothing
+  # scopes tunnel traffic -- accepted by decision 60 because production has no tunnel.
   firewall:
     http_port: 8530
 
