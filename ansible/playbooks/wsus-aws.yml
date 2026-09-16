@@ -60,8 +60,9 @@
   roles:
 
     #region ------ [ Roles: Host Readiness ] -------------------------------------------------- #
-    # Declared, not detected: a failed probe reads as "no platform" and skips the EC2Launch wait
-    # that the rename-and-reboot below depends on.
+    # Declared, not detected: the role skips its vendor probe when the platform is named, and a
+    # probe that errors fails the run rather than reading as "no platform". Naming AWS states the
+    # precondition the rename-and-reboot below depends on -- the EC2Launch wait -- in the play.
     - role: 'host_readiness'
       vars: { host_readiness_platform: 'aws' }
 
