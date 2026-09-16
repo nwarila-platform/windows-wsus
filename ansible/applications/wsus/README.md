@@ -5,9 +5,9 @@ over TLS. In one converge it pins the instance's default database directories an
 they take effect, installs the WSUS features, adopts a preserved `SUSDB` when the volume already
 carries one, completes post-installation against the instance, brings up the services that answer
 for it, delivers and installs the certificate the listener presents, requires SSL on the five
-vendor-named virtual directories, scopes the host firewall to the estate and removes the
-wide-open rules WSUS opened for itself, reconciles where update content is kept and who may read
-it, restricts the languages the server will accept, points the server at its upstream, and
+vendor-named virtual directories, scopes the host firewall to the ports and program and removes
+the wide-open rules WSUS opened for itself, reconciles where update content is kept and who may
+read it, restricts the languages the server will accept, points the server at its upstream, and
 synchronises the catalogue and the files behind it.
 
 Everything that arrives from S3 moves through the controller: one PKCS#12 is fetched and
@@ -44,18 +44,19 @@ else.
 
 Deployment-specific inputs carry an account id, a certificate identity or a network topology, and
 they change with every site, so the playbook states them where a reader can see them rather than
-defaulting them in the role. `meta/main.yml` names all fifteen, and gives the reason where the
+defaulting them in the role. `meta/main.yml` names all sixteen, and gives the reason where the
 answer is not obvious from the key. `tasks/validate.yml` enforces them on the controller before
 the role's first mutation — the loader gathers facts from the guest first, so this is the gate in
 front of every change, not in front of every contact. The six certificate leaves are required
-when `wsus.tls.enabled` is true, which is the shipped default; the other nine are required
+when `wsus.tls.enabled` is true, which is the shipped default; the other ten are required
 always.
 
-Two drive letters (database and content, refused if equal); six keys describing the upstream —
+Two drive letters (database and content, refused if equal); seven keys describing the upstream —
 the server as a DNS name or an IPv4 literal, its port, whether the link is encrypted, whether this
-server inherits its approvals, and the two synchronisation timeouts; the networks the host
-firewall admits; and six keys describing the certificate — bucket, DNS name, the object key of the
-PKCS#12, its digest, the password that unlocks it, and the thumbprint the listener is pinned to.
+server inherits its approvals, the synchronisation mode, and the two timeouts; the update
+languages the estate accepts; and six keys describing the certificate — bucket, DNS name, the
+object key of the PKCS#12, its digest, the password that unlocks it, and the thumbprint the
+listener is pinned to.
 
 The upstream's endpoint is declared in three parts because that is how a deployer thinks about it,
 and the role composes them into a single URL before handing it to the actor. That is not
@@ -78,16 +79,17 @@ find.
 
 ## Configuration
 
-Values a deployer can meaningfully choose live in `defaults/main.yml`: the layout inside the
-volumes the role is given, the update languages the estate will accept, the upstream link's port
-and transport, the synchronisation timeouts, the HTTP port, and the TLS port, site and secured
-paths.
+`defaults/main.yml` carries only what is the role's own shape: the layout inside the volumes it
+is given, the HTTP port, and the TLS port, site name and secured paths. Everything an estate
+decides — the upstream and how to synchronise from it, the languages it accepts, the certificate
+it presents — is declared empty there and published by the play, so nothing environment-specific
+ever lives in the role.
 
-What does **not** live there is constants wearing a default's clothes. The features WSUS is made
-of, the flags its post-installation writes, the services that answer for it, the registry keys
-Windows publishes and the default SQL instance are fixed by the product, not by a site, and are
-written where they are used. The tell is `tasks/validate.yml`: a key it has to pin to one exact
-value was never configuration, and every such key has been inlined rather than defended.
+What does **not** live in defaults at all is constants wearing a default's clothes. The features
+WSUS is made of, the flags its post-installation writes, the services that answer for it and the
+default SQL instance are fixed by the product, not by a site, and are written where they are used.
+`tasks/validate.yml` guards only values the caller supplies; anything the role declares itself is
+proved by two converges at `changed=0`, not by asserting about it.
 
 ## Why the order is what it is
 
@@ -132,8 +134,9 @@ role that also wrote the root store would be a second owner of a decision the di
 makes.
 
 In this development estate that delivery is a **separate temporary policy** standing in for a
-certificate authority that does not exist yet, and it has been measured not reaching a client —
-the POC client had to be trusted by hand. Production's policy is recorded as delivering it. Read
+certificate authority that does not exist yet. Measured reaching the POC client on 2026-09-11
+through the `EnterpriseCertificates` hive — the earlier hand-install was needed only because the
+client role did not look in that hive. Production's policy is recorded as delivering it. Read
 the dependency below with that in mind.
 
 That leaves an ordering dependency worth stating plainly. Measured on a live Server 2025 host, a
@@ -150,9 +153,10 @@ guest, so the one that cannot be stranded is removed first.
 
 Measured on a live server, WSUS opens two inbound rules of its own at post-installation — both
 named `WSUS`, TCP 8530 and 8531, with program `Any`, service `Any` and remote address **`Any`**.
-That is the entire internet admitted to the update service. The role replaces them with two scoped
-rules and then removes the vendor's, in that order, because Windows evaluates every matching allow
-and the overlap keeps the service answering throughout.
+The role replaces them with two rules that name the ports and the program, and then removes the
+vendor's, in that order, because Windows evaluates every matching allow and the overlap keeps the
+service answering throughout. Remote address stays `Any` on the host: which networks may reach the
+ports is the security group's to say.
 
 The replacements are scoped two ways: to the two ports WSUS serves, and to program `System`,
 because the listener is HTTP.SYS in kernel mode and the sockets belong to PID 4 rather than to
@@ -162,11 +166,11 @@ clients the rule exists to admit. Windows' own built-in IIS rules leave it unset
 reason.
 
 They are **not** scoped to a network either, and that is deliberate: which networks may reach this
-server is stated once, in the security group, and a second copy on the host would be a second place
-to edit and a second place to be wrong. What that gives up is traffic arriving over a VPN tunnel,
-which a security group cannot see — it is decapsulated inside the guest past every group rule.
-Reaching the tunnel means having authenticated to it, so the tunnel is the boundary there rather
-than this rule.
+server is stated once, in the security group, and a second copy on the host would be a second
+place to edit and a second place to be wrong. What that gives up is traffic arriving over a VPN
+tunnel, which a security group cannot see — it is decapsulated inside the guest past every group
+rule. Reaching the tunnel means having authenticated to it, so the tunnel is the boundary there
+rather than this rule.
 
 The rules are written in the shape Windows writes its own — `<Product> (<PROTOCOL> Traffic-In)`, a
 group, and a description ending `[TCP <port>]` — but saying WSUS things rather than IIS things, so

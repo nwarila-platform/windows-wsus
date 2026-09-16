@@ -147,8 +147,9 @@
             languages: ['en']
           sync:
             # Catalogue wait then content wait, sequential in one CI step. Worst case is three waits
-            # -- an in-flight sync is stopped first -- so 75 minutes is the ceiling this budget
-            # allows.
+            # -- an in-flight sync is stopped first -- so 75 minutes is the ceiling and 45 the
+            # ordinary path. Generous for this upstream, measured at 66 MB across one approved
+            # update; sized for the step that also builds a second Windows guest.
             content_timeout_seconds: 900
             timeout_seconds: 1800
 

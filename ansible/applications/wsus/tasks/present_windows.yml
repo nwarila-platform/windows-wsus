@@ -466,21 +466,22 @@
     # FIRST of the regions that talk to the WSUS API, and the position is load-bearing: once
     # wsusutil records UsingSSL=1 every later bare Get-WsusServer dials this machine over HTTPS and
     # validates what it is presented. Running it first also keeps both converges on one transport,
-    # where running it last would have run one on HTTP and only run two on the path the estate
-    # uses. Everything it needs -- the WSUS site, the Setup key, the services -- exists by here.
-    # TRUSTING that certificate is NOT this role's job: a directory delivers its root to every
-    # domain member as a production CA would, and a role writing the root store would be a second
-    # owner of that decision. This role loads the machine store and stops. That is a real ordering
-    # dependency, not a tidy separation -- measured on a live Server 2025 host, a PKCS#12 imported
-    # into LocalMachine\My alone lands in no other store and chains to UntrustedRoot, so a server
-    # whose policy has not delivered the root fails its first API read after UsingSSL=1. In
-    # development that policy was measured NOT delivering it; the POC client had to be trusted by
-    # hand. Delivery is controller-side because the guest's only egress rule is the VPN tunnel
-    # (measured in terraform/aws.tfvars) and it has no route to S3 at all. ONE object is fetched,
-    # the PKCS#12, and the password arrives already resolved through the framework secret lookup --
-    # never written to either side, so there is no password file to stage or remove. Wrapped in its
-    # own block so the staging directories go on the way out whether this converged, refused or
-    # threw: a PFX left behind is a private key left on disk.
+    # where running it last would have run one on HTTP and only run two on the path the estate uses.
+    # Everything it needs -- the WSUS site, the Setup key, the services -- exists by here. TRUSTING
+    # that certificate is NOT this role's job: a directory delivers its root to every domain member
+    # as a production CA would, and a role writing the root store would be a second owner of that
+    # decision. This role loads the machine store and stops. That is a real ordering dependency, not
+    # a tidy separation -- measured on a live Server 2025 host, a PKCS#12 imported into
+    # LocalMachine\My alone lands in no other store and chains to UntrustedRoot, so a server whose
+    # policy has not delivered the root fails its first API read after UsingSSL=1. In development it
+    # was measured reaching the POC client through the EnterpriseCertificates hive on 2026-09-11 --
+    # and the client role refused anyway, because it did not look there, which b5431ee fixed.
+    # Delivery is controller-side because the guest's only egress rule is the VPN tunnel (measured
+    # in terraform/aws.tfvars) and it has no route to S3 at all. ONE object is fetched, the PKCS#12,
+    # and the password arrives already resolved through the framework secret lookup -- never written
+    # to either side, so there is no password file to stage or remove. Wrapped in its own block so
+    # the staging directories go on the way out whether this converged, refused or threw: a PFX left
+    # behind is a private key left on disk.
 
     - name: 'PROCESS | Deliver And Install The WSUS TLS Certificate'
       vars:
@@ -680,20 +681,20 @@
 
     #region ------ [ Process: Admit Clients To The Update Service ] -------------------------- #
     # WSUS opens two rules of its own at post-installation. Measured: both named 'WSUS', inbound,
-    # TCP 8530 and 8531, program Any, service Any -- the vendor's are replaced by rules that say
-    # which ports and which program. SCOPED TO PROGRAM System, because the listener is HTTP.SYS in
-    # kernel mode and the sockets belong to PID 4 rather than w3wp.exe -- measured, and the program
-    # Windows names in its own IIS rules. NOT scoped to a service, which is a limit rather than an
-    # omission: no service owns a kernel-mode socket, so naming one would match nothing and close
-    # the port to the clients the rule exists to admit; Windows' own IIS rules leave it unset for
-    # the same reason. NOT scoped to a network either, deliberately -- which networks may reach
-    # this server is stated once, in the security group, and a second copy on the host is a second
-    # place to edit and a second place to be wrong. What that gives up is traffic arriving over the
-    # VPN tunnel, which a security group cannot see: it is decapsulated inside the guest past every
-    # group rule. Reaching the tunnel means having authenticated to it, so the tunnel is the
-    # boundary there rather than this rule. Written in the shape Windows writes its own --
-    # '<Product> (<PROTOCOL> Traffic-In)', a group, a description ending '[TCP <port>]' -- but
-    # saying WSUS things, so an administrator learns why the port is open. ADDED BEFORE THE
+    # TCP 8530 and 8531, program Any, service Any, remote address ANY -- the vendor's are replaced
+    # by rules that say which ports and which program. SCOPED TO PROGRAM System, because the
+    # listener is HTTP.SYS in kernel mode and the sockets belong to PID 4 rather than w3wp.exe --
+    # measured, and the program Windows names in its own IIS rules. NOT scoped to a service, which
+    # is a limit rather than an omission: no service owns a kernel-mode socket, so naming one would
+    # match nothing and close the port to the clients the rule exists to admit; Windows' own IIS
+    # rules leave it unset for the same reason. NOT scoped to a network either, deliberately --
+    # which networks may reach this server is stated once, in the security group, and a second copy
+    # on the host is a second place to edit and a second place to be wrong. What that gives up is
+    # traffic arriving over the VPN tunnel, which a security group cannot see: it is decapsulated
+    # inside the guest past every group rule. Reaching the tunnel means having authenticated to it,
+    # so the tunnel is the boundary there rather than this rule. Written in the shape Windows writes
+    # its own -- '<Product> (<PROTOCOL> Traffic-In)', a group, a description ending '[TCP <port>]'
+    # -- but saying WSUS things, so an administrator learns why the port is open. ADDED BEFORE THE
     # VENDOR'S ARE REMOVED: Windows evaluates every matching allow, so the wider rule wins during
     # the overlap and the service never stops answering.
 

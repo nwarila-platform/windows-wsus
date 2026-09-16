@@ -123,6 +123,10 @@ clobber, verified at the module source). These stay `quiet: true` with an action
 - Guard pieces carry a negative proof (deliberately-wrong input fails on the intended assert;
   sibling specs still pass)..
 
+- **RATIFIED (Director, 2026-09-12):** validate.yml guards only values the caller supplies
+  (declared empty or absent in defaults). Role-declared values are proved by two converges at
+  changed=0, never asserted about. Decision 61.
+
 ## 4c. Mutation safety
 
 - A piece that MUTATES a declared resource carries a **state-aware safety assert BEFORE

@@ -63,10 +63,14 @@ loud; that way is silent, so it is the one worth catching.
 Before asking for anything, the role makes policy current with `gpupdate` (without `/force`, which
 would reapply every policy rather than refresh what changed), then reads four values and asserts
 on them: `WUServer` matches the expected URL, `UseWUServer` is 1, and the anchor thumbprint is
-present in **either** the Group Policy root store or the machine root store. Both are checked
-because they are different mechanisms — a policy deployment lands under
-`Policies\Microsoft\SystemCertificates` and a locally installed certificate under
-`Microsoft\SystemCertificates` — and Windows honours either.
+present in **any** of the three machine root hives. Three are checked because Windows fills a
+different one per delivery mechanism and honours all of them — a Group Policy deployment lands
+under `Policies\Microsoft\SystemCertificates`, a local install under
+`Microsoft\SystemCertificates`, and a root published to the directory under
+`Microsoft\EnterpriseCertificates`. The third is what a real certificate authority uses, and it
+was
+the one missing until 2026-09-11, when a client that trusted the certificate perfectly was
+refused.
 
 The WSUS server presents a self-signed certificate, so a client that cannot chain it fails every
 scan with a transport error naming TLS and never mentioning WSUS. The anchor check turns that into

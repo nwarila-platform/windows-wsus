@@ -90,6 +90,7 @@ wsus_defaults:
   firewall:
     http_port: 8530
 
+  #endregion --- [ Who may reach this server ] ----------------------------------------------- #
 
   #region ------ [ Client-facing TLS ] ------------------------------------------------------- #
 
@@ -104,7 +105,8 @@ wsus_defaults:
   # member as a production CA would -- measured on a live Server 2025 host, a PKCS#12 imported into
   # LocalMachine\My alone lands in no other store and chains to UntrustedRoot, so holding a
   # certificate is not trusting it. In THIS estate that delivery is a temporary policy pending a
-  # real CA, measured not reaching a client, and a server it has not reached cannot read its own
+  # real CA; it reached the POC client on 2026-09-11 via the EnterpriseCertificates hive, and a
+  # server it has not reached cannot read its own
   # WSUS API once TLS is on. The password is not an object either: it arrives resolved through the
   # framework's secret lookup. The digest is checked on the CONTROLLER, because the target holds no
   # S3 credential and no route to S3 at all.
