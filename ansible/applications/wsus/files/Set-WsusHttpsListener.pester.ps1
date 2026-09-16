@@ -31,8 +31,8 @@
 
 BeforeAll {
   $script:ScriptPath = Join-Path -Path $PSScriptRoot -ChildPath 'Set-WsusHttpsListener.ps1'
-  $script:Pinned = '8760E9DA2B79D7FCFB5C8DADD72628649029B348'
-  $script:Dns = 'tcnaw-wsus01.tcn.trinitytechnicalservices.com'
+  $script:Pinned = 'A1B2C3D4E5F60718293A4B5C6D7E8F9012345678'
+  $script:Dns = 'wsus01.example.com'
   $script:Site = 'WSUS Administration'
   $script:Vdirs = @(
     'ApiRemoting30'

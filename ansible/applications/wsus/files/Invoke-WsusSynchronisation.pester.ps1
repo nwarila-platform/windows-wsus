@@ -82,7 +82,7 @@ BeforeAll {
 
     If ($global:FakeServerNull) { Return $Null }
 
-    $Server = [PSCustomObject]@{ Name = 'tcnaw-wsus01' }
+    $Server = [PSCustomObject]@{ Name = 'wsus01' }
 
     $Server | Add-Member -MemberType ScriptMethod -Name 'GetUpdateCount' -Value {
       Return $global:FakeUpdateCount

@@ -66,10 +66,10 @@ BeforeAll {
   }
 
   $script:Invoke = {
-    & $script:ScriptPath -UpstreamUrl 'http://10.69.112.6:8530' -Replica $true
+    & $script:ScriptPath -UpstreamUrl 'http://192.0.2.6:8530' -Replica $true
   }
   $script:InvokeWhatIf = {
-    & $script:ScriptPath -UpstreamUrl 'http://10.69.112.6:8530' -Replica $true -WhatIf
+    & $script:ScriptPath -UpstreamUrl 'http://192.0.2.6:8530' -Replica $true -WhatIf
   }
 }
 
@@ -96,7 +96,7 @@ Describe 'Set-WsusUpstream' {
       $null = & $script:Invoke
 
       $global:FakeSyncFromMU | Should -BeFalse
-      $global:FakeUpstream | Should -Be '10.69.112.6'
+      $global:FakeUpstream | Should -Be '192.0.2.6'
       $global:Ansible.Result.changed | Should -BeTrue
     }
 
@@ -110,7 +110,7 @@ Describe 'Set-WsusUpstream' {
 
     It 'writes nothing when all five already match' {
       $global:FakeSyncFromMU = $false
-      $global:FakeUpstream = '10.69.112.6'
+      $global:FakeUpstream = '192.0.2.6'
       $global:FakeReplica = $true
 
       $null = & $script:Invoke
@@ -123,7 +123,7 @@ Describe 'Set-WsusUpstream' {
     # recorded and ignored -- the exact half-configured state that looks correct in the console.
     It 'still writes when the name matches but Microsoft Update is still the source' {
       $global:FakeSyncFromMU = $true
-      $global:FakeUpstream = '10.69.112.6'
+      $global:FakeUpstream = '192.0.2.6'
       $global:FakeReplica = $true
 
       $null = & $script:Invoke
@@ -133,7 +133,7 @@ Describe 'Set-WsusUpstream' {
 
     It 'writes when only the replica flag differs' {
       $global:FakeSyncFromMU = $false
-      $global:FakeUpstream = '10.69.112.6'
+      $global:FakeUpstream = '192.0.2.6'
       $global:FakeReplica = $false
 
       $null = & $script:Invoke
@@ -147,18 +147,18 @@ Describe 'Set-WsusUpstream' {
     # only the field itself can notice, and re-pointing an existing downstream is the common case.
     It 'writes when only the upstream name differs' {
       $global:FakeSyncFromMU = $false
-      $global:FakeUpstream = '10.69.112.9'
+      $global:FakeUpstream = '192.0.2.9'
       $global:FakeReplica = $true
 
       $null = & $script:Invoke
 
       $global:FakeSaveCalls | Should -Be 1
-      $global:FakeUpstream | Should -Be '10.69.112.6'
+      $global:FakeUpstream | Should -Be '192.0.2.6'
     }
 
     It 'writes when only the upstream port differs' {
       $global:FakeSyncFromMU = $false
-      $global:FakeUpstream = '10.69.112.6'
+      $global:FakeUpstream = '192.0.2.6'
       $global:FakePort = 8531
       $global:FakeReplica = $true
 
@@ -170,7 +170,7 @@ Describe 'Set-WsusUpstream' {
 
     It 'writes when only the upstream SSL flag differs' {
       $global:FakeSyncFromMU = $false
-      $global:FakeUpstream = '10.69.112.6'
+      $global:FakeUpstream = '192.0.2.6'
       $global:FakeSsl = $true
       $global:FakeReplica = $true
 
@@ -263,8 +263,8 @@ Describe 'Set-WsusUpstream' {
 
     It 'tolerates a trailing slash' {
       $global:FakeSyncFromMU = $true
-      & $script:ScriptPath -UpstreamUrl 'http://10.69.112.6:8530/' -Replica $true
-      $global:FakeUpstream | Should -Be '10.69.112.6'
+      & $script:ScriptPath -UpstreamUrl 'http://192.0.2.6:8530/' -Replica $true
+      $global:FakeUpstream | Should -Be '192.0.2.6'
       $global:FakePort     | Should -Be 8530
     }
 
@@ -303,7 +303,7 @@ Describe 'Set-WsusUpstream' {
     }
 
     It 'refuses a bare host and port, which is not an absolute URL' {
-      { & $script:ScriptPath -UpstreamUrl '10.69.112.6:8530' -Replica $true } |
+      { & $script:ScriptPath -UpstreamUrl '192.0.2.6:8530' -Replica $true } |
         Should -Throw -ExpectedMessage '*not an absolute URL*'
     }
 
