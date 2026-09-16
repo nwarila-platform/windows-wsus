@@ -25,17 +25,13 @@
     __client__: "{{ wsus_client_running }}"
     __policy_root__: 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate'
     __policy_au__: 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU'
-    # THREE hives, because Windows fills a different one depending on how the anchor arrived, and
-    # it honours all three. Measured on this deployment's own client, 2026-09-11.
-    #
-    #   Policies\...\SystemCertificates    a Group Policy certificate deployment
-    #   Microsoft\SystemCertificates       a certificate installed on the machine itself
-    #   Microsoft\EnterpriseCertificates   a root PUBLISHED TO THE DIRECTORY and pulled from it
-    #
-    # The third was missing and cost a converge. It is the one a real certificate authority uses:
-    # publish the root to AD, every member pulls it. The client trusted the certificate perfectly
-    # -- Cert:\LocalMachine\Root held it -- and this role refused anyway, because it was looking
-    # in the two hives an enterprise root never lands in.
+    # THREE hives, because Windows fills a different one depending on how the anchor arrived and
+    # honours all three: Policies\SystemCertificates for a Group Policy deployment,
+    # Microsoft\SystemCertificates for a local install, Microsoft\EnterpriseCertificates for a root
+    # published to the directory. The third was missing and cost a converge -- measured on this
+    # deployment's own client, 2026-09-11, the machine trusted the certificate perfectly and this
+    # role refused anyway, because an enterprise root never lands in the other two. It is also the
+    # hive a real certificate authority uses: publish the root to AD, every member pulls it.
     __anchor_policy__: 'HKLM:\SOFTWARE\Policies\Microsoft\SystemCertificates\Root\Certificates'
     __anchor_machine__: 'HKLM:\SOFTWARE\Microsoft\SystemCertificates\Root\Certificates'
     __anchor_enterprise__: 'HKLM:\SOFTWARE\Microsoft\EnterpriseCertificates\Root\Certificates'
@@ -44,19 +40,12 @@
   block:
 
     #region ------ [ Process: Make Group Policy Current Before Reading It ] ------------------- #
-    # A machine that joined the domain minutes ago has had one policy application, at boot, and a
-    # Group Policy object edited since then has not reached it. A refresh removes that race, so
-    # what the next task reads is what the domain currently says rather than what it said when
-    # this machine started.
-    #
-    # Deliberately NOT /force. The default invocation applies only settings that have CHANGED,
-    # which on a converged machine is none of them; /force reapplies every setting on every
-    # converge, which is a repeated write dressed up as a read. The race this closes is a policy
-    # the machine has not seen yet, and the default closes exactly that.
-    #
-    # changed_when false is then honest rather than a suppression: this task itself changes
-    # nothing. If the domain has something new to apply, Group Policy applies it, and that is
-    # Group Policy's change to report, not this role's to claim.
+    # A machine that joined minutes ago has had one policy application, at boot, and anything edited
+    # since has not reached it. A refresh removes that race so the next task reads what the domain
+    # currently says. Deliberately NOT /force: the default applies only settings that CHANGED, which
+    # on a converged machine is none, where /force reapplies everything every converge -- a repeated
+    # write dressed up as a read. changed_when false is then honest rather than a suppression, since
+    # anything Group Policy applies is Group Policy's change to report, not this role's to claim.
 
     - name: 'PROCESS | Make Group Policy Current Before Reading It'
       changed_when: false
@@ -143,19 +132,14 @@
     #endregion --- [ Process: Refuse A Machine Nothing Told About WSUS ] ---------------------- #
 
     #region ------ [ Process: Take What WSUS Offers ] ----------------------------------------- #
-    # win_updates rather than the update agent's own COM interface, and the reason is not
-    # convenience: that interface refuses to INSTALL from a remote session, so a script driven over
-    # this connection could search and download and then fail at the one step that matters. The
-    # module runs the work through a scheduled task on the machine itself, which is the supported
-    # way around that.
-    #
-    # managed_server, explicitly. No server name is passed here and none could be: it tells the
-    # agent to use the service Group Policy configured it with, where the default would let the
-    # agent decide for itself. Naming the right server is the refusal above, which proves WUServer
-    # is the URL the caller expects before anything asks the agent for anything.
-    #
-    # Naturally idempotent, without anything here making it so: a second run finds nothing left to
-    # install and reports no change, because the first run installed it.
+    # win_updates rather than the agent's own COM interface, and not for convenience: that interface
+    # refuses to INSTALL from a remote session, so a script driven over this connection could search
+    # and download and then fail at the one step that matters. The module runs the work through a
+    # scheduled task on the machine itself, which is the supported way around that. managed_server
+    # explicitly: no server name is passed and none could be -- it tells the agent to use the
+    # service Group Policy configured it with, where the default would let the agent decide. Naming
+    # the right server is the refusal above. Naturally idempotent without anything here making it
+    # so: a second run finds nothing left to install because the first run installed it.
 
     # failed_when rather than a following assertion, because an actor owns its own outcome: an
     # update WSUS offered and this machine could not install is a failure of the work this task

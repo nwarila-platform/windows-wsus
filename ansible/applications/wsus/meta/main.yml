@@ -1,66 +1,56 @@
 # =========================================================================================== #
 # File: '{{ role_path }}/meta/main.yml'
 # --- [ Description ] ----------------------------------------------------------------------- #
-# Role metadata for wsus. Description-only (style guide 8): NOT an enforcing argument spec. The
-# role's tasks/validate.yml enforces its merged-config guards.
+# Role metadata for wsus. Description-only (style guide 8): NOT an enforcing argument spec --
+# tasks/validate.yml enforces the merged-config guards.
 #
-# REQUIRED INPUTS — supplied by the playbook, never defaulted here. The certificate leaves are
-# declared empty in defaults; the rest have no leaf there at all. validate.yml refuses a run
-# that omits any of the nine below; the six certificate leaves are refused the same way on a
-# present run with wsus.tls.enabled true, which is the shipped default.
+# REQUIRED INPUTS, all supplied by the playbook and never defaulted here. validate.yml refuses a
+# present run that omits any of the first ten; the six certificate leaves are refused the same way
+# when wsus.tls.enabled is true, which is the shipped default. The playbook resolves the S3 object
+# and the password on the CONTROLLER -- the guest holds no cloud credential and, here, no route to
+# S3 at all.
 #
 #   wsus.db.drive_letter                 Volume SUSDB is created on. Refused if it equals the
-#                                        content letter: the database and the update store grow
-#                                        independently, and sharing a disk lets either one stop
-#                                        the other.
+#                                        content letter: both grow independently and sharing a
+#                                        disk lets either one stop the other.
 #   wsus.content.drive_letter            Volume the update store is created on.
-#   wsus.sync.upstream_server            The upstream WSUS this server mirrors, as a DNS name or
-#                                        an IPv4 literal -- WSUS stores and dials whichever it is
-#                                        given. Never defaulted: a defaulted upstream points a
-#                                        server at whatever the last deployment's was.
+#   wsus.sync.upstream_server            The upstream this server mirrors, as a DNS name or IPv4
+#                                        literal. Never defaulted -- a defaulted upstream points
+#                                        at whatever the last deployment's was.
 #   wsus.sync.upstream_port              The port that upstream serves on. 8530 plain, 8531 TLS.
-#   wsus.sync.upstream_use_ssl           Whether the link to it is encrypted. A property of the
-#                                        UPSTREAM, which has to be serving SSL for this to be
-#                                        true. The role composes these three into one URL before
-#                                        handing them to the actor.
-#   wsus.sync.replica                    Whether this server inherits the upstream's approvals
-#                                        rather than managing its own.
-#   wsus.sync.mode                       What to do about the catalogue: 'wait' fetches it and
-#                                        reports what arrived, 'start' begins a synchronisation
-#                                        and returns, 'disabled' fetches nothing. A first
-#                                        synchronisation against a full mirror takes weeks, which
-#                                        is why the last two exist. Under either, the server
+#   wsus.sync.upstream_use_ssl           Whether the link is encrypted. A property of the UPSTREAM,
+#                                        which must be serving SSL for this to be true. The role
+#                                        composes these three into one URL for the actor.
+#   wsus.sync.replica                    Whether this server inherits the upstream's approvals.
+#   wsus.sync.mode                       'wait' fetches the catalogue and reports what arrived,
+#                                        'start' begins one and returns, 'disabled' fetches
+#                                        nothing. A first sync against a full mirror takes WEEKS,
+#                                        which is why the last two exist; under either the server
 #                                        answers clients from whatever catalogue it already has.
 #   wsus.sync.timeout_seconds            How long to wait for the catalogue.
 #   wsus.sync.content_timeout_seconds    How long to wait for the files behind it. Runs after the
-#                                        catalogue wait, inside the same step, so the caller owns
-#                                        the sum against its own budget.
-#   wsus.firewall.admitted_networks      Networks the host firewall admits to 8530 and 8531, in
-#                                        CIDR form, comma-separated. The only control that can
-#                                        scope traffic arriving over a tunnel.
+#                                        catalogue wait in the same step, so the caller owns the
+#                                        sum against its own budget.
+#   wsus.updates.languages               The update languages this server accepts, as the short
+#                                        codes WSUS uses -- ['en'], ['en', 'fr']. Every other
+#                                        language is refused at synchronisation.
 #   wsus.tls.certificate.bucket          S3 bucket holding the PKCS#12.
 #   wsus.tls.certificate.dns_name        Name clients reach this server by, and the name the
 #                                        certificate must be valid for.
-#   wsus.tls.certificate.object          Object key of the PKCS#12 the listener presents, and the
-#                                        only object this role fetches. Trusting it belongs to the
-#                                        directory, so no second object is delivered -- and a host
+#   wsus.tls.certificate.object          Object key of the PKCS#12, the only object this role
+#                                        fetches. Trusting it belongs to the directory, so a host
 #                                        whose policy has not delivered that root cannot read its
 #                                        own WSUS API once TLS is on.
-#   wsus.tls.certificate.password        The password that unlocks that PKCS#12, already resolved.
-#                                        A value and not a location, because reading a credential
-#                                        out of S3 is the framework secret lookup's job and the
-#                                        playbook calls it.
+#   wsus.tls.certificate.password        The password that unlocks it, already resolved. A value,
+#                                        not a location: reading a credential out of S3 is the
+#                                        framework secret lookup's job and the playbook calls it.
 #   wsus.tls.certificate.sha256          Digest the PKCS#12 must match.
 #   wsus.tls.certificate.thumbprint      The certificate the listener may present, pinned so a
 #                                        subject search cannot select another.
 #
-# The playbook resolves the object and the password on the CONTROLLER. The guest is never given
-# cloud credentials, and in this deployment has no route to S3 at all.
-#
-# The SQL instance is NOT an input: the AWS images install the default instance and this role
+# The SQL instance is NOT an input: the AWS images install the default instance, and this role
 # writes MSSQLSERVER where it needs a service and the machine name where it needs a connection
-# target. There is no instance-name value to supply and none to validate -- naming one would be
-# offering a choice the rest of the role does not honour.
+# target. Naming one would offer a choice the rest of the role does not honour.
 #
 # =========================================================================================== #
 ---

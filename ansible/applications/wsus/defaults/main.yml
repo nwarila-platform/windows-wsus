@@ -4,19 +4,12 @@
 #
 # Lowest-precedence configuration for the wsus role. The v3 loader merges the OS overlay in vars/
 # over this map and publishes the result as 'wsus_running'; tasks read only the merged map.
-#
-# WHAT BELONGS HERE: the values a deployer can meaningfully choose. Two kinds so far -- the layout
-# inside the volumes this role is given, and the settings an estate decides for itself rather than
-# the product deciding for it. Update languages are the second kind: an estate in Quebec declares
-# 'fr' and nothing about WSUS makes that wrong.
-#
-# WHAT DOES NOT: constants wearing a default's clothes. The features WSUS is made of, the flags its
-# post-installation writes, the services that answer for it, the registry keys Windows publishes
-# and the default SQL instance are all fixed by the product, not by a site. They are written where
-# they are used. The tell is validate.yml: a key it has to pin to one exact value was never
-# configuration, and every such key has been inlined rather than defended.
-#
-# The drive letters are the PLAYBOOK's to publish, beside the disk layout that creates them.
+# WHAT BELONGS HERE is what a deployer can meaningfully choose -- the layout inside the volumes
+# this role is given, and settings an estate decides for itself rather than the product deciding
+# for it. WHAT DOES NOT is constants wearing a default's clothes: the features WSUS is made of,
+# the flags post-installation writes, the services that answer for it and the default SQL instance
+# are fixed by the product and written where they are used. Anything declared empty here is the
+# PLAYBOOK's to publish, and validate.yml refuses a run that omits it.
 #
 # =========================================================================================== #
 ---
@@ -24,16 +17,11 @@ wsus_defaults:
 
   #region ------ [ Database placement ] ------------------------------------------------------ #
 
-  # WHERE SUSDB IS CREATED, and the reason this is the role's first action. wsusutil postinstall
-  # creates the database wherever the instance's default directories point, and moving it
-  # afterwards is the unsupported detach/copy/attach path (TD-005). Placement has to be right
-  # before anything can create it, so these are pinned before the feature is even installed.
-  #
-  # The letter is the contract the play publishes; the subdirectories are relative to it so a
-  # different letter moves both without editing two values.
-  # WHICH disk is a property of the deployment, so the letter is published by the play and
-  # deliberately absent here -- validate.yml refuses a run that omits it. Only the layout WITHIN
-  # that volume defaults, because it is this role's own shape.
+  # WHERE SUSDB IS CREATED, and why this is the role's first action: wsusutil postinstall creates
+  # the database wherever the instance's default directories point, and moving it afterwards is the
+  # unsupported detach/copy/attach path (TD-005). Placement must be right before anything can
+  # create it, so these are pinned before the feature is installed. The letter is the play's to
+  # publish and is absent here; the subdirectories are relative to it, so one letter moves both.
   db:
     data_subdir: 'MSSQL\Data'
     log_subdir: 'MSSQL\Log'
@@ -43,12 +31,9 @@ wsus_defaults:
   #region ------ [ Content placement ] ------------------------------------------------------- #
 
   # WHERE UPDATE FILES LAND. Post-installation takes this as CONTENT_DIR and will not create a
-  # missing tree, so the directory exists before it runs. Measured on the target: the feature
-  # install writes ContentDir = C:\Program Files\Update Services, so passing this is what keeps
-  # the update store off the system volume rather than a preference about where it looks tidier.
-  #
-  # Same split as the database: which volume is the deployment's to publish, the layout within it
-  # is this role's own shape.
+  # missing tree, so the directory exists first. Measured: the feature install writes ContentDir =
+  # C:\Program Files\Update Services, so passing this is what keeps the store off the system
+  # volume. Same split as the database -- the volume is the play's, the layout within it is ours.
   content:
     subdir: 'WSUS'
 
@@ -56,56 +41,34 @@ wsus_defaults:
 
   #region ------ [ Update languages ] -------------------------------------------------------- #
 
-  # WHICH LANGUAGES THIS SERVER WILL ACCEPT. A WSUS server installs accepting every language
-  # Microsoft publishes, which on a single-estate server is a permanent cost in disk and sync time
-  # for content nobody will approve. Genuine deployer configuration -- an estate in Quebec wants
-  # 'fr' here -- so it is declared rather than written into the role.
+  # WHICH LANGUAGES THIS SERVER WILL ACCEPT. A WSUS installs accepting every language Microsoft
+  # publishes, a permanent cost in disk and sync time for content nobody will approve. Which ones
+  # an estate speaks is the estate's, so this is declared empty and published by the play.
   updates:
-    languages: ['en']
+    languages: ''
 
   #endregion --- [ Update languages ] -------------------------------------------------------- #
 
   #region ------ [ Upstream source ] --------------------------------------------------------- #
 
-  # WHERE THIS SERVER GETS ITS UPDATES. A WSUS server installs pointed at Microsoft Update, and a
-  # downstream server is the estate declaring it would rather approve once upstream and mirror the
-  # result than approve the same update on every server.
-  #
-  # EVERY VALUE HERE IS DECLARED EMPTY AND PUBLISHED BY THE PLAY. None of them is a property of
-  # this role: which parent to mirror, on which port, over which transport, whether to inherit its
-  # approvals, and how long to wait for what it holds are all properties of the DEPLOYMENT, and a
-  # default for any of them is a production server quietly taking a development answer.
-  #
-  # upstream_server takes either form WSUS stores and dials -- a DNS name or an IPv4 literal.
-  # The three that describe the endpoint are declared separately, because that is how a deployer
-  # thinks about them, and the role composes them into one URL before handing it to the actor. A
-  # URL cannot carry a transport flag that arrives as the string 'False' and binds as true.
-  #
-  # MODE decides what this role does about the catalogue, and there are three honest answers
-  # rather than two. A first synchronisation against a full Microsoft mirror is measured in WEEKS,
-  # and a converge that blocks on one never returns.
-  #
-  #   wait      Start a synchronisation and do not return until the catalogue and the files behind
-  #             it are down. The only mode that can report what the server actually holds.
-  #   start     Start one and return. The server is fetching; nothing here can say it arrived.
-  #             This is the mode a full-mirror estate wants -- the work is under way and the
-  #             converge still finishes today.
-  #   disabled  Point the server at its upstream and fetch nothing. For an estate that
-  #             synchronises entirely out of band.
-  #
-  # There WAS a flag like this once, removed in decision 50 because the deployment it served
-  # always synchronised and no disabled case existed to be honest about. Two exist now.
-  #
-  # Anything but 'wait' leaves the one gap in this role a CLIENT can see and cannot diagnose: an
-  # empty server answers "no updates required", which reads exactly like success. The role says
-  # which of the three it took rather than leaving that to be inferred from a recap.
-  #
-  # THE TIMEOUTS are a property of the link and of what the upstream holds, not of this role: a
-  # downstream of a small curated upstream converges in minutes, and one of a full Microsoft mirror
-  # does not. They run SEQUENTIALLY inside one CI step, so their sum is the number that matters,
-  # and the worst case is THREE waits rather than two -- a synchronisation already in flight is
-  # polled to a full stop under timeout_seconds before a new one starts. Whoever publishes them
-  # owns that arithmetic against the budget of the step that calls this role.
+  # WHERE THIS SERVER GETS ITS UPDATES. A WSUS installs pointed at Microsoft Update; a downstream
+  # mirrors a parent instead, so approvals are made once upstream. Every value here is declared
+  # empty and published by the play -- which parent, which port, which transport, whether to
+  # inherit approvals and how long to wait are all the DEPLOYMENT's, and a default for any of them
+  # is a production server quietly taking a development answer. upstream_server takes a DNS name or
+  # an IPv4 literal. The three endpoint values are separate because that is how a deployer thinks,
+  # and the role composes them into one URL for the actor: a URL cannot carry a transport flag that
+  # arrives as the string 'False' and binds as true. MODE is one of three: 'wait' fetches the
+  # catalogue and reports what arrived, the only mode that can say what the server holds; 'start'
+  # begins a synchronisation and returns, because a first one against a full Microsoft mirror takes
+  # WEEKS and a converge that blocks on it never returns; 'disabled' fetches nothing, for an estate
+  # that synchronises out of band. Anything but 'wait' leaves the one gap a CLIENT can see and
+  # answers "no updates required", which reads exactly like success -- so the role reports which
+  # mode it took. A flag like this existed once and was removed in decision 50, when no disabled
+  # case existed to be honest about. THE TIMEOUTS run sequentially in one CI step so their sum is
+  # what matters, and the worst case is THREE waits: an in-flight synchronisation is polled to a
+  # stop under timeout_seconds before a new one starts. Whoever publishes them owns that
+  # arithmetic against the budget of the calling step.
   sync:
     content_timeout_seconds: ''
     mode: ''
@@ -119,69 +82,32 @@ wsus_defaults:
 
   #region ------ [ Who may reach this server ] ----------------------------------------------- #
 
-  # WHICH NETWORKS THE HOST ITSELF ADMITS. Measured on a live server: WSUS opens two firewall rules
-  # of its own at post-installation, both named 'WSUS', for TCP 8530 and 8531, with program Any,
-  # service Any and remote address ANY. That is the whole internet admitted to the update service.
-  #
-  # This is not duplicated network control. The AWS security group cannot see traffic that arrives
-  # over the VPN tunnel at all -- it sees only the UDP envelope, and the payload is decapsulated
-  # INSIDE the guest, past every group rule. So for everything reaching this server from the lab,
-  # the host firewall is not defence in depth, it is the only defence there is.
-  #
-  # admitted_networks is a property of the deployment -- which networks exist and which of them
-  # this server serves -- so it is published by the play and deliberately absent here, exactly as
-  # the drive letters are. validate.yml refuses a run that omits it. A default would be the worst
-  # of both: either wide enough to be useless or narrow enough to lock out an estate silently.
+  # WSUS serves metadata over TLS and update payloads over plain HTTP, on adjacent ports. The HTTPS
+  # port is wsus.tls.port and is NOT repeated here: one server has one HTTPS port, and two
+  # declarations of it would be two places to disagree. WHICH networks may reach either port is not
+  # stated in this role at all -- that belongs to the security group, and a second copy on the host
+  # would be a second place to edit.
   firewall:
-    # WSUS serves metadata over TLS and update payloads over plain HTTP, on adjacent ports. The
-    # HTTPS port is wsus.tls.port and is NOT repeated here: one server has one HTTPS port, and two
-    # declarations of it would be two places to disagree.
     http_port: 8530
 
-  #endregion --- [ Who may reach this server ] ----------------------------------------------- #
 
   #region ------ [ Client-facing TLS ] ------------------------------------------------------- #
 
-  # WHETHER CLIENTS TALK TO THIS SERVER OVER HTTPS, and with which certificate. Genuine deployer
-  # configuration: a server with no certificate to serve cannot converge with this on, and an
-  # estate that terminates TLS somewhere else does not want it.
-  #
-  # EVERY VALUE UNDER 'certificate' IS DECLARED EMPTY HERE. The keys are written out so a reader
-  # can see the whole shape; the values are the deployment's, exactly as the drive letters are,
-  # and no TLS-enabled present run converges on what is left here. A run with tls.enabled false
-  # skips the assertion and the delivery alike, and never reads them.
-  #
-  # Which certificate a server presents -- its name, the object it arrives as, the digest that
-  # object must match, the password that unlocks it, the thumbprint the listener is pinned to --
-  # is a property of the DEPLOYMENT, not of this role. The role is the part that travels between
-  # deployments; a certificate identity baked into it would have to be edited in the travelling
-  # file, which is exactly backwards. validate.yml refuses a present run with tls.enabled true
-  # that omits any of them -- which is every run that intends to serve HTTPS at all.
-  #
-  # They are still ONE artifact described from several angles, and they still change together:
-  # rotating the certificate a server presents is a single coherent edit, just in the play rather
-  # than here. Any one of them left behind produces a refusal rather than a server serving the
-  # wrong identity.
-  #
-  # ONE object arrives, and it is the PKCS#12. It is what this server PRESENTS, and presenting is
-  # the whole of what this role does with it: the container goes into the machine store and the
-  # listener is pinned to it.
-  #
-  # TRUSTING it is somebody else's job. A directory delivers its trusted root to every domain
-  # member, exactly as a production CA's root would, so no second object is delivered here and no
-  # root store is written. Measured on a live Server 2025 host: a PKCS#12 imported into
-  # LocalMachine\My alone lands in no other store and chains to UntrustedRoot -- which is the
-  # point. Holding a certificate is not trusting it, and this role only holds.
-  #
-  # In THIS estate that delivery is a separate temporary policy pending a real certificate
-  # authority, and it has been measured not reaching a client. A server it has not reached cannot
-  # read its own WSUS API once TLS is on.
-  #
-  # The password is not an object either. It arrives already resolved, because the framework's
-  # secret lookup is the one mechanism this estate uses to read a credential out of S3.
-  #
-  # The digest is what makes the delivery trustworthy, and it is checked on the CONTROLLER because
-  # the target holds no S3 credential and, in this deployment, no route to S3 at all.
+  # WHETHER CLIENTS TALK TO THIS SERVER OVER HTTPS, and with which certificate. Every value under
+  # 'certificate' is declared empty: the keys are written out so a reader sees the whole shape, but
+  # which certificate a server presents belongs to the DEPLOYMENT, and an identity baked into a
+  # role that travels would have to be edited in the travelling file. validate.yml refuses a
+  # present run with tls.enabled true that omits any of them; a run with it false skips the
+  # assertion and the delivery alike. ONE object arrives, the PKCS#12, and presenting it is the
+  # whole of what this role does: the container goes into the machine store and the listener is
+  # pinned to it. TRUSTING it belongs to the directory, which delivers its root to every domain
+  # member as a production CA would -- measured on a live Server 2025 host, a PKCS#12 imported into
+  # LocalMachine\My alone lands in no other store and chains to UntrustedRoot, so holding a
+  # certificate is not trusting it. In THIS estate that delivery is a temporary policy pending a
+  # real CA, measured not reaching a client, and a server it has not reached cannot read its own
+  # WSUS API once TLS is on. The password is not an object either: it arrives resolved through the
+  # framework's secret lookup. The digest is checked on the CONTROLLER, because the target holds no
+  # S3 credential and no route to S3 at all.
   tls:
     enabled: true
     port: 8531
@@ -195,17 +121,14 @@ wsus_defaults:
       sha256: ''
       thumbprint: ''
 
-    # WHICH DIRECTORIES REFUSE PLAIN HTTP. Vendor-fixed rather than a preference: these five are
-    # the endpoints a client authenticates and reports through, and Microsoft's own instructions
-    # name these five and stop.
-    #
-    # The site serves more than five, and every one of the others is deliberately absent. Measured:
-    # Content, Inventory and ReportingWebService on both images available here, and Selfupdate on
-    # the RTM one but NOT on the patched AMI -- SelfUpdate's presence tracks the WSUS patch level,
-    # not the OS version. Requiring SSL on Content breaks content delivery and on SelfUpdate breaks
-    # legacy self-update; Reporting and Inventory are simply not endpoints the vendor asks to be
-    # secured. Naming the five rather than deriving the list from what is installed is also what
-    # makes this indifferent to which of the others a given image happens to ship.
+    # WHICH DIRECTORIES REFUSE PLAIN HTTP. Vendor-fixed, not a preference: these five are the
+    # endpoints a client authenticates and reports through, and Microsoft's instructions name these
+    # five and stop. The site serves more and every other is deliberately absent -- requiring SSL
+    # on Content breaks content delivery, on SelfUpdate breaks legacy self-update, and Reporting
+    # and Inventory are not endpoints the vendor asks to be secured. Measured: Content, Inventory
+    # and ReportingWebService exist on both images here, SelfUpdate on the RTM one but NOT the
+    # patched AMI, so its presence tracks the WSUS patch level rather than the OS version. Naming
+    # five rather than deriving them is what makes this indifferent to which others an image ships.
     secured_paths:
       - 'ApiRemoting30'
       - 'ClientWebService'

@@ -154,17 +154,19 @@ That is the entire internet admitted to the update service. The role replaces th
 rules and then removes the vendor's, in that order, because Windows evaluates every matching allow
 and the overlap keeps the service answering throughout.
 
-The replacements are scoped three ways: to the two ports WSUS serves; to program `System`, because
-the listener is HTTP.SYS in kernel mode and the sockets belong to PID 4 rather than to `w3wp.exe`;
-and to `wsus.firewall.admitted_networks`. They are **not** scoped to a service, which is a limit
-rather than an omission — no service owns a kernel-mode socket, so naming one would match nothing
-and close the port to the clients the rule exists to admit. Windows' own built-in IIS rules leave
-it unset for the same reason.
+The replacements are scoped two ways: to the two ports WSUS serves, and to program `System`,
+because the listener is HTTP.SYS in kernel mode and the sockets belong to PID 4 rather than to
+`w3wp.exe`. They are **not** scoped to a service, which is a limit rather than an omission — no
+service owns a kernel-mode socket, so naming one would match nothing and close the port to the
+clients the rule exists to admit. Windows' own built-in IIS rules leave it unset for the same
+reason.
 
-This is not the cloud security group repeated. A security group cannot see traffic arriving over a
-VPN tunnel at all: it sees a UDP envelope, and the payload is decapsulated inside the guest past
-every group rule. For everything reaching this server from the lab, the host firewall is not
-defence in depth — it is the only defence there is.
+They are **not** scoped to a network either, and that is deliberate: which networks may reach this
+server is stated once, in the security group, and a second copy on the host would be a second place
+to edit and a second place to be wrong. What that gives up is traffic arriving over a VPN tunnel,
+which a security group cannot see — it is decapsulated inside the guest past every group rule.
+Reaching the tunnel means having authenticated to it, so the tunnel is the boundary there rather
+than this rule.
 
 The rules are written in the shape Windows writes its own — `<Product> (<PROTOCOL> Traffic-In)`, a
 group, and a description ending `[TCP <port>]` — but saying WSUS things rather than IIS things, so
