@@ -272,6 +272,7 @@ $NeedsSync = ($Force -or (-not $Succeeded))
 #region ------ [ The catalogue ] ------------------------------------------------------------- #
 $Synchronised = $False
 $Waited = $False
+$Stopped = $False
 
 If ($NeedsSync -and $PSCmdlet.ShouldProcess($Server.Name, 'Synchronise from the upstream WSUS server')) {
   # A synchronisation already running is not this one, and starting underneath it throws. Waiting
@@ -283,6 +284,7 @@ If ($NeedsSync -and $PSCmdlet.ShouldProcess($Server.Name, 'Synchronise from the 
   # a full stop first, with the same deadline the synchronisation itself gets.
   If ([System.String]$Subscription.GetSynchronizationStatus() -ne 'NotProcessing') {
     $Subscription.StopSynchronization()
+    $Stopped = $True
 
     $StopDeadline = (Get-Date).AddSeconds($TimeoutSeconds)
     While (
@@ -311,7 +313,7 @@ If ($NeedsSync -and $PSCmdlet.ShouldProcess($Server.Name, 'Synchronise from the 
   # status, the last result, the counts, the files behind them -- and none of it is answerable
   # about one still running. So this returns instead of reporting numbers it would have to invent.
   If ($Mode -eq 'start') {
-    $StartedAfter = If ($Waited) { ' after the previous one was stopped' } Else { '' }
+    $StartedAfter = If ($Stopped) { ' after the previous one was stopped,' } Else { '' }
     $Ansible.Result = @{
       changed       = $True
       check_mode    = [System.Boolean]$Ansible.CheckMode
