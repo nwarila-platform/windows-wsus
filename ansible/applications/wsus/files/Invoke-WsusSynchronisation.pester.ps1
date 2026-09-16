@@ -463,7 +463,7 @@ Describe 'Invoke-WsusSynchronisation' {
       $global:Ansible.Result.mode   | Should -Be 'start'
     }
 
-    It 'on an already-synchronised server with files still outstanding, wait mode sleeps and says so' {
+    It 'wait mode on an already-synchronised server with files outstanding sleeps and says so' {
       $global:FakeNeverSynced = $false
       $global:FakeLastResult = 'Succeeded'
       $global:FakeNeedingFiles = 3
@@ -471,6 +471,15 @@ Describe 'Invoke-WsusSynchronisation' {
       $global:FakeSleeps            | Should -BeGreaterThan 0
       $global:Ansible.Result.waited | Should -BeTrue
       $global:Ansible.Result.started | Should -BeFalse
+    }
+
+    It 'start mode that had to stop a previous run first says it waited for the stop' {
+      $global:FakeStatus = 'Running'
+      $null = & $script:InvokeStart
+      $global:FakeSleeps            | Should -BeGreaterThan 0
+      $global:Ansible.Result.waited | Should -BeTrue
+      $global:Ansible.Result.started | Should -BeTrue
+      $global:Ansible.Result.msg    | Should -BeLike '*previous one was stopped*'
     }
 
     It 'refuses a mode it does not implement' {

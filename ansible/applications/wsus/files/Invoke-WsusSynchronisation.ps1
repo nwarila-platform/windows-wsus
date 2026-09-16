@@ -311,11 +311,13 @@ If ($NeedsSync -and $PSCmdlet.ShouldProcess($Server.Name, 'Synchronise from the 
   # status, the last result, the counts, the files behind them -- and none of it is answerable
   # about one still running. So this returns instead of reporting numbers it would have to invent.
   If ($Mode -eq 'start') {
+    $StartedAfter = If ($Waited) { ' after the previous one was stopped' } Else { '' }
     $Ansible.Result = @{
       changed       = $True
       check_mode    = [System.Boolean]$Ansible.CheckMode
       mode          = 'start'
-      msg           = 'Synchronisation started and not waited for. This server is fetching; whether it arrives is not known here.'
+      msg           = ('Synchronisation started{0} and not waited for. This server is fetching; ' +
+                       'whether it arrives is not known here.') -f $StartedAfter
       needing_files = -1
       result        = 'NotWaited'
       started       = $True
