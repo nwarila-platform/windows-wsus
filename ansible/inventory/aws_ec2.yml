@@ -60,17 +60,15 @@ hostvars_prefix: 'aws_'
 
 #region ------ [ Host Variables ] ------------------------------------------------------------- #
 # EVERY EXPRESSION RE-READS THE INSTANCE, never another compose value: Ansible templates them all
-# against one snapshot, so an entry cannot see one set beside it. The repetition is load-bearing.
-#
-# The operating system comes from AWS's own platform_details, which every instance carries and which
-# names the platform it is licensed as -- 'Windows', 'Windows with SQL Server', 'Red Hat Enterprise
-# Linux'. It is matched, not compared, so every Windows variant answers alike.
+# against one snapshot, so an entry cannot see one set beside it -- the repetition is load-bearing.
+# The operating system comes from AWS's own platform_details, which names what the instance is
+# licensed as ('Windows', 'Windows with SQL Server', 'Red Hat Enterprise Linux'); it is matched
+# rather than compared, so every Windows variant answers alike.
 compose:
 
   #region ------ [ Reaching the host ] -------------------------------------------------------- #
-  # The Connection tag in terraform/aws.tfvars decides all four values below. Absent means
+  # The Connection tag in terraform/aws.tfvars decides all four values below; absent means
   # ssh-direct, which is what this repository's pipeline uses.
-  #
   #   ssh-direct     SSH to the routable address on 22.
   #   ssh-ssm        SSH to the INSTANCE ID, tunnelled by the ProxyCommand below. No inbound rule.
   #   winrm-direct   WinRM over HTTPS to the routable address on 5986.
@@ -103,12 +101,11 @@ compose:
     | ternary(5986, 22)
 
   # Keepalive: a settle poll can wait minutes with no SSH traffic, and an idle connection that times
-  # out is reported as UNREACHABLE. The 30s probes keep the link from counting as idle; twenty
-  # unanswered ones are the dead-peer budget. Only the tunnelled leg adds the proxy.
-  #
-  # Each quoted fragment stays on ONE line. YAML preserves a line break inside an indented block,
-  # and a newline landing inside the quoted ProxyCommand would split it into two shell commands --
-  # the second failing, the first silently losing its port. Breaks between fragments are harmless.
+  # out is reported as UNREACHABLE. The 30s probes keep the link from counting as idle and twenty
+  # unanswered ones are the dead-peer budget; only the tunnelled leg adds the proxy. Each quoted
+  # fragment stays on ONE line -- YAML preserves a line break inside an indented block, and a
+  # newline inside the quoted ProxyCommand would split it into two shell commands, the second
+  # failing and the first silently losing its port. Breaks between fragments are harmless.
   ansible_ssh_common_args: >-
     '-o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -o ServerAliveCountMax=20'
     ~ (

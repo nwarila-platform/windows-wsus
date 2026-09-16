@@ -2,25 +2,14 @@
 # File: 'ansible/playbooks/wsus-aws.yml'
 # --- [ Description ] ----------------------------------------------------------------------- #
 #
-# Brings the EPHEMERAL EC2 instance from "the API says it exists" to a domain-joined host with
-# its data disks provisioned. The WSUS on SQL Server roles follow, one action at a time.
-#
-# Runs from the COMPOSED tree only: the workflow overlays this repository onto the pinned
-# ansible-framework and runs this against a dynamic EC2 inventory filtered to one run.
-#
-# The role order in the second play is the design. Each one is a precondition for the next: the
-# host must answer before it can be repaired, be repaired before a module runs, be on the network
-# before it can resolve a realm, and be in the realm before it is a host worth provisioning.
-#
-# gather_facts and become are absent throughout because the framework's ansible.cfg makes
-# gathering explicit and escalation off. Both matter here: implicit gathering would run a module
-# over the shell os_bootstrap has not yet fixed.
-#
+# Builds a WSUS server on SQL Server from ephemeral EC2, then a client that proves it. Runs only
+# from the composed tree: the workflow overlays this repository onto the pinned ansible-framework
+# and runs it against a dynamic EC2 inventory filtered to one run.
 # =========================================================================================== #
 ---
 #region ------ [ Play: Inventory Contract ] --------------------------------------------------- #
-# The inventory already filters to this run's instance by its framework-set tags. This guards the
-# one state that filter cannot cover: an empty result, where nothing launched or nothing tagged.
+# The inventory filters to this run by tag. This guards the one state a filter cannot: an empty
+# result, where nothing launched or nothing was tagged.
 
 - name: 'PLAY | Validate The Ephemeral AWS Inventory Contract'
   hosts: 'localhost'
@@ -34,9 +23,8 @@
           successful deployment proof.
         quiet: true
 
-    # The same argument, for the host that does the proving. Without this a run whose client never
-    # appeared would skip both client plays, report success, and prove only that the server can be
-    # built -- which is the half that was never in doubt.
+    # Same for the client. Without this a run whose client never appeared would skip both client
+    # plays and report success.
 
     - name: 'INVENTORY | Require At Least One Filtered Client'
       ansible.builtin.assert:
@@ -47,8 +35,8 @@
           would ask the WSUS server for an update and the run would prove only half of itself.
         quiet: true
 
-    # The site roles template their bucket names from the account id, so a wrong one surfaces as a
-    # download failure on the guest minutes later. Refuse it here, before anything is dialled.
+    # Bucket names are templated from the account id, so a wrong one fails minutes later on the
+    # guest. Refuse it here.
 
     - name: 'INVENTORY | Require The Deploying Account'
       ansible.builtin.assert:
@@ -70,63 +58,47 @@
   roles:
 
     #region ------ [ Roles: Host Readiness ] -------------------------------------------------- #
-    # Waits for the connection itself, never a port: a TCP connect cannot speak for a connection
-    # reaching its target through a proxy or a tunnel, and this inventory can select those. It
-    # then waits out EC2Launch.
+    # Declared, not detected: a failed probe reads as "no platform" and skips the EC2Launch wait.
     - role: 'host_readiness'
-      vars:
-        # Declared, not detected. The role's probe carries ignore_errors, so a failed probe reads
-        # as "no platform" and SKIPS the EC2Launch wait -- and the next role renames the computer
-        # and reboots, which is exactly what that wait exists to sequence against.
-        host_readiness_platform: 'aws'
+      vars: { host_readiness_platform: 'aws' }
 
     #endregion --- [ Roles: Host Readiness ] -------------------------------------------------- #
 
     #region ------ [ Roles: OS Bootstrap ] ---------------------------------------------------- #
-    # Flips OpenSSH's DefaultShell to PowerShell and proves the session is elevated. Every module
-    # after it depends on that. Pass it NO vars: role params outrank the connection scoping it
-    # relies on, and a stray one silently re-breaks the pre-flip stage.
+    # Pass it NO vars: role params outrank the connection scoping it relies on.
     - role: 'os_bootstrap'
 
     #endregion --- [ Roles: OS Bootstrap ] ---------------------------------------------------- #
 
     #region ------ [ Roles: Remote Client ] --------------------------------------------------- #
-    # Site policy: the role defaults every value openvpn_client needs, so this play states none.
-    # 'aws_account_id' is an extra-var -- only the pipeline knows which account it deploys into.
+    # The role defaults everything this site needs; 'aws_account_id' arrives as an extra-var.
     - role: 'remote_client'
 
     #endregion --- [ Roles: Remote Client ] --------------------------------------------------- #
 
     #region ------ [ Roles: Domain Member ] --------------------------------------------------- #
-    # Wraps the platform's join mechanism and defaults the site's realm, account and secret. Three
-    # things are this repository's to say: the account it deploys into, where a WSUS server is
-    # filed -- its own OU, not the deployment servers' -- and which of this host's addresses it
-    # publishes in the realm's DNS.
-    #
-    # THE VPC ADDRESS, deliberately, and this host is the one where the choice has consequences.
-    # It is multi-homed -- a VPC interface and a tunnel adapter -- and left to itself Windows
-    # registers whatever its resolver leads it to, which on a member that reaches the realm across
-    # a tunnel is the tunnel address. The client this deployment builds to prove the server sits in
-    # the same VPC and reaches it on the private address; a name resolving to the tunnel instead
-    # would send it the long way round, to a port the security group admits from this subnet
-    # alone.
-    #
-    # The cost is real and belongs to the estate rather than to this run: on-prem clients reach
-    # this server by its tunnel address today, and once it publishes only the VPC address they
-    # cannot resolve it until pfSense routes the AWS CIDR over the tunnel. That sequencing is the
-    # site's to complete before this server serves anyone but its own VPC.
+    # Three things are this environment's: the realm and join account, the OU a WSUS server is filed
+    # under, and which address the host publishes in DNS. The VPC address, because the host is
+    # multi-homed and would otherwise register its tunnel address -- VPC clients would then reach it
+    # the long way round. On-prem clients cannot resolve that until pfSense routes the AWS CIDR.
     - role: 'domain_member'
       vars:
         domain_member:
-          password: { bucket: "{{ aws_account_id | default('') }}-ansible" }
+          realm: 'tcn.trinitytechnicalservices.com'
+          user: 'svc-domainjoin@tcn.trinitytechnicalservices.com'
+          password: >-
+            {{ lookup('secret',
+                's3://' ~ aws_account_id ~ '-ansible/host_roles/domain_member/'
+                ~ 'svc-domainjoin-password.txt',
+                '07493ed779c2962bff0b5e19cfa00b8cdb95defcf477f6b5bac36ddef55087ae') }}
           computer_ou: 'OU=WSUS,OU=Domain Servers,DC=tcn,DC=trinitytechnicalservices,DC=com'
           registration_address: "{{ aws_private_ip_address }}"
 
     #endregion --- [ Roles: Domain Member ] --------------------------------------------------- #
 
     #region ------ [ Roles: Windows Disk Manager ] -------------------------------------------- #
-    # `function` names each EBS volume's Function tag from terraform/aws.tfvars, and the role
-    # resolves it to the attached disk itself -- a volume id only exists after apply.
+    # 'function' is each volume's Function tag in terraform/aws.tfvars; the role finds the disk by
+    # it.
     - role: 'windows_disk_manager'
       vars:
         windows_disk_manager:
@@ -152,10 +124,8 @@
 #endregion --- [ Play: Configure The Guest ] -------------------------------------------------- #
 
 #region ------ [ Play: WSUS ] ----------------------------------------------------------------- #
-# Its own play, as the reference gives its products one: the roles above bring a host into
-# existence and into the directory, and this is the product that host exists to run. The split is
-# what lets the product's failure be read as the product's, rather than as one more role in a
-# chain that also formats disks.
+# Its own play, so the product's failure reads as the product's rather than as one more role in
+# a chain that also formats disks.
 
 - name: 'PLAY | WSUS On SQL Server (ephemeral AWS)'
   hosts: 'wsus_servers'
@@ -165,10 +135,7 @@
   roles:
 
     #region ------ [ Roles: WSUS ] ------------------------------------------------------------ #
-    # Rebuilt one region at a time against docs/explanation/wsus-role-migration-contract.md.
-    #
-    # The letters the disk role laid down in the previous play. That role owns the layout and
-    # holds it identical across a replacement, so these are named here, not re-proven downstream.
+    # The drive letters are the ones the disk role laid down in the previous play.
     - role: 'wsus'
       vars:
         wsus:
@@ -176,93 +143,41 @@
             drive_letter: 'E'
           content:
             drive_letter: 'F'
-          firewall:
-            # The two networks this server serves, and nothing else. 10.0.0.0/16 is this account's
-            # VPC, which holds the client this deployment builds; 10.69.0.0/16 is the lab the VPN
-            # tunnel reaches, which holds the upstream and the estate's own machines.
-            #
-            # The tunnel is why this list matters rather than merely agreeing with the security
-            # group: traffic arriving through it is decapsulated inside the guest, past every group
-            # rule, so the host firewall is the only thing that can scope it.
-            admitted_networks: '10.0.0.0/16,10.69.0.0/16'
+          updates:
+            languages: ['en']
           sync:
-            # HOW LONG TO WAIT for the catalogue, and then for the files behind it. These run
-            # sequentially inside one CI step, so their sum is what has to fit -- and the worst
-            # case is THREE waits, not two, because a synchronisation already in flight is polled
-            # to a full stop under timeout_seconds before a new one starts. 75 minutes is the
-            # ceiling that arithmetic allows and 45 the ordinary path, inside a step that also
-            # builds a second Windows guest.
+            # Catalogue wait then content wait, sequential in one CI step. Worst case is three waits
+            # -- an in-flight sync is stopped first -- so 75 minutes is the ceiling this budget
+            # allows.
             content_timeout_seconds: 900
             timeout_seconds: 1800
 
-            # THE MIRROR TOPOLOGY. Approvals are made once, upstream, and inherited here, which is
-            # the whole reason this server is a downstream rather than its own island.
+            # Approvals are made once, upstream, and inherited here.
             replica: true
 
-            # WAIT, because this deployment's whole purpose is to prove a client takes an update
-            # from the server it just built, and only this mode can say the catalogue arrived. It
-            # is affordable here for one reason: the upstream is a curated lab server holding one
-            # approved update. A production estate mirroring the full Microsoft catalogue would
-            # say 'start' and let the first synchronisation run for as long as it takes.
+            # 'wait' because this deployment exists to prove a client takes an update, and only wait
+            # can say the catalogue arrived. Affordable only because the upstream is a curated lab
+            # server holding one approved update; a full Microsoft mirror would say 'start'.
             mode: 'wait'
 
-            # THE ENDPOINT, in the three parts a deployer thinks in. The role composes them into
-            # one URL before handing them to the actor.
-            #
-            # The lab WSUS this POC mirrors, reached over the OpenVPN tunnel this host joins in
-            # the play above. An address rather than a name because the guest resolves through the
-            # domain's DNS and this upstream is not a domain member; a name would be the right
-            # answer for an upstream that is one.
+            # The lab WSUS this POC mirrors, over the OpenVPN tunnel. An address, not a name: this
+            # upstream is not a domain member and the guest resolves through the domain's DNS.
             upstream_server: '10.69.112.6'
 
-            # 8530 because that is the port WSUS itself listens on, and plain HTTP because
-            # encrypting this link needs the UPSTREAM to be serving SSL -- its property, not
-            # something this deployment can arrange.
+            # Plain HTTP on 8530 because encrypting this link needs the UPSTREAM to serve SSL, which
+            # is its property, not this deployment's.
             upstream_port: 8530
             upstream_use_ssl: false
           tls:
-            # THE CERTIFICATE THIS DEPLOYMENT SERVES, whole. It lives here rather than in the role
-            # because the role is the part that travels between deployments and this is the part
-            # that does not: a production WSUS presents a different name, different objects and a
-            # different thumbprint, and none of that should mean editing the travelling file.
-            #
-            # ONE object, described from several angles, so rotating it is one coherent edit. The
-            # PKCS#12 holds the certificate and its key; the digest is checked on the controller
-            # before it is imported; the thumbprint pins which certificate the listener may
-            # present.
-            #
-            # Nothing here says who TRUSTS it. The directory carries the estate's root to every
-            # domain member, this server included, which is the same shape a production CA would
-            # take and the reason the role writes no root store.
-            #
-            # In this development estate that is a separate temporary policy, recorded as a known
-            # gap and measured not reaching the POC client. This server depends on it now too.
             certificate:
-              # Account-scoped, and only the pipeline knows the account. Both reads below run on
-              # the controller; this guest has no route to S3.
               bucket: "{{ aws_account_id | default('') }}-ansible"
-              dns_name: 'tcnaw-wsus01.tcn.trinitytechnicalservices.com'
-              object: 'applications/windows-wsus/tls/tcnaw-wsus01.tcn.trinitytechnicalservices.com.pfx'
-
-              # Read through the framework's secret lookup, which is how this estate reads a
-              # credential out of S3. The second term is the digest of the stored bytes, so an
-              # object that moved under an unchanged pin stops the play rather than handing the
-              # role a password that will only fail later, at the import.
-              #
-              # WRAPPED IN AN IF, and that is not decoration. The loader templates this whole map
-              # while building wsus_running, which is before the role reaches any of its own
-              # gates -- so a bare lookup here would read the secret on a state=clean or
-              # state=absent run that never opens a listener, and would fail those runs on a
-              # password object they have no use for. A Jinja if does not evaluate the branch it
-              # does not take, where a ternary would evaluate both. Anything other than present
-              # resolves to empty, which validate.yml does not look at outside a present run.
+              dns_name: "{{ inventory_hostname }}.tcn.trinitytechnicalservices.com"
+              object: "applications/windows-wsus/tls/{{ inventory_hostname }}.pfx"
               password: >-
-                {% if (state | default('present') | string | lower | trim) == 'present' -%}
                 {{ lookup('secret',
-                          's3://' ~ aws_account_id ~ '-ansible/applications/windows-wsus/tls/'
-                          ~ 'tcnaw-wsus01.tcn.trinitytechnicalservices.com.pfx.password',
-                          '0ba43689e6f79a59fcf2ce0bfad2a868042d4e4eae92506b84ccb38f1bea6d59') }}
-                {%- endif %}
+                    's3://' ~ aws_account_id ~ '-ansible/applications/windows-wsus/tls'
+                    ~ '/' ~ inventory_hostname ~ '.pfx.password',
+                    '0ba43689e6f79a59fcf2ce0bfad2a868042d4e4eae92506b84ccb38f1bea6d59') }}
               sha256: '473880d30d30fd3f6fc32b9aedd6e9fd410d9a63b31c0152d993d9ed0a585e16'
               thumbprint: '8760E9DA2B79D7FCFB5C8DADD72628649029B348'
 
@@ -273,12 +188,8 @@
 #endregion --- [ Play: WSUS ] ----------------------------------------------------------------- #
 
 #region ------ [ Play: Configure The Client Guest ] ------------------------------------------- #
-# The client this deployment exists to convince. A WSUS server that reports itself healthy proves
-# that WSUS is configured; only a machine that asks it for updates, across the firewall rules as
-# written, proves that WSUS works.
-#
-# The same four roles the server gets, minus the disk manager: a client separates nothing, so it
-# has no data volumes to lay out.
+# The client that proves the server: a healthy WSUS proves it is configured, only a machine that
+# takes an update from it proves it works. Same roles as the server, minus the disk manager.
 
 - name: 'PLAY | Configure The Client Guest (ephemeral AWS)'
   hosts: 'wsus_clients'
@@ -288,8 +199,7 @@
   roles:
 
     #region ------ [ Roles: Host Readiness ] -------------------------------------------------- #
-    # Declared, not detected, for the reason the server's copy records: a failed probe reads as
-    # "no platform" and skips the EC2Launch wait that the rename-and-reboot below depends on.
+    # Declared, not detected, as on the server.
     - role: 'host_readiness'
       vars:
         host_readiness_platform: 'aws'
@@ -303,28 +213,26 @@
     #endregion --- [ Roles: OS Bootstrap ] ---------------------------------------------------- #
 
     #region ------ [ Roles: Remote Client ] --------------------------------------------------- #
-    # The tunnel, because the directory this machine joins is on the other side of it.
+    # The directory this machine joins is on the other side of the tunnel.
     - role: 'remote_client'
 
     #endregion --- [ Roles: Remote Client ] --------------------------------------------------- #
 
     #region ------ [ Roles: Domain Member ] --------------------------------------------------- #
-    # This machine MUST be in scope of the domain's Windows Update policy, because that policy is
-    # what points it at the server under test -- the role checks that pointing rather than doing
-    # it. Domain Servers because it is a Windows Server, and because it is the one organisational
-    # unit this repository can show exists: the WSUS server's own unit nests inside it. A DN
-    # guessed from a tree nobody here has seen fails the join, which is a confusing way to learn
-    # about an OU.
+    # Must be in scope of the domain's Windows Update policy, which is what points it at the server
+    # under test. Domain Servers because that is the one OU this repository can show exists.
     - role: 'domain_member'
       vars:
         domain_member:
-          password: { bucket: "{{ aws_account_id | default('') }}-ansible" }
+          realm: 'tcn.trinitytechnicalservices.com'
+          user: 'svc-domainjoin@tcn.trinitytechnicalservices.com'
+          password: >-
+            {{ lookup('secret',
+                's3://' ~ aws_account_id ~ '-ansible/host_roles/domain_member/'
+                ~ 'svc-domainjoin-password.txt',
+                '07493ed779c2962bff0b5e19cfa00b8cdb95defcf477f6b5bac36ddef55087ae') }}
           computer_ou: 'OU=Domain Servers,DC=tcn,DC=trinitytechnicalservices,DC=com'
-          # Its VPC address, for the same reason the server publishes one: this machine is
-          # multi-homed too, and nothing here depends on it being reachable by name from anywhere.
-          # It is declared rather than omitted because the framework refuses an empty value -- a
-          # converge that left registration as it found it would report success while the name
-          # stayed wrong.
+          # Its VPC address, as the server. Declared because the framework refuses an empty value.
           registration_address: "{{ aws_private_ip_address }}"
 
     #endregion --- [ Roles: Domain Member ] --------------------------------------------------- #
@@ -334,8 +242,7 @@
 #endregion --- [ Play: Configure The Client Guest ] ------------------------------------------- #
 
 #region ------ [ Play: Prove The Client ] ----------------------------------------------------- #
-# Its own play, on the same reasoning the server's product gets one: the roles above bring a host
-# into existence and into the directory, and this is the thing that host exists to do.
+# Its own play, for the same reason the server's product gets one.
 
 - name: 'PLAY | Prove The Client Takes Updates From WSUS (ephemeral AWS)'
   hosts: 'wsus_clients'
@@ -345,32 +252,15 @@
   roles:
 
     #region ------ [ Roles: WSUS Client ] ----------------------------------------------------- #
-    # The URL is the certificate's subject, not an address, and it has to be: the server presents
-    # a certificate for that name, so a client dialling an IP would fail the handshake no matter
-    # which address were right.
-    #
-    # WHICH address that name resolves to is worth watching on the first run. This server is
-    # multi-homed -- a VPC interface and a tunnel adapter -- and Windows registers what it has in
-    # DNS. The route this deployment sanctions is the VPC one, and the server's security group
-    # admits 8530 and 8531 from this subnet alone; a name that resolved to the tunnel address
-    # instead would send the client the long way round. If that happens, the fix is to stop the
-    # tunnel adapter registering rather than to widen the firewall.
+    # The URL is the certificate's subject, not an address: the server presents a certificate for
+    # that name, so an IP would fail the handshake. If a first run resolves this to the tunnel
+    # address, fix the tunnel adapter's registration, not the firewall.
     - role: 'wsus_client'
       vars:
         wsus_client:
-          # The certificate the client must already trust, which is the one the server role was
-          # told to present. The client does not take this on faith: it reads both root stores for
-          # a key named by this thumbprint, so a Group Policy that delivered some OTHER certificate
-          # leaves the named key absent and the run refuses.
-          #
-          # The server needs that same delivery and is checked by nothing here -- it is a domain
-          # member like any other, and its own API calls fail their chain check until policy has
-          # reached it.
-          #
-          # ONE deployment fact written twice, which is a real cost rather than a feature: nothing
-          # here equates the two, so rotating the certificate means editing both blocks. The
-          # server and the client are configured by different plays and play vars do not cross,
-          # so no single declaration in this file reaches both. Recorded rather than hidden.
+          # The certificate the client must already trust, stated twice because the plays do not
+          # share vars. The role reads the machine root stores for this thumbprint and refuses if it
+          # is absent.
           certificate:
             thumbprint: '8760E9DA2B79D7FCFB5C8DADD72628649029B348'
 
