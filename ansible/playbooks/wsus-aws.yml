@@ -178,14 +178,17 @@
             certificate:
               bucket: "{{ aws_account_id | default('') }}-ansible"
               dns_name: "{{ inventory_hostname }}.tcn.trinitytechnicalservices.com"
-              object: "applications/windows-wsus/tls/{{ inventory_hostname }}.pfx"
+              # ONE object for every WSUS host: the certificate is a SAN covering wsus01, 02 and
+              # 03, so it cannot be named per host. dns_name above stays per host -- the object
+              # is shared, the identity each server presents is not.
+              object: 'applications/windows-wsus/tls/tcnaw-wsus.pfx'
               password: >-
                 {{ lookup('secret',
                     's3://' ~ aws_account_id ~ '-ansible/applications/windows-wsus/tls'
-                    ~ '/' ~ inventory_hostname ~ '.pfx.password',
-                    '0ba43689e6f79a59fcf2ce0bfad2a868042d4e4eae92506b84ccb38f1bea6d59') }}
-              sha256: '473880d30d30fd3f6fc32b9aedd6e9fd410d9a63b31c0152d993d9ed0a585e16'
-              thumbprint: '8760E9DA2B79D7FCFB5C8DADD72628649029B348'
+                    ~ '/tcnaw-wsus.pfx.password',
+                    'fc77c7baa66d3ca12f359de51f821c5f454184a98187811d918e682514745b41') }}
+              sha256: 'b0d8973b9eddc964c98092b2724d5a3c4daf407d946cda6f36a2dd88ff22b3fc'
+              thumbprint: '38108AEDBD378EFA498607D2829FC75B58E32A40'
 
     #endregion --- [ Roles: WSUS ] ------------------------------------------------------------ #
 
@@ -270,7 +273,7 @@
           # share vars. The role reads the machine root stores for this thumbprint and refuses if it
           # is absent.
           certificate:
-            thumbprint: '8760E9DA2B79D7FCFB5C8DADD72628649029B348'
+            thumbprint: '38108AEDBD378EFA498607D2829FC75B58E32A40'
 
           server:
             url: 'https://tcnaw-wsus01.tcn.trinitytechnicalservices.com:8531'
