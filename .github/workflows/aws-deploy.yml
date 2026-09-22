@@ -301,6 +301,7 @@ jobs:
         working-directory: .frameworks/aws-terraform-framework/terraform
         env:
           GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
+          AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
         run: |
           set -euo pipefail
           terraform destroy -input=false -auto-approve -lock-timeout=300s    \
@@ -310,6 +311,7 @@ jobs:
             -var "repository=${GITHUB_REPOSITORY}"                           \
             -var "run_id=${GITHUB_RUN_ID}"                                   \
             -var "runner_ip=${RUNNER_IP}"                                    \
+            -var "windows_fod_source={bucket=\"${AWS_ACCOUNT_ID}-apprepo\",region=\"${AWS_REGION}\",key_prefix=\"fod\"}" \
             -var-file="${GITHUB_WORKSPACE}/terraform/aws.tfvars"
 
       # The environment and deployment identity are individual -var flags — the highest-
@@ -319,10 +321,18 @@ jobs:
       # takes an address or null and refuses an empty string, so the :+ expansion is what keeps a
       # blank from arriving as one. Committed rules used to open tcp/22 to the whole internet for
       # this; this grants one person one address, for one run, from a name nothing here records.
+      #
+      # windows_fod_source is a FLAG rather than a tfvars value because the bucket's name carries
+      # the account id, which the public value file must not. Server 2022 and 2019 ship without
+      # the OpenSSH.Server capability, so the framework's user_data installs it at boot from the
+      # cab staged at fod/<build>/ in the application repository bucket. Both terraform
+      # invocations pass the same object, so the configuration they evaluate is the same one.
       - name: Terraform apply
         id: tf-apply
         timeout-minutes: 15
         working-directory: .frameworks/aws-terraform-framework/terraform
+        env:
+          AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
         run: |
           set -euo pipefail
           terraform apply -input=false -auto-approve -lock-timeout=120s      \
@@ -333,6 +343,7 @@ jobs:
             -var "repository_id=${GITHUB_REPOSITORY_ID}"                     \
             -var "commit_sha=$(git -C "${GITHUB_WORKSPACE}" rev-parse HEAD)" \
             -var "run_id=${GITHUB_RUN_ID}"                                   \
+            -var "windows_fod_source={bucket=\"${AWS_ACCOUNT_ID}-apprepo\",region=\"${AWS_REGION}\",key_prefix=\"fod\"}" \
             ${DEBUG_IP:+-var "debug_ip=${DEBUG_IP}"}
 
       # This repo's roles overlay onto the pinned framework tree. A framework-TRACKED role
@@ -477,6 +488,8 @@ jobs:
         if: inputs.os_swap
         timeout-minutes: 15
         working-directory: .frameworks/aws-terraform-framework/terraform
+        env:
+          AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
         run: |
           set -euo pipefail
           terraform apply -input=false -auto-approve -lock-timeout=120s      \
@@ -488,6 +501,7 @@ jobs:
             -var "commit_sha=$(git -C "${GITHUB_WORKSPACE}" rev-parse HEAD)" \
             -var "run_id=${GITHUB_RUN_ID}"                                   \
             -var "refresh_serial=1"                                          \
+            -var "windows_fod_source={bucket=\"${AWS_ACCOUNT_ID}-apprepo\",region=\"${AWS_REGION}\",key_prefix=\"fod\"}" \
             ${DEBUG_IP:+-var "debug_ip=${DEBUG_IP}"}
 
       # The operating system is new, so this pays a first converge's costs again and gets a first
@@ -577,6 +591,7 @@ jobs:
         working-directory: .frameworks/aws-terraform-framework/terraform
         env:
           GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
+          AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
         run: |
           set -euo pipefail
           terraform destroy -input=false -auto-approve -lock-timeout=300s    \
@@ -586,6 +601,7 @@ jobs:
             -var "repository=${GITHUB_REPOSITORY}"                           \
             -var "repository_id=${GITHUB_REPOSITORY_ID}"                     \
             -var "commit_sha=$(git -C "${GITHUB_WORKSPACE}" rev-parse HEAD)" \
+            -var "windows_fod_source={bucket=\"${AWS_ACCOUNT_ID}-apprepo\",region=\"${AWS_REGION}\",key_prefix=\"fod\"}" \
             -var "run_id=${GITHUB_RUN_ID}"
 
       - name: Remove the ephemeral private key

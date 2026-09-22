@@ -2,11 +2,13 @@
 # File: 'ansible/playbooks/wsus-aws.yml'
 # --- [ Description ] ----------------------------------------------------------------------- #
 #
-# Builds a WSUS server on SQL Server from ephemeral EC2, then a client that proves it. Runs only
-# from the composed tree: the workflow overlays this repository onto the pinned ansible-framework
-# and runs it against a dynamic EC2 inventory filtered to one run. gather_facts and become are
-# absent throughout: the framework's ansible.cfg makes gathering explicit and escalation off, and
-# implicit gathering would run a module over the shell os_bootstrap has not yet fixed.
+# Builds three WSUS servers on SQL Server from ephemeral EC2, one each on Windows Server 2019,
+# 2022 and 2025, so the role is shown converging across every generation the estate runs rather
+# than only the one the image happened to ship. Runs only from the composed tree: the workflow
+# overlays this repository onto the pinned ansible-framework and runs it against a dynamic EC2
+# inventory filtered to one run. gather_facts and become are absent throughout: the framework's
+# ansible.cfg makes gathering explicit and escalation off, and implicit gathering would run a
+# module over the shell os_bootstrap has not yet fixed.
 # =========================================================================================== #
 ---
 #region ------ [ Play: Inventory Contract ] --------------------------------------------------- #
@@ -16,25 +18,41 @@
 - name: 'PLAY | Validate The Ephemeral AWS Inventory Contract'
   hosts: 'localhost'
   tasks:
-    - name: 'INVENTORY | Require At Least One Filtered Host'
+    # EVERY server, not at least one. The deployment exists to show the role converging on three
+    # operating-system generations, so a run that launched two and lost one would otherwise pass
+    # while proving a third less than it claims. The count is the proof's subject.
+
+    - name: 'INVENTORY | Require Every Filtered Host'
       ansible.builtin.assert:
-        that: groups['wsus_servers'] | default([]) | length >= 1
+        that: (groups['wsus_servers'] | default([]) | length) == 3
         fail_msg: >-
-          Refusing to configure: the 'wsus_servers' inventory group is empty. The dynamic EC2
-          inventory found no running instance tagged for this run -- a zero-host inventory is not a
-          successful deployment proof.
+          Refusing to configure: the 'wsus_servers' inventory group holds
+          {{ groups['wsus_servers'] | default([]) | length }} hosts, not 3. The dynamic EC2
+          inventory found {{ groups['wsus_servers'] | default([]) | join(', ') | default('none',
+          true) }} for this run -- an incomplete fleet is not a successful deployment proof.
         quiet: true
 
-    # Same for the client. Without this a run whose client never appeared would skip both client
-    # plays and report success.
+    # Each generation exactly once. Three hosts that are all one release would satisfy the count
+    # above and prove a third of what this deployment is for, so the releases are asserted too.
+    # OsRelease is the same tag the inventory composes os_bootstrap_role from, so this also
+    # catches a host that would silently route to the wrong bootstrap role.
 
-    - name: 'INVENTORY | Require At Least One Filtered Client'
+    # map(attribute=..., default=...) rather than map('extract', hostvars, 'os_bootstrap_role'):
+    # extract RAISES on a host that has no such key, and the raise happens while the message is
+    # being built, so the run dies with "HostVarsVars has no attribute" instead of the
+    # diagnostic below. A host with no OsRelease tag is exactly the case worth reporting well.
+
+    - name: 'INVENTORY | Require One Host Per Supported Release'
       ansible.builtin.assert:
-        that: groups['wsus_clients'] | default([]) | length >= 1
+        that: >-
+          (groups['wsus_servers'] | default([]) | map('extract', hostvars)
+            | map(attribute='os_bootstrap_role', default='<unset>') | sort)
+          == ['windows_server_2019', 'windows_server_2022', 'windows_server_2025']
         fail_msg: >-
-          Refusing to configure: the 'wsus_clients' inventory group is empty. The dynamic EC2
-          inventory found no running instance tagged Function=wsus_client for this run, so nothing
-          would ask the WSUS server for an update and the run would prove only half of itself.
+          Refusing to configure: the fleet must be exactly one Server 2019, one 2022 and one
+          2025. Found {{ groups['wsus_servers'] | default([]) | map('extract', hostvars)
+          | map(attribute='os_bootstrap_role', default='<unset>') | sort | join(', ') }}. Check
+          the OsRelease tag in terraform/aws.tfvars.
         quiet: true
 
     # Bucket names are templated from the account id, so a wrong one fails minutes later on the
@@ -195,91 +213,3 @@
   #endregion --- [ Roles ] -------------------------------------------------------------------- #
 
 #endregion --- [ Play: WSUS ] ----------------------------------------------------------------- #
-
-#region ------ [ Play: Configure The Client Guest ] ------------------------------------------- #
-# The client that proves the server: a healthy WSUS proves it is configured, only a machine that
-# takes an update from it proves it works. Same roles as the server, minus the disk manager.
-
-- name: 'PLAY | Configure The Client Guest (ephemeral AWS)'
-  hosts: 'wsus_clients'
-  any_errors_fatal: true
-
-  #region ------ [ Roles ] -------------------------------------------------------------------- #
-  roles:
-
-    #region ------ [ Roles: Host Readiness ] -------------------------------------------------- #
-    # Declared, not detected, as on the server.
-    - role: 'host_readiness'
-      vars:
-        host_readiness_platform: 'aws'
-
-    #endregion --- [ Roles: Host Readiness ] -------------------------------------------------- #
-
-    #region ------ [ Roles: OS Bootstrap ] ---------------------------------------------------- #
-    # Pass it NO vars: role params outrank the connection scoping it relies on.
-    - role: 'os_bootstrap'
-
-    #endregion --- [ Roles: OS Bootstrap ] ---------------------------------------------------- #
-
-    #region ------ [ Roles: Remote Client ] --------------------------------------------------- #
-    # The directory this machine joins is on the other side of the tunnel.
-    - role: 'remote_client'
-
-    #endregion --- [ Roles: Remote Client ] --------------------------------------------------- #
-
-    #region ------ [ Roles: Domain Member ] --------------------------------------------------- #
-    # Must be in scope of the domain's Windows Update policy, which is what points it at the server
-    # under test. Domain Servers because that is the one OU this repository can show exists.
-    - role: 'domain_member'
-      vars:
-        domain_member:
-          realm: 'tcn.trinitytechnicalservices.com'
-          user: 'svc-domainjoin@tcn.trinitytechnicalservices.com'
-          password: >-
-            {{ lookup('secret',
-                's3://' ~ aws_account_id ~ '-ansible/host_roles/domain_member/'
-                ~ 'svc-domainjoin-password.txt',
-                '07493ed779c2962bff0b5e19cfa00b8cdb95defcf477f6b5bac36ddef55087ae') }}
-          computer_ou: 'OU=Domain Servers,DC=tcn,DC=trinitytechnicalservices,DC=com'
-          # Its VPC address, as the server. Optional at this pin -- unset publishes the
-          # default-route address -- and declared because on a multi-homed guest that would be
-          # the tunnel.
-          registration_address: "{{ aws_private_ip_address }}"
-
-    #endregion --- [ Roles: Domain Member ] --------------------------------------------------- #
-
-  #endregion --- [ Roles ] -------------------------------------------------------------------- #
-
-#endregion --- [ Play: Configure The Client Guest ] ------------------------------------------- #
-
-#region ------ [ Play: Prove The Client ] ----------------------------------------------------- #
-# Its own play, for the same reason the server's product gets one.
-
-- name: 'PLAY | Prove The Client Takes Updates From WSUS (ephemeral AWS)'
-  hosts: 'wsus_clients'
-  any_errors_fatal: true
-
-  #region ------ [ Roles ] -------------------------------------------------------------------- #
-  roles:
-
-    #region ------ [ Roles: WSUS Client ] ----------------------------------------------------- #
-    # The URL is the certificate's subject, not an address: the server presents a certificate for
-    # that name, so an IP would fail the handshake. If a first run resolves this to the tunnel
-    # address, fix the tunnel adapter's registration, not the firewall.
-    - role: 'wsus_client'
-      vars:
-        wsus_client:
-          # The certificate the client must already trust, stated twice because the plays do not
-          # share vars. The role reads the machine root stores for this thumbprint and refuses if it
-          # is absent.
-          certificate:
-            thumbprint: '38108AEDBD378EFA498607D2829FC75B58E32A40'
-
-          server:
-            url: 'https://tcnaw-wsus01.tcn.trinitytechnicalservices.com:8531'
-
-    #endregion --- [ Roles: WSUS Client ] ----------------------------------------------------- #
-
-  #endregion --- [ Roles ] -------------------------------------------------------------------- #
-
-#endregion --- [ Play: Prove The Client ] ----------------------------------------------------- #
