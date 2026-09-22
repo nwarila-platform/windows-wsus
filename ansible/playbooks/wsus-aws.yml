@@ -81,8 +81,19 @@
     # Declared, not detected: the role skips its vendor probe when the platform is named, and a
     # probe that errors fails the run rather than reading as "no platform". Naming AWS states the
     # precondition the rename-and-reboot below depends on -- the EC2Launch wait -- in the play.
+    #
+    # The attempt count is DOUBLED from the role's 60 because two of these hosts install OpenSSH
+    # at boot and the one that does not is what the default was sized against. Measured on a live
+    # Server 2022 SQL image: boot took 6m26s, then user_data spent 10m03s in Add-WindowsCapability
+    # before port 22 opened at 16m41s. The default budget expired at roughly 25 minutes, which
+    # leaves almost nothing for a slower boot -- and these hosts boot slower than that
+    # measurement, launching three at a time with three data volumes each to enumerate.
+    # Retries cost nothing on a host that is already up: the 2025 server answers on the first
+    # attempt and pays none of this.
     - role: 'host_readiness'
-      vars: { host_readiness_platform: 'aws' }
+      vars:
+        host_readiness_platform: 'aws'
+        host_readiness_attempts: 120
 
     #endregion --- [ Roles: Host Readiness ] -------------------------------------------------- #
 
