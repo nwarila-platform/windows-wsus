@@ -10,8 +10,8 @@ framework owns the how, this repo owns only the what.
 
 | File | Purpose |
 |---|---|
-| `aws.tfvars` | The one ephemeral system (`tcnaw-wsus01`) as framework `all_systems` input; passed to terraform verbatim |
-| `../.github/terraform-framework-pin` | 40-char commit SHA of the framework (release 3.1.1 plus #120); pin the SHA, not a tag — release tags land after the fact |
+| `aws.tfvars` | Four ephemeral systems as framework `all_systems` input: server `tcnaw-wsus01` and clients `tcnaw-wsusc01`, `tcnaw-wsusc02`, `tcnaw-wsusc03`; passed to terraform verbatim |
+| `../.github/terraform-framework-pin` | The framework's 40-char commit SHA; pin the SHA, not a tag — release tags land after the fact |
 
 ## How a deploy runs
 
@@ -33,19 +33,20 @@ framework owns the how, this repo owns only the what.
 
 ## Assumptions this layer does not (cannot) verify
 
-- **Reachability is direct SSH admitted by two groups:** the runner dials sshd at the instance's
-  auto-assigned public IPv4. The framework's `runner_ip` group carries tcp/22 from that one
-  runner's `/32`, created for the run and destroyed with it, and is passed as an apply-time
-  `-var` because the address belongs to a single run; the interface's own group carries the
-  temporary development-cycle rules that open tcp/22 to the whole IPv4 space. This depends on the
+- **Reachability is run-scoped:** the runner uses SSH on tcp/22 for `tcnaw-wsus01`,
+  `tcnaw-wsusc02`, and `tcnaw-wsusc03`, and WinRM over HTTPS on tcp/5986 for `tcnaw-wsusc01`.
+  The framework's `runner_ip` group admits only that runner's `/32`, plus the operator address
+  when the pipeline resolves one, and is created and destroyed with the run. This depends on the
   shared deploy subnet keeping `MapPublicIpOnLaunch`, which `ec2:DescribeSubnets` does report; the
   route from that subnet to the internet gateway is what cannot be verified, because
-  `ec2:DescribeRouteTables` is not granted. Either way the play fails on an inventory that yields
-  no reachable host rather than hanging.
+  `ec2:DescribeRouteTables` is not granted. The play fails on an inventory that yields no reachable
+  host rather than hanging.
 - The deploy role launches with the standing `nwarila-ec2-key` pair; it never creates key pairs.
   The private half lives in the `AWS_EC2_SSH_PRIVATE_KEY` organization secret, is staged into
   the runner's temporary directory at mode 0600 for the life of one job, and never enters
-  Terraform state (`readiness_gate = false`, `readiness_private_key_path = null`).
+  Terraform state (`readiness_gate = false`, `readiness_private_key_path = null`). It authenticates
+  the key-logon hosts before the join and decrypts the EC2 launch password for the WinRM and
+  password-logon hosts.
 
 ## Local (break-glass) run
 

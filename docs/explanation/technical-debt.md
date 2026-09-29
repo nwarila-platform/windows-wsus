@@ -71,11 +71,14 @@ workarounds are not accidentally restored.
 
 ## TD-009 — the Windows image is a pinned vendor AMI, not a self-published one
 
-- **What:** `terraform/aws.tfvars` addresses the image by literal id (`ami-0ac1b4c911759cc2e`,
-  `Windows_Server-2025-English-Full-SQL_2022_Standard-2026.08.12`, owner `801119661308`). The
-  pinned framework accepts that only through a vendor allowlist its own source marks `TEMPORARY
-  — hardcoded until those images are mirrored into the catalog`. Catalog selectors remain
-  locked to images the deploying account published.
+- **What:** `terraform/aws.tfvars` addresses four images by literal id, all owner `801119661308`:
+  `ami-0c1499dbc4eaf1bf6` (`Windows_Server-2022-English-Full-SQL_2022_Standard-2026.09.17`),
+  `ami-0373950d5ba064b67` (`EC2LaunchV2-Windows_Server-2019-English-Full-Base-2026.09.17`),
+  `ami-0ed58a129008c2cc2` (`Windows_Server-2022-English-Full-Base-2026.09.17`), and
+  `ami-00d8aa800578d8b12` (`Windows_Server-2025-English-Full-Base-2026.09.17`). The pinned
+  framework accepts them only through a vendor allowlist its own source marks `TEMPORARY —
+  hardcoded until those images are mirrored into the catalog`. Catalog selectors remain locked
+  to images the deploying account published.
 - **Consequence:** the pin does not track upstream. Amazon republishes these images roughly
   monthly, and nothing in this repository detects that ours has aged — a green proof badge can
   therefore attest to a months-old image. This is accepted deliberately, not overlooked.
@@ -88,29 +91,14 @@ workarounds are not accidentally restored.
   noticing. A self-published image must still carry a licensed SQL Server, which is what the
   vendor image supplies today. Close this entry only when the selector is a catalog address.
 
-## TD-012 — the lab runs Server 2025 while the production target is Server 2022
+## TD-012 — CLOSED: the lab WSUS server matches the Server 2022 production target
 
 - **Recorded:** 2026-08-23 as a Server 2025 pin, closed 2026-08-24 by repinning to Server 2022,
   and reopened 2026-08-25 when the image had to carry a licensed SQL Server.
-- **What:** the production deployment this repository targets runs Windows Server 2022 with SQL
-  Server 2022. The pinned image is `Windows_Server-2025-English-Full-SQL_2022_Standard`: SQL
-  Server 2022 matches, the operating system generation does not.
-- **Why it cannot simply be repinned back:** OpenSSH Server ships installed from Server 2025 and
-  is a Feature-on-Demand on 2022, while the pinned framework's Windows user_data runs
-  `Set-Service -Name sshd` under `$ErrorActionPreference = "Stop"`. On a 2022 image that aborts
-  the whole script before the launch key is installed, so the guest is unreachable. Installing
-  the capability needs either Windows Update or an S3-hosted CAB, and the guest has no HTTPS
-  egress.
-- **Consequence:** the two generations carry different operating-system STIGs, so once
-  hardening is part of the proof again it will be hardening the production host never sees. The
-  application surface — SQL Server and IIS — is unaffected. One install-time detail does
-  differ: the documented reboot on first SQL 2022 install is specific to Server 2022 shipping
-  VCRuntime140 14.28.29914 against SQL's 14.29.30139 floor, and whether Server 2025 avoids it
-  is unverified.
-- **Exit criteria:** a self-published Server 2022 image carrying both a licensed SQL Server and
-  the OpenSSH capability, which is the same image work TD-009 requires; or a framework
-  user_data that installs the capability, which needs outbound HTTPS this deployment does not
-  grant.
+- **Closed:** 2026-09-29. The WSUS server now runs the Server 2022 SQL image
+  `ami-0c1499dbc4eaf1bf6` (`Windows_Server-2022-English-Full-SQL_2022_Standard-2026.09.17`). The
+  pinned framework installs OpenSSH from the staged Feature-on-Demand cab, reachable through the
+  S3 managed prefix list, before Ansible connects.
 
 ## TD-013 — no PowerShell gate, and the org template it will return to is defective
 

@@ -5,8 +5,8 @@ The IAM this repository's ephemeral AWS lifecycle assumes. An operator provision
 `pdq-deploy-inventory` with the repository name and immutable id substituted. Four grant sets
 were dropped as unreachable from this lifecycle: that product's S3 installers, licences, and
 service-account secret; its network and directory artifacts; and the whole SSM policy, because
-the transport is direct SSH and the image is a literal `ami-` id, so the framework never resolves
-a catalog parameter. Grants are added here as this repository needs them, never copied ahead of
+the transports are direct SSH and WinRM and each image is a literal `ami-` id, so the framework
+never resolves a catalog parameter. Grants are added here as this repository needs them, never copied ahead of
 need — the network and directory artifacts arrived with the host-preparation roles that read
 them.
 
@@ -57,13 +57,18 @@ The suffixes are policy domains, not services — `ebs`, `eni`, and `sg` all aut
 - **Unconditional reads.** The EC2 `Describe` actions each policy enumerates — planning reads in
   `_ec2`, volumes in `_ebs`, interfaces in `_eni`, groups and rules in `_sg` — plus
   `kms:ListAliases`, `kms:DescribeKey`, and `iam:GetInstanceProfile` on the shared profile. No
-  `ec2:Describe*` wildcard is granted.
+  `ec2:Describe*` wildcard is granted. The `_ec2` policy also grants `ec2:GetPasswordData` on this
+  repository's own tagged instances so the WinRM and password-logon hosts can use their launch
+  passwords.
 
-Outside EC2: S3 reaches this repository's two Terraform state keys, and read-only the three
-host-preparation artifacts — the connection profile and the directory join password by exact
-key, and the OpenVPN installer by a key whose trailing segment is fixed and whose prefix is a
-wildcard, so that one file name is readable wherever it sits under the product prefix; KMS keys are usable only `ViaService` EC2 in
-the region; `iam:PassRole` passes only `nwarila-ec2-role`, only to EC2.
+Outside EC2: S3 reaches this repository's two Terraform state keys and six read-only host-preparation
+artifacts. The exact keys are `host_roles/remote_client/aws-ec2-test.ovpn`,
+`host_roles/domain_member/svc-domainjoin-password.txt`,
+`host_roles/domain_member/jenkins_runner-password.txt`,
+`host_roles/domain_member/jenkins_runner-ssh-private-key`, and
+`host_roles/domain_member/jenkins_runner-ssh-public-key`; the OpenVPN installer uses a key whose
+trailing segment is fixed and whose prefix is a wildcard. KMS keys are usable only `ViaService`
+EC2 in the region; `iam:PassRole` passes only `nwarila-ec2-role`, only to EC2.
 
 ## Applying
 
