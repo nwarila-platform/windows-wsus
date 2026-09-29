@@ -2,9 +2,9 @@
 # File: 'ansible/playbooks/wsus-aws.yml'
 # --- [ Description ] ----------------------------------------------------------------------- #
 #
-# Prepares one WSUS server and three clients through their inventory-selected transports, installs
-# WSUS on SQL Server, and proves that every client takes updates from it. Runs only from the composed
-# tree built from the pinned ansible-framework and this repository's application roles.
+# Prepares one WSUS server and three clients through their inventory-selected transports, then
+# installs WSUS on SQL Server. Each client asks the server named by Group Policy for updates and
+# installs what it is offered. Runs only from the composed tree built from the pinned framework.
 #
 # gather_facts and become are absent throughout: the framework makes gathering explicit and
 # escalation off, and implicit gathering would run before os_bootstrap repairs the module shell.
@@ -128,6 +128,7 @@
       computer_ou: >-
         {{ 'OU=WSUS,OU=Domain Servers,' if inventory_hostname in groups['wsus_servers']
            else 'OU=Domain Servers,' }}{{ domain_base_dn }}
+      # Use the VPC address; a multi-homed host would otherwise register its tunnel address (decision 57).
       registration_address: "{{ aws_private_ip_address }}"
       post_restart_credentials: >-
         {{ credential_sets | selectattr('name', 'equalto', 'domain-automation') | list }}
@@ -143,6 +144,7 @@
     - role: 'host_readiness'
       vars:
         host_readiness_platform: 'aws'
+    # Pass it NO vars: role params outrank the connection scoping it relies on.
     - role: 'os_bootstrap'
     - role: 'remote_client'
     - role: 'domain_member'

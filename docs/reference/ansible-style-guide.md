@@ -155,8 +155,8 @@ clobber, verified at the module source). These stay `quiet: true` with an action
   target's OpenSSH `DefaultShell` boots as cmd, and `os_bootstrap` flips it to PowerShell on first
   contact; the inventory composes `ansible_shell_type: powershell` to match. Anything that must run
   before that flip is `raw`, which the transport sends verbatim under either shell.
-- `become: false` at play level (framework chassis `become=sudo` is POSIX-only;
-  the resolver requires the selected identity to be elevated at High integrity). Revisit for
+- Escalation is off in the framework chassis and no play overrides it; the resolver requires the
+  selected identity to be elevated at High integrity. Revisit for
   least-privilege runs (runas) when a non-admin service account is introduced — TBD.
 - Windows modules from `ansible.windows` (fallback `community.windows`); never invoke
   raw PowerShell where a module exists — escape-hatch threshold decided at C05, see the

@@ -29,8 +29,8 @@ denies local accounts network logon. The 2019 client uses the EC2Launch v2 image
 readiness check requires EC2Launch v2.
 
 The server takes a license-included SQL Server image, so the database engine arrives licensed by
-AWS rather than being installed here. The pinned framework installs OpenSSH from a staged
-Feature-on-Demand cab when an image does not carry it; see
+AWS rather than being installed here. Only the two Server 2022 hosts install OpenSSH from the
+staged Feature-on-Demand cab; the 2019 client is reached over WinRM and installs none. See
 [TD-012](docs/explanation/technical-debt.md).
 
 The server carries three volumes:

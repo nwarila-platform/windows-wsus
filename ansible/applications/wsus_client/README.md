@@ -21,7 +21,7 @@ the server's decision, which is the whole point of pointing a client at one.
 
 The role is overlaid into a version-pinned checkout of `nwarila-platform/ansible-framework` at run
 time; it is not run directly from this repository. The shipped `ansible/playbooks/wsus-aws.yml`
-runs it against the client host after the `wsus` play has built the server.
+runs it against the three client hosts after the `wsus` play has built the server.
 
 The target must be a domain-joined Windows Server receiving the Group Policy that names the WSUS
 server, with the `ansible.windows` modules the role uses. It needs no route to the internet — that

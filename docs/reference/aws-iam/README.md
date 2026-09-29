@@ -47,7 +47,9 @@ The suffixes are policy domains, not services — `ebs`, `eni`, and `sg` all aut
   `CreateVolume`, `CreateNetworkInterface`, and `CreateSecurityGroup`, require this repository's
   identity tags in the request.
 - **Tagged lifecycle.** Terminate, stop, start, modify, attach, detach, delete, and tagging of
-  those instances and volumes require the resource to already carry those tags.
+  those instances and volumes require the resource to already carry those tags. The `_ec2` policy
+  also grants `ec2:GetPasswordData` on this repository's tagged instances so the WinRM and
+  password-logon hosts can use their launch passwords.
 - **Untagged supporting legs.** A create call must also be authorized against the resources it
   references — images, subnets, key pairs, placement groups, the VPC, referenced security groups,
   the pre-created primary network interface passed to `RunInstances`, and security-group rules. These are
@@ -57,9 +59,7 @@ The suffixes are policy domains, not services — `ebs`, `eni`, and `sg` all aut
 - **Unconditional reads.** The EC2 `Describe` actions each policy enumerates — planning reads in
   `_ec2`, volumes in `_ebs`, interfaces in `_eni`, groups and rules in `_sg` — plus
   `kms:ListAliases`, `kms:DescribeKey`, and `iam:GetInstanceProfile` on the shared profile. No
-  `ec2:Describe*` wildcard is granted. The `_ec2` policy also grants `ec2:GetPasswordData` on this
-  repository's own tagged instances so the WinRM and password-logon hosts can use their launch
-  passwords.
+  `ec2:Describe*` wildcard is granted.
 
 Outside EC2: S3 reaches this repository's two Terraform state keys and six read-only host-preparation
 artifacts. The exact keys are `host_roles/remote_client/aws-ec2-test.ovpn`,

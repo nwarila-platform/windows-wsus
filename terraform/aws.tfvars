@@ -29,7 +29,7 @@ all_systems = [
     # The instance reuses the organization-owned profile; this repository never modifies it.
     iam_instance_profile = "nwarila-ec2-profile"
     aws_kms_alias        = "aws/ebs"
-    # License-included SQL Server Standard; SUSDB can exceed Express's 10 GiB ceiling.
+    # Not a STIG image: none carries SQL Server, and Express's 10 GiB ceiling is too small.
     ami = "ami-0c1499dbc4eaf1bf6"
     # A refresh replaces the operating system while retaining the three standalone data volumes.
     refresh = true
@@ -99,6 +99,7 @@ all_systems = [
         private_ip      = null
         security_groups = []
         # Client traffic needs TLS metadata on 8531 and signed update payloads on HTTP 8530.
+        # 10.69.0.0/16 is the on-prem estate; ingress is subnet-scoped because no security-group id exists until apply.
         ingress = [
           {
             description                  = "WSUS metadata over HTTPS from the VPC"
@@ -149,6 +150,7 @@ all_systems = [
             referenced_security_group_id = null
           },
           {
+            # The S3 prefix list blocks direct Microsoft Update and preserves client attribution.
             description                  = "OpenSSH Feature-on-Demand cab from S3"
             ip_protocol                  = "tcp"
             from_port                    = 443
@@ -281,7 +283,7 @@ all_systems = [
     readiness_private_key_path = null
     imds_hop_limit             = 1
     set_state                  = null
-    # The play reads Authentication; the dynamic inventory reads only the Connection tag.
+    # The play reads it; the inventory does not.
     tags = {
       Function       = "wsus_client"
       Authentication = "password"
@@ -355,6 +357,7 @@ all_systems = [
             referenced_security_group_id = null
           },
           {
+            # The S3 prefix list blocks direct Microsoft Update and preserves client attribution.
             description                  = "OpenSSH Feature-on-Demand cab from S3"
             ip_protocol                  = "tcp"
             from_port                    = 443
