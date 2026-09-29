@@ -21,10 +21,10 @@
 #     refresh uses a modest 3,600-second session so long holds do not reach destroy expired.
 #     The 330-minute job budget stays below the runner's 360-minute execution limit. It no longer
 #     accommodates the longest hold: this lifecycle prepares four Windows guests in one parallel
-#     play before installing WSUS and proving its three clients. Choose 120 or less until the
-#     four-guest path has been measured. It is not a teardown guarantee either: abnormal delay can
-#     exhaust the budget before destroy and strand paid resources. That risk is accepted for this
-#     temporary proof bed.
+#     play before installing WSUS and proving its three clients. Measured: about 80 minutes to
+#     converge and 50 more for an OS swap, so choose a hold of 120 or less. It is not a teardown
+#     guarantee either: abnormal delay can exhaust the budget before destroy and strand paid
+#     resources. That risk is accepted for this temporary proof bed.
 #   * One fixed state key; this workflow's concurrency group prevents overlapping applies and
 #     never cancels a live lifecycle. A later lifecycle can clean predecessor state before apply;
 #     no age-gated reaper exists for a run killed before destroy.
@@ -493,14 +493,14 @@ jobs:
             -var "windows_fod_source={bucket=\"${AWS_ACCOUNT_ID}-apprepo\",region=\"${AWS_REGION}\",key_prefix=\"fod\"}" \
             ${DEBUG_IP:+-var "debug_ip=${DEBUG_IP}"}
 
-      # The operating system is new, so this pays a first converge's costs again and gets a first
-      # converge's budget. The disk role adopts each reattached volume untouched -- it classifies a
-      # disk carrying an NTFS volume with the declared label as one of its own, formats only what
-      # is blank or unformatted, and re-letters the rest -- so SUSDB is still on E: when the WSUS
-      # role runs.
+      # The operating system is new, so the server pays a first converge's costs again: 50 minutes
+      # measured, 17 of them before the replacement answers. The disk role adopts each reattached
+      # volume untouched -- it classifies a disk carrying an NTFS volume with the declared label as
+      # one of its own, formats only what is blank or unformatted, and re-letters the rest -- so
+      # SUSDB is still on E: when the WSUS role runs.
       - name: Re-converge onto the reattached data
         if: inputs.os_swap
-        timeout-minutes: 60
+        timeout-minutes: 80
         working-directory: .frameworks/ansible-framework
         env:
           ANSIBLE_CONFIG: ${{ github.workspace }}/.frameworks/ansible-framework/ansible.cfg
