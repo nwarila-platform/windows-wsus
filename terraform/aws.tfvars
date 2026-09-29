@@ -29,7 +29,8 @@ all_systems = [
     # The instance reuses the organization-owned profile; this repository never modifies it.
     iam_instance_profile = "nwarila-ec2-profile"
     aws_kms_alias        = "aws/ebs"
-    # Not a STIG image: none carries SQL Server, and Express's 10 GiB ceiling is too small.
+    # License-included SQL Server 2022 Standard: Express's 10 GiB ceiling is too small for SUSDB.
+    # Not a STIG image, because no STIG image carries SQL Server.
     ami = "ami-0c1499dbc4eaf1bf6"
     # A refresh replaces the operating system while retaining the three standalone data volumes.
     refresh = true
@@ -99,7 +100,8 @@ all_systems = [
         private_ip      = null
         security_groups = []
         # Client traffic needs TLS metadata on 8531 and signed update payloads on HTTP 8530.
-        # 10.69.0.0/16 is the on-prem estate; ingress is subnet-scoped because no security-group id exists until apply.
+        # 10.69.0.0/16 is the on-prem estate. Rules name CIDRs because a client's security-group id
+        # does not exist until apply.
         ingress = [
           {
             description                  = "WSUS metadata over HTTPS from the VPC"
@@ -283,7 +285,7 @@ all_systems = [
     readiness_private_key_path = null
     imds_hop_limit             = 1
     set_state                  = null
-    # The play reads it; the inventory does not.
+    # The play reads Authentication; the inventory does not.
     tags = {
       Function       = "wsus_client"
       Authentication = "password"

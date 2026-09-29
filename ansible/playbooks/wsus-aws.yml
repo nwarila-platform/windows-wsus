@@ -128,7 +128,8 @@
       computer_ou: >-
         {{ 'OU=WSUS,OU=Domain Servers,' if inventory_hostname in groups['wsus_servers']
            else 'OU=Domain Servers,' }}{{ domain_base_dn }}
-      # Use the VPC address; a multi-homed host would otherwise register its tunnel address (decision 57).
+      # The VPC address: a multi-homed host would otherwise register its tunnel address. On-prem
+      # clients cannot resolve it, acceptable because production has none (decision 57).
       registration_address: "{{ aws_private_ip_address }}"
       post_restart_credentials: >-
         {{ credential_sets | selectattr('name', 'equalto', 'domain-automation') | list }}

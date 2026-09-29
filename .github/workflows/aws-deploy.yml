@@ -322,7 +322,7 @@ jobs:
       # windows_fod_source is a FLAG rather than a tfvars value because the bucket's name carries
       # the account id, which the public value file must not. Only the two Server 2022 hosts install
       # OpenSSH.Server at boot from the cab staged at fod/<build>/; the 2019 client uses WinRM and
-      # installs none. Both terraform invocations pass the same object.
+      # installs none. Every terraform invocation passes the same object.
       - name: Terraform apply
         id: tf-apply
         timeout-minutes: 15
