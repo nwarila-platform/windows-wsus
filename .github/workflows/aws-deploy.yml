@@ -7,27 +7,24 @@
 #
 #   * AWS credentials are issued only to this workflow at refs/heads/main, by both the workflow
 #     guard below and the OIDC trust; feature-branch workflow code never reaches AWS.
-#   * Reachability: direct SSH to a subnet-assigned public IPv4, admitted by ONE run-scoped group
-#     the framework attaches at apply. It carries the runner's validated public IPv4, and an
-#     operator's own address as well, resolved at run time from an organisation secret naming a
-#     host rather than from anything committed or recorded with the run. Nothing in
-#     terraform/aws.tfvars opens tcp/22 any more: the committed rule that opened it to the whole
-#     IPv4 space was a development-cycle allowance and has been removed, so this repository no
-#     longer records who may reach the estate or from where. This configuration creates no EIP and
-#     has no NAT. The playbook performs the bounded direct-SSH readiness check because
-#     readiness_gate remains disabled.
+#   * Reachability: SSH on 22 or WinRM over HTTPS on 5986 to a subnet-assigned public IPv4,
+#     admitted by ONE run-scoped group the framework attaches at apply. It carries the runner's
+#     validated public IPv4, and an operator's own address as well, resolved at run time from an
+#     organisation secret naming a host rather than from anything committed or recorded with the
+#     run. This configuration creates no EIP and has no NAT. The credential resolver performs the
+#     bounded connection wait because readiness_gate remains disabled.
 #   * AWS credentials are exchanged before provisioning and refreshed before EACH long AWS-using
 #     phase -- the idempotence proof, the optional operating-system swap, and teardown. The
 #     7,800-second session is the deploy role's MaxSessionDuration and cannot be lengthened, and it
-#     does NOT cover the whole pre-hold path now that this lifecycle builds two Windows guests: a
+#     does NOT cover the whole pre-hold path now that this lifecycle builds four Windows guests: a
 #     slow but permitted run would otherwise reach a later phase with it expired. The teardown
 #     refresh uses a modest 3,600-second session so long holds do not reach destroy expired.
 #     The 330-minute job budget stays below the runner's 360-minute execution limit. It no longer
-#     accommodates the longest hold: this lifecycle now builds TWO Windows guests sequentially, so
-#     the converge path costs roughly 150 minutes of it and a 240-minute hold would not fit. Choose
-#     120 or less until the two-guest path has been measured. It is not a teardown guarantee
-#     either: abnormal delay can exhaust the budget before destroy and strand paid resources. That
-#     risk is accepted for this temporary proof bed.
+#     accommodates the longest hold: this lifecycle prepares four Windows guests in one parallel
+#     play before installing WSUS and proving its three clients. Measured: about 80 minutes to
+#     converge and 50 more for an OS swap, so choose a hold of 120 or less. It is not a teardown
+#     guarantee either: abnormal delay can exhaust the budget before destroy and strand paid
+#     resources. That risk is accepted for this temporary proof bed.
 #   * One fixed state key; this workflow's concurrency group prevents overlapping applies and
 #     never cancels a live lifecycle. A later lifecycle can clean predecessor state before apply;
 #     no age-gated reaper exists for a run killed before destroy.
@@ -97,9 +94,9 @@ jobs:
     needs: main-ref
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
-    # The 330-minute budget remains below the runner's 360-minute execution limit. With two Windows
-    # guests built sequentially the converge path takes roughly 150 minutes of it, so a 240-minute
-    # hold no longer fits; a timeout can still strand resources before teardown.
+    # The 330-minute budget stays below the runner's 360-minute limit. Four guests prepare in one
+    # parallel play before WSUS runs on the server and the three clients prove their update path.
+    # A timeout can still strand resources before teardown.
     timeout-minutes: 330
     permissions:
       id-token: write
@@ -323,10 +320,9 @@ jobs:
       # this; this grants one person one address, for one run, from a name nothing here records.
       #
       # windows_fod_source is a FLAG rather than a tfvars value because the bucket's name carries
-      # the account id, which the public value file must not. Server 2022 and 2019 ship without
-      # the OpenSSH.Server capability, so the framework's user_data installs it at boot from the
-      # cab staged at fod/<build>/ in the application repository bucket. Both terraform
-      # invocations pass the same object, so the configuration they evaluate is the same one.
+      # the account id, which the public value file must not. Only the two Server 2022 hosts install
+      # OpenSSH.Server at boot from the cab staged at fod/<build>/; the 2019 client uses WinRM and
+      # installs none. Every terraform invocation passes the same object.
       - name: Terraform apply
         id: tf-apply
         timeout-minutes: 15
@@ -374,16 +370,9 @@ jobs:
           done
           echo "overlaid ${#role_sources[@]} repository role(s)"
 
-      # Readiness, host preparation, guest storage and the WSUS role all live in the playbook.
-      # The EC2 inventory plugin filters live instances to this repository and run before exposing
-      # one target.
-      # The FIRST long phase needs the refresh too, and most of all. The initial session is 130
-      # minutes and this step alone may take 110 of them -- leaving twenty for predecessor destroy
-      # and apply, each of which allows fifteen on its own. The playbook keeps making controller-
-      # side AWS calls throughout: the tunnel profile and join secret come from S3, the disk role
-      # resolves volumes through EC2, and the client's plays run LAST, after the server's
-      # synchronisation waits. A run that is slow but entirely permitted would fail there with
-      # ExpiredToken, with both Windows guests already built and paid for.
+      # The inventory filters this run's four guests. The play prepares them in parallel, configures
+      # WSUS on the server, then runs the three clients' update proof. Its controller-side S3 and EC2
+      # calls can outlive the initial session, so credentials are refreshed before converge.
       - name: Refresh AWS credentials before the first converge
         if: always() && steps.tf-apply.outcome == 'success'
         uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
@@ -394,16 +383,14 @@ jobs:
           role-session-name: aws-deploy-${{ github.run_id }}-converge
           role-duration-seconds: 7800
 
-      # 110 rather than 60, because this step now builds TWO Windows guests SEQUENTIALLY. Ansible
-      # runs plays in order, and the client's readiness, bootstrap, tunnel and domain join are
-      # their own plays that begin only after the server's product is finished -- so the guest
-      # preparation cost is paid twice, and on top of it sit the WSUS install, the TLS work, a
-      # catalogue synchronisation with its content, and the client's own update install.
+      # Host preparation runs for all four guests in one parallel play, followed by the WSUS
+      # install, TLS work, catalogue synchronisation, and the clients' update proof.
       - name: Run the WSUS playbook
         timeout-minutes: 110
         working-directory: .frameworks/ansible-framework
         env:
           ANSIBLE_CONFIG: ${{ github.workspace }}/.frameworks/ansible-framework/ansible.cfg
+          ANSIBLE_SSH_AGENT: auto
           # NOT extra-vars: the dynamic inventory reads these from the environment to pick this
           # run's instance, and a lookup('env') has no command-line equivalent.
           GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
@@ -415,14 +402,14 @@ jobs:
             --inventory "${GITHUB_WORKSPACE}/ansible/inventory/aws_ec2.yml"     \
             --extra-vars env=test                                               \
             --extra-vars aws_account_id="${AWS_ACCOUNT_ID}"                     \
+            --extra-vars aws_region="${AWS_REGION}"                             \
             --extra-vars state=present
 
       # Idempotency gate: a settled host reports NO changes on a second converge. The same play is
       # run again and the step fails if any managed host reports changed>0 -- the standard proof
       # that every task's change detection is honest. A role that re-reports a change would bounce
       # its service on every run, so this is a hard gate, not a warning.
-      # 40 rather than 30 for the same reason, though this run does no work on either host: it is
-      # two full inventories, two connection setups and two playbook passes.
+      # Forty minutes covers another four-host inventory, connection setup and playbook pass.
       # The OIDC session is 7,800 seconds and the role's MaxSessionDuration is exactly that, so it
       # cannot simply be lengthened. It is issued before framework setup, predecessor destroy and
       # apply, and the first converge may now take 110 minutes of what remains -- which leaves a
@@ -444,6 +431,7 @@ jobs:
         working-directory: .frameworks/ansible-framework
         env:
           ANSIBLE_CONFIG: ${{ github.workspace }}/.frameworks/ansible-framework/ansible.cfg
+          ANSIBLE_SSH_AGENT: auto
           GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
           GITHUB_RUN_ID: ${{ github.run_id }}
           AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
@@ -453,6 +441,7 @@ jobs:
             --inventory "${GITHUB_WORKSPACE}/ansible/inventory/aws_ec2.yml"              \
             --extra-vars env=test                                                         \
             --extra-vars aws_account_id="${AWS_ACCOUNT_ID}"                               \
+            --extra-vars aws_region="${AWS_REGION}"                                       \
             --extra-vars state=present 2>&1 | tee /dev/stderr)"
 
           if printf '%s\n' "${recap}" | grep -Eq ': +ok=[0-9]+ +changed=[1-9]'; then
@@ -471,7 +460,7 @@ jobs:
       # full apply, and a variable absent from it is a variable terraform computes as null. Left
       # out, this second apply would quietly withdraw the access the first one granted, in the
       # middle of the run the person asked for it.
-      # Again, because the swap path adds a full apply and a second 60-minute converge on top of
+      # Again, because the swap path adds a full apply and a second 80-minute converge on top of
       # everything above it. A credential that was fresh at the idempotence proof need not be by
       # the time terraform is asked to replace a volume.
       - name: Refresh AWS credentials before the operating-system swap
@@ -504,17 +493,18 @@ jobs:
             -var "windows_fod_source={bucket=\"${AWS_ACCOUNT_ID}-apprepo\",region=\"${AWS_REGION}\",key_prefix=\"fod\"}" \
             ${DEBUG_IP:+-var "debug_ip=${DEBUG_IP}"}
 
-      # The operating system is new, so this pays a first converge's costs again and gets a first
-      # converge's budget. The disk role adopts each reattached volume untouched -- it classifies a
-      # disk carrying an NTFS volume with the declared label as one of its own, formats only what
-      # is blank or unformatted, and re-letters the rest -- so SUSDB is still on E: when the WSUS
-      # role runs.
+      # The operating system is new, so the server pays a first converge's costs again: 50 minutes
+      # measured, 17 of them before the replacement answers. The disk role adopts each reattached
+      # volume untouched -- it classifies a disk carrying an NTFS volume with the declared label as
+      # one of its own, formats only what is blank or unformatted, and re-letters the rest -- so
+      # SUSDB is still on E: when the WSUS role runs.
       - name: Re-converge onto the reattached data
         if: inputs.os_swap
-        timeout-minutes: 60
+        timeout-minutes: 80
         working-directory: .frameworks/ansible-framework
         env:
           ANSIBLE_CONFIG: ${{ github.workspace }}/.frameworks/ansible-framework/ansible.cfg
+          ANSIBLE_SSH_AGENT: auto
           GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
           GITHUB_RUN_ID: ${{ github.run_id }}
           AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
@@ -524,6 +514,7 @@ jobs:
             --inventory "${GITHUB_WORKSPACE}/ansible/inventory/aws_ec2.yml"    \
             --extra-vars env=test                                              \
             --extra-vars aws_account_id="${AWS_ACCOUNT_ID}"                    \
+            --extra-vars aws_region="${AWS_REGION}"                            \
             --extra-vars state=present
 
       # The same idempotency bar as the first converge, on a host whose operating system was
@@ -535,6 +526,7 @@ jobs:
         working-directory: .frameworks/ansible-framework
         env:
           ANSIBLE_CONFIG: ${{ github.workspace }}/.frameworks/ansible-framework/ansible.cfg
+          ANSIBLE_SSH_AGENT: auto
           GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
           GITHUB_RUN_ID: ${{ github.run_id }}
           AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
@@ -544,6 +536,7 @@ jobs:
             --inventory "${GITHUB_WORKSPACE}/ansible/inventory/aws_ec2.yml"    \
             --extra-vars env=test                                              \
             --extra-vars aws_account_id="${AWS_ACCOUNT_ID}"                    \
+            --extra-vars aws_region="${AWS_REGION}"                            \
             --extra-vars state=present 2>&1 | tee /dev/stderr)"
           if printf '%s\n' "${recap}" | grep -Eq ': +ok=[0-9]+ +changed=[1-9]'; then
             echo "::error::the rebuilt host reported changes on a second converge" >&2

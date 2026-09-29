@@ -101,6 +101,24 @@
           "ec2:ResourceTag/Environment": "false"
         }
       }
+    },
+    {
+      "Sid": "GetLaunchPasswordFromOwnedInstancesOnly",
+      "Effect": "Allow",
+      "Action": "ec2:GetPasswordData",
+      "Resource": "arn:aws:ec2:us-east-1:<account-id>:instance/*",
+      "Condition": {
+        "StringEquals": {
+          "ec2:ResourceTag/Repository": "nwarila-platform/windows-wsus",
+          "ec2:ResourceTag/RepositoryId": "1316209092",
+          "ec2:ResourceTag/ManagedBy": "Terraform"
+        },
+        "Null": {
+          "ec2:ResourceTag/CommitSha": "false",
+          "ec2:ResourceTag/RunId": "false",
+          "ec2:ResourceTag/Environment": "false"
+        }
+      }
     }
   ]
 }

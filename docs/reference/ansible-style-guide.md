@@ -149,13 +149,15 @@ clobber, verified at the module source). These stay `quiet: true` with an action
 
 ## 5. Windows conventions
 
-- Transport: **SSH** (org standard; key auth, one transport story across the fleet). The target's
-  OpenSSH `DefaultShell` boots as cmd, and `os_bootstrap` flips it to PowerShell on first contact;
-  the inventory composes `ansible_shell_type: powershell` to match. Anything that must run before
-  that flip is `raw`, which the transport sends verbatim under either shell.
-- `become: false` at play level (framework chassis `become=sudo` is POSIX-only;
-  built-in administrator over SSH is already elevated). Revisit for least-privilege
-  runs (runas) when a non-admin service account is introduced — TBD.
+- Transport: **SSH or WinRM**, chosen per host by Terraform's `connection_type`. The
+  `credential_resolver` selects the image identity before the join and `tcn\jenkins_runner` after
+  it; an SSH host logs on by key, or by password when tagged `Authentication = "password"`. An SSH
+  target's OpenSSH `DefaultShell` boots as cmd, and `os_bootstrap` flips it to PowerShell on first
+  contact; the inventory composes `ansible_shell_type: powershell` to match. Anything that must run
+  before that flip is `raw`, which the transport sends verbatim under either shell.
+- Escalation is off in the framework chassis and no play overrides it; the resolver requires the
+  selected identity to be elevated at High integrity. Revisit for
+  least-privilege runs (runas) when a non-admin service account is introduced — TBD.
 - Windows modules from `ansible.windows` (fallback `community.windows`); never invoke
   raw PowerShell where a module exists — escape-hatch threshold decided at C05, see the
   escape-hatch rule below.

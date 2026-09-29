@@ -5,8 +5,8 @@ The IAM this repository's ephemeral AWS lifecycle assumes. An operator provision
 `pdq-deploy-inventory` with the repository name and immutable id substituted. Four grant sets
 were dropped as unreachable from this lifecycle: that product's S3 installers, licences, and
 service-account secret; its network and directory artifacts; and the whole SSM policy, because
-the transport is direct SSH and the image is a literal `ami-` id, so the framework never resolves
-a catalog parameter. Grants are added here as this repository needs them, never copied ahead of
+the transports are direct SSH and WinRM and each image is a literal `ami-` id, so the framework
+never resolves a catalog parameter. Grants are added here as this repository needs them, never copied ahead of
 need — the network and directory artifacts arrived with the host-preparation roles that read
 them.
 
@@ -47,7 +47,9 @@ The suffixes are policy domains, not services — `ebs`, `eni`, and `sg` all aut
   `CreateVolume`, `CreateNetworkInterface`, and `CreateSecurityGroup`, require this repository's
   identity tags in the request.
 - **Tagged lifecycle.** Terminate, stop, start, modify, attach, detach, delete, and tagging of
-  those instances and volumes require the resource to already carry those tags.
+  those instances and volumes require the resource to already carry those tags. The `_ec2` policy
+  also grants `ec2:GetPasswordData` on this repository's tagged instances so the WinRM and
+  password-logon hosts can use their launch passwords.
 - **Untagged supporting legs.** A create call must also be authorized against the resources it
   references — images, subnets, key pairs, placement groups, the VPC, referenced security groups,
   the pre-created primary network interface passed to `RunInstances`, and security-group rules. These are
@@ -59,11 +61,14 @@ The suffixes are policy domains, not services — `ebs`, `eni`, and `sg` all aut
   `kms:ListAliases`, `kms:DescribeKey`, and `iam:GetInstanceProfile` on the shared profile. No
   `ec2:Describe*` wildcard is granted.
 
-Outside EC2: S3 reaches this repository's two Terraform state keys, and read-only the three
-host-preparation artifacts — the connection profile and the directory join password by exact
-key, and the OpenVPN installer by a key whose trailing segment is fixed and whose prefix is a
-wildcard, so that one file name is readable wherever it sits under the product prefix; KMS keys are usable only `ViaService` EC2 in
-the region; `iam:PassRole` passes only `nwarila-ec2-role`, only to EC2.
+Outside EC2: S3 reaches this repository's two Terraform state keys and six read-only host-preparation
+artifacts. The exact keys are `host_roles/remote_client/aws-ec2-test.ovpn`,
+`host_roles/domain_member/svc-domainjoin-password.txt`,
+`host_roles/domain_member/jenkins_runner-password.txt`,
+`host_roles/domain_member/jenkins_runner-ssh-private-key`, and
+`host_roles/domain_member/jenkins_runner-ssh-public-key`; the OpenVPN installer uses a key whose
+trailing segment is fixed and whose prefix is a wildcard. KMS keys are usable only `ViaService`
+EC2 in the region; `iam:PassRole` passes only `nwarila-ec2-role`, only to EC2.
 
 ## Applying
 

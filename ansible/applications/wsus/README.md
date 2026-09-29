@@ -26,8 +26,8 @@ In this deployment it has no route to S3 at all.
 
 The role is overlaid into a version-pinned checkout of `nwarila-platform/ansible-framework` at run
 time; it is not run directly from this repository. The shipped `ansible/playbooks/wsus-aws.yml`
-composes the framework's `host_readiness`, `os_bootstrap`, `remote_client`, `domain_member` and
-`windows_disk_manager` onto the host, and `wsus` last.
+composes the framework's `credential_resolver`, `host_readiness`, `os_bootstrap`, `remote_client`,
+`domain_member` and `windows_disk_manager` onto the host, and `wsus` last.
 
 The target must be Windows Server with SQL Server already installed and two volumes this role
 can be given — one for the database, one for the update store — and with the `ansible.windows`
