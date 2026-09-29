@@ -460,7 +460,7 @@ jobs:
       # full apply, and a variable absent from it is a variable terraform computes as null. Left
       # out, this second apply would quietly withdraw the access the first one granted, in the
       # middle of the run the person asked for it.
-      # Again, because the swap path adds a full apply and a second 60-minute converge on top of
+      # Again, because the swap path adds a full apply and a second 80-minute converge on top of
       # everything above it. A credential that was fresh at the idempotence proof need not be by
       # the time terraform is asked to replace a volume.
       - name: Refresh AWS credentials before the operating-system swap
