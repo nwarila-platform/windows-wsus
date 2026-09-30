@@ -326,4 +326,70 @@ Describe 'Set-IisLogDirectory' {
       'defaults:directory=G:\inetpub\logs\LogFiles'
     )
   }
+
+  It 'P11 reports a fresh directory under WhatIf without creating it' {
+    Reset-FakeIis -DefaultsDirectory:$script:Desired
+
+    $Result = Invoke-Script -WhatIf -CheckMode:$True
+
+    $Result.CheckMode | Should -BeTrue
+    $Result.Changed | Should -BeTrue
+    $Result.Result.changed | Should -BeTrue
+    $Result.Result.created | Should -BeTrue
+    $global:FakeIis.Writes.Count | Should -Be 0
+  }
+
+  It 'P12 reports disabled siteDefaults under WhatIf without writing' {
+    Reset-FakeIis `
+      -DefaultsDirectory:$script:Desired `
+      -DefaultsEnabled:$False `
+      -ExistingPaths:@($script:Desired)
+
+    $Result = Invoke-Script -WhatIf -CheckMode:$True
+
+    $Result.CheckMode | Should -BeTrue
+    $Result.Changed | Should -BeTrue
+    $Result.Result.changed | Should -BeTrue
+    $Result.Result.site_defaults_changed | Should -BeTrue
+    $global:FakeIis.Writes.Count | Should -Be 0
+  }
+
+  It 'P13 reports a site directory override under WhatIf without writing' {
+    Reset-FakeIis `
+      -DefaultsDirectory:$script:Desired `
+      -ExistingPaths:@($script:Desired) `
+      -Sites:@(
+        New-FakeSite `
+          -Name:'WSUS Administration' `
+          -Directory:'C:\inetpub\logs\LogFiles'
+      )
+
+    $Result = Invoke-Script -WhatIf -CheckMode:$True
+
+    $Result.CheckMode | Should -BeTrue
+    $Result.Changed | Should -BeTrue
+    $Result.Result.changed | Should -BeTrue
+    @($Result.Result.sites) | Should -Be @('WSUS Administration')
+    $global:FakeIis.Writes.Count | Should -Be 0
+  }
+
+  It 'P14 reports disabled site logging under WhatIf without writing' {
+    Reset-FakeIis `
+      -DefaultsDirectory:$script:Desired `
+      -ExistingPaths:@($script:Desired) `
+      -Sites:@(
+        New-FakeSite `
+          -Name:'WSUS Administration' `
+          -Directory:$script:Desired `
+          -Enabled:$False
+      )
+
+    $Result = Invoke-Script -WhatIf -CheckMode:$True
+
+    $Result.CheckMode | Should -BeTrue
+    $Result.Changed | Should -BeTrue
+    $Result.Result.changed | Should -BeTrue
+    @($Result.Result.sites) | Should -Be @('WSUS Administration')
+    $global:FakeIis.Writes.Count | Should -Be 0
+  }
 }

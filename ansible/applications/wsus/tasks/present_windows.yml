@@ -1028,7 +1028,8 @@
     #region ------ [ Process: Tune The WSUS Application Pool ] -------------------------------- #
 
     # Last, because a pool change recycles the worker process the WSUS API calls above ran in
-    # (disallowRotationOnConfigChange false, measured 2026-09-30). Microsoft's WSUS pool values.
+    # (disallowRotationOnConfigChange false, measured 2026-09-30). Microsoft's WSUS pool values,
+    # plus the rapid-fail protection IIS STIG V-218777/V-218778 requires.
     - name: 'PROCESS | Tune The WSUS Application Pool'
 
       microsoft.iis.web_app_pool:
@@ -1099,6 +1100,15 @@
           Rights: "{{ item.rights }}"
           Sid: "{{ item.sid }}"
         script: "{{ lookup('ansible.builtin.file', 'Set-AclGrant.ps1') }}"
+
+    # After the grants: the volume root's defaults let Users create files and folders here and
+    # give CREATOR OWNER full control (measured 2026-09-30). Protected, it inherits nothing.
+    - name: 'PROCESS | Stop The IIS Log Directory Inheriting From Its Volume'
+
+      ansible.windows.win_acl_inheritance:
+        path: "{{ __iis_log_dir__ }}"
+        reorganize: false
+        state: 'absent'
 
     #endregion --- [ Process: Keep IIS Request Logs Off The System Volume ] ------------------- #
 

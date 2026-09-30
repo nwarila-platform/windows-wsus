@@ -92,8 +92,10 @@ ever lives in the role.
 What does **not** live in defaults at all is constants wearing a default's clothes. The features
 WSUS is made of, the flags its post-installation writes, the services that answer for it and the
 default SQL instance are fixed by the product, not by a site, and are written where they are used.
-`tasks/validate.yml` guards only values the caller supplies; nothing asserts what the role
-declares itself. Two converges at `changed=0` show that state is steady, not that it is correct.
+`tasks/validate.yml` guards what the caller supplies and the two defaults later steps build an
+IIS path or target from, `iis.log_subdir` and `tls.site_name`; nothing asserts the product
+constants the role writes where it uses them. Two converges at `changed=0` show that state is
+steady, not that it is correct.
 
 ## Why the order is what it is
 
@@ -193,17 +195,19 @@ own tree, `Program Files\Update Services` on the drive of the site's root; and u
 site is the Default Web Site with IIS's stock root: DefaultAppPool at
 `%SystemDrive%\inetpub\wwwroot`, one `http *:80` binding, nothing beneath it.
 Only then does it set WsusPool to Microsoft's WSUS values — queue length 2000, no idle timeout,
-no scheduled or memory recycling, pinging off, rapid-fail protection on — remove the Default Web
-Site and the three pools nothing on a WSUS host uses, and write request logs to a volume of their
-own.
+no scheduled or memory recycling, pinging off — with the rapid-fail protection IIS STIG
+V-218777/V-218778 requires, remove the Default Web Site and the three pools nothing on a WSUS host
+uses, and write request logs to a volume of their own.
 
 The zero idle and recycle limits are why that check exists: IIS Site STIG V-218762 exempts a WSUS
 host from its idle timeout only when the host serves no other content, and V-218775 does not
 apply to a WSUS host at all. The check goes by location, so content someone places inside WSUS's
 own tree passes it. Removing the Default Web Site deletes its configuration, not its files.
 
-The log directory grants SYSTEM and Administrators full control and Users read-and-execute. The
-Users entry is the ratified convention, and a recorded deviation from V-283673.
+The log directory grants SYSTEM and Administrators full control and Users read-and-execute, and
+inherits nothing from its volume, whose root would let Users create files and folders there. An
+entry for any other identity, which the role never adds, is outside what it manages. The Users
+entry is the ratified convention, and a recorded deviation from V-283673.
 
 ## State
 

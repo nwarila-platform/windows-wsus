@@ -112,7 +112,7 @@ recursive walk yields, so this table diffs directly against the file.
 | 51 | `MAIN \| Copy IIS wwwroot Content To G:` | superseded | As row 50. |
 | 52 | `MAIN \| Repoint InetStp PathWWWRoot To G:` | superseded | As row 50. |
 | 53 | `MAIN \| Repoint Default Web Site Root To G:` | superseded | The site is removed rather than repointed, after reads of every site, pool, application and virtual directory refuse any host with a second site, a Default Web Site whose root, binding or children differ from IIS's stock ones, or WSUS-site content outside WSUS's own tree (its Content directory aside, which the content region pins to the declared store) or at a path holding `..`. The website module's `state: absent` removes the configuration and leaves the files. |
-| 54 | `MAIN \| Set IIS Log Directory ACLs (SYSTEM/Admins FullControl, Users R&X)` | reproduce | The same three entries, set rather than added through `Set-AclGrant.ps1`, as rows 9, 40 and 41 already are: each identity's explicit entries are replaced by the declared one, so a stray deny on that identity cannot survive. The runtime verifier's re-check stays owed until GATE-01 runs in this repository. Collides with the STIG surface — see *Conflicts*. |
+| 54 | `MAIN \| Set IIS Log Directory ACLs (SYSTEM/Admins FullControl, Users R&X)` | reproduce | The same three entries, set rather than added through `Set-AclGrant.ps1`, as rows 40 and 41 already are: each identity's explicit entries are replaced by the declared one, so a stray deny on that identity cannot survive. The directory then stops inheriting from its volume; an explicit entry for any other identity, which the role never adds, is outside its contract. The runtime verifier's re-check stays owed until GATE-01 runs in this repository. Collides with the STIG surface — see *Conflicts*. |
 | 55 | `MAIN \| Resolve The TLS Enablement Flag` | reproduce | Pinned as a host fact because the block conditional is re-evaluated inside the included delivery role, where a lazy `config` binding resolves against that role's name. |
 | 56 | `MAIN \| Deliver, Validate, Import, And Bind The TLS Certificate` | reproduce | Block wrapper; its `always` children are the cleanup contract. |
 | 57 | `MAIN \| Resolve The Pinned TLS Identity` | reproduce | Normalises the pin once, `trim \| upper`, so every later thumbprint comparison runs against one canonical form. |
@@ -135,7 +135,7 @@ recursive walk yields, so this table diffs directly against the file.
 | 74 | `CLEANUP \| Remove The Unique TLS Staging Directory From The Target` | reproduce | `always`. |
 | 75 | `CLEANUP \| Remove The Unique TLS Staging Directory From The Controller` | reproduce | `always`. |
 | 76 | `CLEANUP \| Clear The In-Memory PFX Password Fact` | reproduce | `always`, `no_log`. |
-| 77 | `VERIFY \| Assert The Complete WSUS Runtime Contract` | reproduce against SQL | Independent read-only acceptance gate. Its WID service clause inverts; everything else survives. Full assertion list below. |
+| 77 | `VERIFY \| Assert The Complete WSUS Runtime Contract` | reproduce against SQL | Independent read-only acceptance gate. Its WID service clause inverts, and its wwwroot and Default Web Site clauses give way to rows 50-53; everything else survives. Full assertion list below. |
 
 ### Block variables carried by task 2
 
@@ -160,7 +160,7 @@ Every task is gated on `state == 'present'`; the TLS pair is additionally gated 
 | # | Task | Disposition | Note |
 |---:|---|---|---|
 | 1 | `BEGIN \| Assert Data Disk Drive Letters Are Distinct` | reproduce | Three distinct `^[D-Z]$` letters. The disk-manager role validates its own declaration and cannot see this role's independently overrideable targets. |
-| 2 | `BEGIN \| Assert Application Paths Match Their Declared Disks` | superseded | Decision 61: validate guards only what the caller supplies, and the subdirectories are the role's own declaration -- a wrong one fails at directory creation and at END's re-read, which is the proof two converges give. The drive-letter predicates survive in rows 1 and 3. Formerly: same predicates — relative, non-traversing, no `:`/`%`/`..`, IIS paths literal on the IIS letter — with `db_subdir` no longer defaulting to a WID-shaped name. |
+| 2 | `BEGIN \| Assert Application Paths Match Their Declared Disks` | superseded in part | SPEC-01 (ruling 33) superseded decision 61: `validate.yml` checks the merged configuration, defaults included. The IIS log subdirectory's predicates are restored in `VALIDATE \| Require A Usable IIS Log Placement`, and the drive-letter predicates survive in rows 1 and 3. The database and content subdirectory predicates (`db.data_subdir`, `db.log_subdir`, `content.subdir`) are not restored yet. Formerly: relative, non-traversing, no `:`/`%`/`..`, IIS paths literal on the IIS letter, with `db_subdir` no longer defaulting to a WID-shaped name. |
 | 3 | `BEGIN \| Assert Upstream WSUS Server Provided` | reproduce | Required input, no default. |
 | 4 | `BEGIN \| Assert Synchronization Contract` | superseded | Port and language predicates survive, in `validate.yml`'s upstream and language guards. The rest describes a design that no longer exists: `bootstrap_enabled` is gone with the placeholder upstream it protected, and with it the refusal of `wsus-upstream.corp.local` — this deployment names a real upstream and synchronises unless `sync.mode` says otherwise (decision 50 as amended). The accept/completion/poll triple is replaced by two deadlines, `sync.timeout_seconds` and `sync.content_timeout_seconds`. See decision 50 in the agreement, which disposes of rows 46, 47, 48 and 73 for the same reason. |
 | 5 | `BEGIN \| Assert TLS Delivery Inputs` | reproduce | Bucket name pattern, non-traversing non-absolute `pfx_key`, port 1–65535, `minimum_validity_days >= 1`, and a multi-label FQDN `dns_name`. |
@@ -776,16 +776,18 @@ method names most of its clauses. The full list, so the rebuilt verifier can be 
 - `MSSQL$MICROSOFT##WID` Automatic and Running — **invert**; the SQL instance service takes its
   place.
 - `W3SVC` and `WsusService` both Running.
-- All four declared directories exist as containers: content root, DB data directory, IIS log
-  directory, IIS wwwroot.
+- All three declared directories exist as containers: content root, DB data directory, IIS log
+  directory; the IIS log directory does not inherit, and its explicit entries for `S-1-5-18`,
+  `S-1-5-32-544` and `S-1-5-32-545` are exactly `FullControl`, `FullControl` and `ReadAndExecute`.
 - `WsusContent` exists under the content root; registry `ContentDir`, API `LocalContentCachePath`,
   and the IIS `Content` vdir `physicalPath` agree with the desired root and cache.
 - Inheritable allow ACEs by SID: `S-1-5-32-545` `ReadAndExecute` on the content root, `S-1-5-20`
   `FullControl` on the cache. A `Deny` ACE intersecting the rights fails immediately.
 - Upstream contract: `SyncFromMicrosoftUpdate` false and the four upstream fields match.
-- `WsusPool` state `Started` and all six tuning values match, with `TimeSpan` comparison for the two
+- `WsusPool` state `Started` and all eight tuning values match, with `TimeSpan` comparison for the
   interval values.
-- Default Web Site `physicalPath` equals the declared wwwroot.
+- The Default Web Site and the `DefaultAppPool`, `.NET v4.5` and `.NET v4.5 Classic` pools are
+  absent (rows 50-53).
 - `siteDefaults` logging enabled and at the declared directory, and the same for **every** site.
 - TLS: exactly one HTTPS binding at `*:<port>:` with `sslFlags=0`; the SSL provider mapping carries
   the pinned thumbprint; the pinned leaf explicitly permits Server Authentication EKU; registry
@@ -808,16 +810,18 @@ its own. All four are now settled, and each bullet says how.
   the Server STIG's retired V-218790, asks SYSTEM and Administrators Full Control (lower
   permitted), allows an approved web-administrator group, exempts automated log-processing
   service accounts, and names no Users entry. Settled by the owner on 2026-09-30 for the
-  convention: the log directory keeps its Users entry, a recorded deviation from V-283673.
+  convention: the log directory keeps its Users entry, a recorded deviation from V-283673, and
+  inherits nothing from its volume, so read-and-execute is all Users hold there.
 - **WsusPool idle and recycle intervals.** Task 43 sets `processModel.idleTimeout` and
   `recycling.periodicRestart.time` to `00:00:00` on Microsoft's instruction, to prevent the
   scan-storm/HTTP-503 cascade a recycle triggers when it drops the metadata cache. IIS Site STIG
   V-218775 does not apply to a WSUS host, and V-218762 exempts one from its idle timeout only when
-  it serves no other content. Settled 2026-09-30: before any IIS change the role refuses a host
-  with a second site, a customised Default Web Site root, or WSUS-site content outside WSUS's own
-  tree (its Content directory aside, which the content region pins to the declared store); the
-  same run then sets the zero values and removes the stock Default Web Site. Content placed inside
-  WSUS's own tree is the check's stated limit.
+  it serves no other content. Settled 2026-09-30: right after post-installation, before the HTTPS
+  listener and every later IIS change, the role refuses a host with a second site, a customised
+  Default Web Site root, or WSUS-site content outside WSUS's own tree (its Content directory aside,
+  which the content region pins to the declared store); the same run then sets the zero values and
+  removes the stock Default Web Site. Content placed inside WSUS's own tree is the check's stated
+  limit.
 - **The pool module (TD-004).** The tuning contract was written against
   `community.windows.win_iis_webapppool`, deprecated for removal in `community.windows` 4.0.0.
   Settled 2026-09-30: `microsoft.iis` 1.3.0 is pinned exactly, the role tunes through
