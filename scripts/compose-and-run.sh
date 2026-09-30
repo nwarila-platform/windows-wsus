@@ -8,7 +8,8 @@
 #   1. Clones/updates nwarila-platform/ansible-framework into .compose/ansible-framework
 #      and checks out the commit pinned in .github/ansible-framework-pin (tags once upstream releases).
 #   2. Overlays this repo's roles into the framework's applications/ namespace (rsync
-#      --delete so stale files never linger).
+#      --delete so stale files never linger), joins its scripts/*.ps1 to the framework's
+#      scripts/, and materializes every role's <Name>.ps1.stub.
 #   3. Runs the selected playbook with the framework's ansible.cfg as the chassis
 #      (its roles_path resolves roles by bare name).
 #
@@ -143,15 +144,9 @@ echo ">> Framework pinned at $(git -C "${FRAMEWORK_DIR}" rev-parse --short HEAD)
 # framework repository is deny-all too, so an overlaid role is IGNORED rather than merely
 # untracked and a plain clean walks straight past it. The second -f reaches an overlay carrying
 # nested Git metadata, which a single -f preserves. Framework-owned roles are tracked, and clean
-# never touches those.
-git -C "${FRAMEWORK_DIR}" clean --quiet -ffdx -- applications/
-
-# Framework roles track PowerShell as .ps1.stub markers and materialize the real sources at build
-# time. Without this a role's lookup('file', ...) fails on a name that exists only as a stub, so a
-# local run diverges from CI at exactly the point that is hardest to attribute.
-if [ -x "${FRAMEWORK_DIR}/scripts/materialize-role-scripts.sh" ]; then
-    (cd "${FRAMEWORK_DIR}" && ./scripts/materialize-role-scripts.sh)
-fi
+# never touches those. Sources joined to scripts/ by an earlier run are ignored the same way; the
+# clean clears them, or a script deleted here would be materialized again from its stale copy.
+git -C "${FRAMEWORK_DIR}" clean --quiet -ffdx -- applications/ scripts/
 
 # --- 2. Overlay roles into the framework namespace ------------------------------------------ #
 shopt -s nullglob
@@ -216,6 +211,34 @@ for role_name in "${validated_roles[@]}"; do
         "${FRAMEWORK_DIR}/applications/${role_name}/"
     echo ">> Overlaid role '${role_name}' into framework applications/"
 done
+
+# --- 2b. Join this repository's scripts to the framework's, then materialize every stub ------ #
+# The roles above carry <Name>.ps1.stub markers naming sources under scripts/, and the framework's
+# materializer resolves every stub against the framework's scripts/. Validated in full before any
+# copy, as the roles are; a name the framework already tracks is refused rather than replaced.
+shopt -s nullglob
+script_sources=("${REPO_ROOT}"/scripts/*.ps1)
+shopt -u nullglob
+for script_source in "${script_sources[@]}"; do
+    script_name="$(basename "${script_source}")"
+    if [ -L "${script_source}" ]; then
+        echo "!! refusing symlinked script source: ${script_source}" >&2
+        exit 1
+    fi
+    if [ -n "$(git -C "${FRAMEWORK_DIR}" ls-files -- "scripts/${script_name}")" ]; then
+        echo "!! refusing to overlay framework-tracked script path: scripts/${script_name}" >&2
+        exit 1
+    fi
+done
+for script_source in "${script_sources[@]}"; do
+    cp "${script_source}" "${FRAMEWORK_DIR}/scripts/$(basename "${script_source}")"
+done
+echo ">> Joined ${#script_sources[@]} script file(s) to framework scripts/"
+
+# Every stub, the framework's and this repository's, becomes files/<Name>.ps1 here. Without it a
+# role's lookup('file', ...) fails on a name that exists only as a stub, and a local run would
+# diverge from CI at exactly the point that is hardest to attribute.
+(cd "${FRAMEWORK_DIR}" && ./scripts/materialize-role-scripts.sh)
 
 # --- 3. Execute with the framework chassis --------------------------------------------------- #
 cd "${FRAMEWORK_DIR}"

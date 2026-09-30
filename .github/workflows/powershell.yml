@@ -8,11 +8,9 @@
 # under the scanned path and runs one matrix leg per script — house PSScriptAnalyzer settings
 # (custom rules included, zero findings), then the self-contained Pester spec.
 #
-# The scanned path is each role's own files/ directory rather than scripts/. The sibling
-# repository develops a pair under scripts/ and materializes a copy into the role at build
-# time; this repository forbids workflow steps under scripts/, so the pair lives where it is
-# consumed and no materialization step exists to run. Pair-testing is unchanged — the matrix
-# discovers pairs wherever they are, and scan-path is the input that says where.
+# The pairs live under scripts/, and the wsus role carries files/<Name>.ps1.stub markers the
+# framework's materializer resolves when the tree is composed: the org's three-file layout, as
+# pdq-deploy-inventory runs it. Only .ps1 files under scripts/ take part in the matrix.
 #
 # Runs when a PowerShell file changes in a pull request, and again on the merge to main —
 # the main run is what publishes default-branch artifacts and code-scanning analyses.
@@ -26,13 +24,13 @@ name: 'PowerShell'
 'on':
   pull_request:
     paths:
-      - 'ansible/applications/wsus/files/**.ps1'  # pairs (<Name>.ps1 + <Name>.pester.ps1)
+      - 'scripts/**.ps1'                        # pairs (<Name>.ps1 + <Name>.pester.ps1)
       - '.github/workflows/powershell.yml'      # pin bumps must re-prove the matrix
   push:
     branches:
       - 'main'
     paths:
-      - 'ansible/applications/wsus/files/**.ps1'
+      - 'scripts/**.ps1'
       - '.github/workflows/powershell.yml'
 
 permissions:
@@ -47,11 +45,10 @@ jobs:
       security-events: 'write' # test legs: SARIF upload to code scanning
     uses: 'NWarila/powershell-template/.github/workflows/pester-matrix.yaml@758b3313d34269f10dcf1a1b07837c0b887bdc87' # main (#31)
     with:
-      # The pair's own directory, not the role tree: the reusable workflow names the SARIF from
-      # the path RELATIVE to scan-path, while the harness writes it from the bare filename, so
-      # the upload looks for a file that does not exist whenever a pair sits more than one level
-      # down. Pointing at the directory that holds the pair makes the two names agree.
-      scan-path: 'ansible/applications/wsus/files'
+      # The directory that holds the pairs directly: the reusable workflow names the SARIF from
+      # the path RELATIVE to scan-path, while the harness writes it from the bare filename, and
+      # the two agree only when a pair sits directly in scan-path.
+      scan-path: 'scripts'
       # Must match the `uses:` ref: the ref selects the workflow file, while template-ref
       # is what the workflow checks out for the harness and analyzer settings.
       template-ref: '758b3313d34269f10dcf1a1b07837c0b887bdc87' # main (#31)

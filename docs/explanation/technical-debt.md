@@ -100,23 +100,13 @@ workarounds are not accidentally restored.
   pinned framework installs OpenSSH from the staged Feature-on-Demand cab, reachable through the
   S3 managed prefix list, before Ansible connects.
 
-## TD-013 — no PowerShell gate, and the org template it will return to is defective
+## TD-013 — SUPERSEDED: no PowerShell gate, and the org template it will return to is defective
 
 - **Recorded:** 2026-08-25, when `aws_windows_disk_manager` and its `Set-DiskOnlineState` pair
   were deleted and `.github/workflows/powershell.yml` went with them.
-- **What:** the repository ships no PowerShell and therefore no gate over it. The caller was
-  deleted rather than repointed because the org template refuses to pass on nothing: at pin
-  `758b3313d34269f10dcf1a1b07837c0b887bdc87`, `pester-matrix.yaml` exits non-zero both when
-  `scan-path` is not a directory and when discovery finds zero pairs, on the stated ground that
-  an empty matrix passing would hide a broken path.
-- **Consequence:** the first WSUS chunk that adds a `<Name>.ps1` + `<Name>.pester.ps1` pair
-  reintroduces the gate from scratch, and will meet a template defect this repository already
-  paid for once. `pester-matrix.yaml` names the SARIF from the pair's path RELATIVE to
-  `scan-path`, while `harness/Invoke-PairTests.ps1` writes it from the bare filename. The upload
-  step then reads a path that does not exist. The two agree only when pairs sit directly in
-  `scan-path`, which is why `pdq-deploy-inventory` never hits it.
-- **Current containment:** this entry. Nothing executable catches the defect; the next caller
-  has to be written around it.
-- **Exit criteria:** the first PowerShell pair lands with a caller pointed at the pair's own
-  directory, which is what makes the two names agree. Close this entry when the template is
-  fixed upstream — one line on either side — and the caller can name the role tree instead.
+- **Superseded:** 2026-09-30. The gate returned with the first WSUS pair (#46), and the pairs now
+  live under `scripts/` (owner decision, 2026-09-30: "Scripts + Stub"), the directory holding them
+  directly. There the template's SARIF naming — relative to `scan-path` in `pester-matrix.yaml`,
+  bare in `harness/Invoke-PairTests.ps1` — agrees, as it always has for `pdq-deploy-inventory`,
+  so the exit criteria, an upstream fix and a caller naming the role tree, describe nothing this
+  repository still needs.
