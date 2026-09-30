@@ -174,6 +174,9 @@
     __desired_data__: "{{ wsus_running.db.drive_letter }}:\\{{ wsus_running.db.data_subdir }}"
     __desired_log__: "{{ wsus_running.db.drive_letter }}:\\{{ wsus_running.db.log_subdir }}"
     __content_dir__: "{{ wsus_running.content.drive_letter }}:\\{{ wsus_running.content.subdir }}"
+    __iis_log_dir__: "{{ wsus_running.iis.drive_letter }}:\\{{ wsus_running.iis.log_subdir }}"
+    # The three pools IIS setup leaves beside WsusPool (measured 2026-09-30); WSUS uses none.
+    __unused_pools__: ['DefaultAppPool', '.NET v4.5', '.NET v4.5 Classic']
     # The two client-facing rules, written in the shape Windows writes its own: the name carries
     # the product and the direction, the description ends in the protocol and port, and both say
     # WSUS rather than IIS so the reason the port is open is on the rule itself.
@@ -461,6 +464,128 @@
         state: 'started'
 
     #endregion --- [ Process: Ensure The WSUS Services Are Running ] -------------------------- #
+
+    #region ------ [ Process: Refuse To Change An IIS That Serves More Than WSUS ] ------------ #
+
+    # After post-installation and before the HTTPS listener and every later IIS change: the zero
+    # pool limits are STIG-exempt (V-218762) only where IIS serves WSUS alone.
+    - name: 'BEGIN | Read The Sites IIS Serves'
+      check_mode: false
+      register: '__wsus_iis_sites__'
+
+      microsoft.iis.website_info: {}
+
+    - name: 'BEGIN | Read The Application Pools IIS Holds'
+      check_mode: false
+      register: '__wsus_iis_pools__'
+
+      microsoft.iis.web_app_pool_info: {}
+
+    - name: 'BEGIN | Read The Child Applications Of Every Site'
+      check_mode: false
+      register: '__wsus_iis_apps__'
+
+      microsoft.iis.web_application_info: {}
+
+    - name: 'BEGIN | Read The Child Virtual Directories Of Every Site'
+      check_mode: false
+      register: '__wsus_iis_dirs__'
+
+      microsoft.iis.virtual_directory_info: {}
+
+    # WSUS installs every web service under Program Files\Update Services on its root's drive
+    # (measured 2026-09-30); only the site's own Content follows the content placement, pinned
+    # later. Any path with '..' is refused, Content's too: a prefix cannot see where it resolves.
+    - name: 'BEGIN | Refuse To Tune A Pool WSUS Does Not Run On'
+      vars:
+        __wsus_site__: "{{ '(?i)^' ~ (wsus_running.tls.site_name | regex_escape) ~ '$' }}"
+        __wsus_root_path__: >-
+          {{ __wsus_iis_sites__.site | selectattr('name', 'match', __wsus_site__)
+             | map(attribute='physical_path') | first | default('', true) }}
+        __tree_tail__: '\\program files\\update services(\\|$)'
+        __wsus_tree__: "{{ '(?i)^' ~ (__wsus_root_path__[:2] | regex_escape) ~ __tree_tail__ }}"
+        __traversal__: '\.\.'
+        __wsus_units__: >-
+          {{ (__wsus_iis_sites__.site | selectattr('name', 'match', __wsus_site__) | list)
+             + (__wsus_iis_apps__.applications | selectattr('site', 'match', __wsus_site__)
+                | list) }}
+        __wsus_dirs__: >-
+          {{ __wsus_iis_dirs__.directories | selectattr('site', 'match', __wsus_site__) | list }}
+        __wsus_foreign__: >-
+          {{ (__wsus_units__
+              + (__wsus_dirs__ | selectattr('application', 'ne', '') | list)
+              + (__wsus_dirs__ | selectattr('application', 'eq', '')
+                 | rejectattr('name', 'match', '(?i)^content$') | list))
+             | rejectattr('physical_path', 'match', __wsus_tree__)
+             | map(attribute='physical_path') | list }}
+        __wsus_traversal__: >-
+          {{ (__wsus_units__ + __wsus_dirs__)
+             | selectattr('physical_path', 'search', __traversal__)
+             | map(attribute='physical_path') | list }}
+
+      ansible.builtin.assert:
+        fail_msg: >-
+          Refusing to tune WsusPool: IIS must hold a pool of that name and exactly one site named
+          '{{ wsus_running.tls.site_name }}' whose root and every application run on it and
+          live under Program Files\Update Services on the drive of its root, by paths without
+          '..'. Pools:
+          {{ __wsus_iis_pools__.app_pools | map(attribute='name') | list }}. That site and its
+          applications, with their pools:
+          {{ __wsus_units__ | items2dict(key_name='name', value_name='application_pool') }}.
+          Served from outside the WSUS tree: {{ __wsus_foreign__ }}. Paths holding '..':
+          {{ __wsus_traversal__ }}. Post-installation creates the site and the pool; complete
+          it, and move other content to another host.
+        quiet: true
+        that:
+          - >-
+            __wsus_iis_pools__.app_pools | map(attribute='name') | map('lower')
+            | select('equalto', 'wsuspool') | list | length == 1
+          - >-
+            __wsus_iis_sites__.site | selectattr('name', 'match', __wsus_site__) | list
+            | length == 1
+          - >-
+            __wsus_units__ | rejectattr('application_pool', 'match', '(?i)^wsuspool$') | list
+            | length == 0
+          - __wsus_foreign__ | length == 0
+          - __wsus_traversal__ | length == 0
+
+    - name: 'BEGIN | Refuse To Change An IIS That Serves More Than WSUS'
+      vars:
+        __stock_site__: '(?i)^default web site$'
+        __foreign_sites__: >-
+          {{ __wsus_iis_sites__.site | map(attribute='name') | reject('match', __stock_site__)
+             | reject('match', '(?i)^' ~ (wsus_running.tls.site_name | regex_escape) ~ '$')
+             | list }}
+        __default_site__: >-
+          {{ __wsus_iis_sites__.site | selectattr('name', 'match', __stock_site__) | list }}
+        __default_children__: >-
+          {{ (__wsus_iis_apps__.applications + __wsus_iis_dirs__.directories)
+             | selectattr('site', 'match', __stock_site__) | map(attribute='name') | list }}
+
+      ansible.builtin.assert:
+        fail_msg: >-
+          Refusing to change IIS: it serves more than WSUS, so removing the Default Web Site
+          and its pools, or lifting WsusPool's idle and recycle limits, would change what else
+          it serves. Other sites: {{ __foreign_sites__ }}. The Default Web Site as found:
+          {{ __default_site__ }}, with {{ __default_children__ }} beneath it; only IIS's stock
+          root (DefaultAppPool, %SystemDrive%\inetpub\wwwroot, http *:80) is removed. Move that
+          content to another host: this role converges a dedicated WSUS server only.
+        quiet: true
+        that:
+          - __foreign_sites__ | length == 0
+          - __default_children__ | length == 0
+          - >-
+            __default_site__ | length == 0
+            or (__default_site__[0].application_pool | lower == 'defaultapppool'
+                and __default_site__[0].physical_path | lower
+                    == '%systemdrive%\\inetpub\\wwwroot'
+                and __default_site__[0].bindings | length == 1
+                and __default_site__[0].bindings[0].protocol == 'http'
+                and __default_site__[0].bindings[0].ip == '*'
+                and __default_site__[0].bindings[0].port == 80
+                and __default_site__[0].bindings[0].hostname == '')
+
+    #endregion --- [ Process: Refuse To Change An IIS That Serves More Than WSUS ] ------------ #
 
     #region ------ [ Process: Serve WSUS To Its Clients Over HTTPS ] -------------------------- #
     # FIRST of the regions that talk to the WSUS API, and the position is load-bearing: once
@@ -899,6 +1024,83 @@
                   required, which is not the same as being up to date.' }}
 
     #endregion --- [ Process: Bring The Catalogue And Its Content Down From The Upstream ] ---- #
+
+    #region ------ [ Process: Tune The WSUS Application Pool ] -------------------------------- #
+
+    # Last, because a pool change recycles the worker process the WSUS API calls above ran in
+    # (disallowRotationOnConfigChange false, measured 2026-09-30). Microsoft's WSUS pool values.
+    - name: 'PROCESS | Tune The WSUS Application Pool'
+
+      microsoft.iis.web_app_pool:
+        attributes:
+          failure.rapidFailProtection: true
+          failure.rapidFailProtectionInterval: '00:05:00'
+          processModel.idleTimeout: '00:00:00'
+          processModel.pingingEnabled: false
+          queueLength: 2000
+          recycling.periodicRestart.memory: 0
+          recycling.periodicRestart.privateMemory: 0
+          recycling.periodicRestart.time: '00:00:00'
+        name: 'WsusPool'
+        state: 'started'
+
+    #endregion --- [ Process: Tune The WSUS Application Pool ] -------------------------------- #
+
+    #region ------ [ Process: Remove The Default Web Site And Its Pools ] --------------------- #
+
+    # Removal drops the site's configuration only; wwwroot's files stay (measured 2026-09-30).
+    - name: 'PROCESS | Remove The Default Web Site'
+
+      microsoft.iis.website:
+        bindings: {}
+        name: 'Default Web Site'
+        state: 'absent'
+
+    - name: 'PROCESS | Remove The Pools Nothing On A WSUS Host Uses'
+      loop: "{{ __unused_pools__ }}"
+      loop_control: { label: "{{ item }}" }
+
+      microsoft.iis.web_app_pool:
+        attributes: {}
+        name: "{{ item }}"
+        state: 'absent'
+
+    #endregion --- [ Process: Remove The Default Web Site And Its Pools ] --------------------- #
+
+    #region ------ [ Process: Keep IIS Request Logs Off The System Volume ] ------------------- #
+
+    - name: 'PROCESS | Point IIS Request Logging At The IIS Volume'
+
+      ansible.windows.win_powershell:
+        depth: 3
+        error_action: 'stop'
+        parameters:
+          LogDirectory: "{{ __iis_log_dir__ }}"
+        script: "{{ lookup('ansible.builtin.file', 'Set-IisLogDirectory.ps1') }}"
+
+    # Users read-and-execute is the ratified convention, a recorded deviation from IIS Site STIG
+    # V-283673, which names SYSTEM, Administrators and an approved web-administrator group.
+    - name: 'PROCESS | Grant The IIS Log Directory Its Access Convention'
+      loop:
+        - rights: 'FullControl'
+          sid: 'S-1-5-18'
+        - rights: 'FullControl'
+          sid: 'S-1-5-32-544'
+        - rights: 'ReadAndExecute'
+          sid: 'S-1-5-32-545'
+      loop_control: { label: "{{ item.sid }}" }
+
+      ansible.windows.win_powershell:
+        depth: 3
+        error_action: 'stop'
+        parameters:
+          InheritanceFlags: 'ContainerInherit, ObjectInherit'
+          Path: "{{ __iis_log_dir__ }}"
+          Rights: "{{ item.rights }}"
+          Sid: "{{ item.sid }}"
+        script: "{{ lookup('ansible.builtin.file', 'Set-AclGrant.ps1') }}"
+
+    #endregion --- [ Process: Keep IIS Request Logs Off The System Volume ] ------------------- #
 
 #endregion --- [ Process: Configure WSUS on Windows ] ----------------------------------------- #
 

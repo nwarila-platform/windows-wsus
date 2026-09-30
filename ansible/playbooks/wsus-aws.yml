@@ -192,6 +192,8 @@
             drive_letter: 'E'
           content:
             drive_letter: 'F'
+          iis:
+            drive_letter: 'G'
           updates:
             languages: ['en']
           sync:

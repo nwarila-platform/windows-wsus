@@ -100,19 +100,19 @@ recursive walk yields, so this table diffs directly against the file.
 | 39 | `MAIN \| Reconcile The WSUS Content Location` | reproduce | Copying `movecontent` (never `-skipcopy`), registry/API/IIS triple verified, registry-only split brain fails closed. |
 | 40 | `MAIN \| Grant Users Browse Access On The Content Root` | reproduce | Collides with the STIG surface — see *Conflicts*. |
 | 41 | `MAIN \| Grant WSUS Service Rights On The Content Cache` | reproduce | `NT AUTHORITY\NETWORK SERVICE` FullControl, inheritable. |
-| 42 | `MAIN \| Assert WsusPool Exists Before Tuning` | reproduce | Refuses to let the pool module create a bogus generic pool when post-install did not run. |
-| 43 | `MAIN \| Tune WsusPool Application Pool` | reproduce against SQL | Same six attributes and values; the module changes under TD-004. Extend with rapid-fail protection, required by IIS Site STIG V-218777/V-218778 and not WSUS-exempt. |
+| 42 | `MAIN \| Assert WsusPool Exists Before Tuning` | reproduce | Refuses to let the pool module create a bogus generic pool when post-install did not run: every pool, site and application is read, and tuning is refused unless WsusPool exists and the WSUS site's root and every application run on it from WSUS's own install tree, `Program Files\Update Services` on the drive of the site's root. |
+| 43 | `MAIN \| Tune WsusPool Application Pool` | reproduce against SQL | Same six attributes and values, extended with rapid-fail protection (IIS Site STIG V-218777/V-218778, not WSUS-exempt), written as literals on `microsoft.iis.web_app_pool` 1.3.0 with `state: started`, closing TD-004. They were overridable for shared hosts; the guard now refuses the shared layouts it can see, and content placed inside WSUS's own tree is its stated limit. The runtime verifier's re-check stays owed until GATE-01 runs in this repository. |
 | 44 | `MAIN \| Restrict WSUS Update Languages` | reproduce | `AllUpdateLanguagesEnabled = false` plus an order-insensitive compare and post-`Save()` re-read. |
 | 45 | `MAIN \| Configure Upstream WSUS Source` | reproduce | Five-field diff, stop any in-flight sync before `Save()`, verify the persisted five. |
 | 46 | `MAIN \| Wait For The Configured Upstream WSUS Endpoint` | superseded | `sync.bootstrap_enabled` no longer exists, and no reachability probe replaces this: an unreachable upstream surfaces as a failed synchronisation inside its own deadline. Decision 50.
 | 47 | `INFO \| Synchronization Proof Is Deliberately Disabled` | superseded | Dissolved with the flag it described. Decision 50 as amended: `sync.mode` reintroduced a disabled case, and the honesty this row asked for is the report task that says which mode ran. Decision 50.
 | 48 | `MAIN \| Bootstrap WSUS Category Sync To Terminal Success` | superseded | Implemented with the fingerprint replaced by the upstream actor's own change report, and invocation ownership consciously dropped -- one caller, one synchronisation, stopped to a full halt before a new one starts. Decision 50.
-| 49 | `MAIN \| Relocate IIS Logs To G:` | reproduce | `siteDefaults` and every site's `logFile.directory`/`enabled`, literal drive-qualified path, `%VAR%` treated as drift. |
-| 50 | `MAIN \| Validate + Normalize IIS wwwroot Target` | reproduce | Validate before any native module can expand a bad override. |
-| 51 | `MAIN \| Copy IIS wwwroot Content To G:` | reproduce | Content before repoint, so the relocated root is populated. |
-| 52 | `MAIN \| Repoint InetStp PathWWWRoot To G:` | reproduce | Both registry views, including `Wow6432Node`. |
-| 53 | `MAIN \| Repoint Default Web Site Root To G:` | reproduce | Default Web Site only; the WSUS Administration site is untouched. |
-| 54 | `MAIN \| Set IIS Log Directory ACLs (SYSTEM/Admins FullControl, Users R&X)` | reproduce | Three ACEs, additive. Collides with the STIG surface — see *Conflicts*. |
+| 49 | `MAIN \| Relocate IIS Logs To G:` | reproduce | `siteDefaults` and every site's `logFile.directory`/`enabled`, literal drive-qualified path, `%VAR%` treated as drift. The letter is caller input, `wsus.iis.drive_letter`; this play declares `G`. The runtime verifier's re-check stays owed until GATE-01 runs in this repository. |
+| 50 | `MAIN \| Validate + Normalize IIS wwwroot Target` | superseded | The Default Web Site is removed (row 53), so no wwwroot is relocated. |
+| 51 | `MAIN \| Copy IIS wwwroot Content To G:` | superseded | As row 50. |
+| 52 | `MAIN \| Repoint InetStp PathWWWRoot To G:` | superseded | As row 50. |
+| 53 | `MAIN \| Repoint Default Web Site Root To G:` | superseded | The site is removed rather than repointed, after reads of every site, pool, application and virtual directory refuse any host with a second site, a Default Web Site whose root, binding or children differ from IIS's stock ones, or WSUS-site content outside WSUS's own tree (its Content directory aside, which the content region pins to the declared store) or at a path holding `..`. The website module's `state: absent` removes the configuration and leaves the files. |
+| 54 | `MAIN \| Set IIS Log Directory ACLs (SYSTEM/Admins FullControl, Users R&X)` | reproduce | The same three entries, set rather than added through `Set-AclGrant.ps1`, as rows 9, 40 and 41 already are: each identity's explicit entries are replaced by the declared one, so a stray deny on that identity cannot survive. The runtime verifier's re-check stays owed until GATE-01 runs in this repository. Collides with the STIG surface — see *Conflicts*. |
 | 55 | `MAIN \| Resolve The TLS Enablement Flag` | reproduce | Pinned as a host fact because the block conditional is re-evaluated inside the included delivery role, where a lazy `config` binding resolves against that role's name. |
 | 56 | `MAIN \| Deliver, Validate, Import, And Bind The TLS Certificate` | reproduce | Block wrapper; its `always` children are the cleanup contract. |
 | 57 | `MAIN \| Resolve The Pinned TLS Identity` | reproduce | Normalises the pin once, `trim \| upper`, so every later thumbprint comparison runs against one canonical form. |
@@ -459,10 +459,11 @@ API actor that skips the primitive fails, and so does one that quietly disappear
 
 ### `WsusPoolContractTest`
 
-**`test_runtime_verifier_rechecks_every_declared_pool_tuning_value`** — `reproduce against SQL`. The
-six values and the independent verifier re-check survive unchanged; the module key the test indexes
-by, and possibly the attribute names, move with the successor collection under TD-004. The actor's
-`attributes` key set is exactly:
+**`test_runtime_verifier_rechecks_every_declared_pool_tuning_value`** — `reproduce against SQL`:
+the actor now, the verifier re-check once GATE-01 runs in this repository. The six values survive
+unchanged, as literals on `microsoft.iis.web_app_pool`, under the same attribute names, joined by
+`failure.rapidFailProtection` and `failure.rapidFailProtectionInterval`. At the deleted revision
+the actor's `attributes` key set was exactly:
 
 ```
 queueLength
@@ -487,7 +488,7 @@ WSUSPOOL_PINGING_ENABLED    {{ config.wsuspool.pinging_enabled | bool | lower }}
 
 The declared defaults those expressions resolve to: `2000`, `0`, `0`, `00:00:00`, `00:00:00`,
 `false`. The actor module at the deleted revision is `community.windows.win_iis_webapppool` — the
-literal `snapshot/pre-sql-rebuild` disagrees with, and the reason TD-004 is open.
+literal `snapshot/pre-sql-rebuild` disagrees with, and the reason TD-004 was open until 2026-09-30.
 
 ### `HttpsListenerContractTest`
 
@@ -795,24 +796,32 @@ method names most of its clauses. The full list, so the rebuilt verifier can be 
 
 ## Conflicts the rebuild inherits
 
-Four collisions are recorded here rather than resolved, because each needs a decision the rebuild
-cannot make on its own.
+Four collisions were recorded here because each needed a decision the rebuild could not make on
+its own. All four are now settled, and each bullet says how.
 
 - **`BUILTIN\Users` browse access.** Tasks 9, 40, and 54 grant `BUILTIN\Users` `ReadAndExecute` as a
   ratified organisational convention (Director, 2026-07-18): every interactive user on these servers
   is an administrator, and an unreadable folder makes Explorer offer *Continue*, which stamps that
-  administrator's personal ACE onto the ACL and leaves a stale SID when they depart. IIS Site STIG
-  V-283673 permits only SYSTEM, Administrators, and an approved Web Administrators group on the
-  content path, and V-218790 constrains the log directory the same way. One must yield.
+  administrator's personal ACE onto the ACL and leaves a stale SID when they depart. No current
+  IIS rule covers the content root: Server STIG V-218814 governs `inetpub` alone, and itself
+  admits Users read-and-execute. The log directory is covered: Site STIG V-283673, which replaced
+  the Server STIG's retired V-218790, asks SYSTEM and Administrators Full Control (lower
+  permitted), allows an approved web-administrator group, exempts automated log-processing
+  service accounts, and names no Users entry. Settled by the owner on 2026-09-30 for the
+  convention: the log directory keeps its Users entry, a recorded deviation from V-283673.
 - **WsusPool idle and recycle intervals.** Task 43 sets `processModel.idleTimeout` and
   `recycling.periodicRestart.time` to `00:00:00` on Microsoft's instruction, to prevent the
   scan-storm/HTTP-503 cascade a recycle triggers when it drops the metadata cache. IIS Site STIG
-  V-218762 forbids an idle timeout of `0`, and its WSUS exemption is conditional on the host serving
-  no other content — which the relocated Default Web Site may void.
-- **The pool module (TD-004).** The tuning contract is written against
-  `community.windows.win_iis_webapppool`, deprecated for removal in `community.windows` 4.0.0. The
-  pinned collection set carries no `microsoft.iis`, so the successor cannot simply be adopted, and
-  the attribute mapping must be re-validated when it is.
+  V-218775 does not apply to a WSUS host, and V-218762 exempts one from its idle timeout only when
+  it serves no other content. Settled 2026-09-30: before any IIS change the role refuses a host
+  with a second site, a customised Default Web Site root, or WSUS-site content outside WSUS's own
+  tree (its Content directory aside, which the content region pins to the declared store); the
+  same run then sets the zero values and removes the stock Default Web Site. Content placed inside
+  WSUS's own tree is the check's stated limit.
+- **The pool module (TD-004).** The tuning contract was written against
+  `community.windows.win_iis_webapppool`, deprecated for removal in `community.windows` 4.0.0.
+  Settled 2026-09-30: `microsoft.iis` 1.3.0 is pinned exactly, the role tunes through
+  `microsoft.iis.web_app_pool`, and the attribute mapping was measured on the lab WSUS.
 - **The synchronization half is no longer unproven, and no longer built this way.** This bullet
   recorded that the AWS play set `sync.bootstrap_enabled: false` against a deliberately unreachable
   placeholder upstream, so rows 46 and 48 and the marker and fingerprint contracts had never
