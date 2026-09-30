@@ -5,9 +5,9 @@
 # Windows / state=present provider, built against docs/explanation/wsus-role-migration-contract.md.
 # Three stages: BEGIN reads the machine and decides, PROCESS acts, END proves. END is ungated on
 # purpose, so a converged host proves the same state as a fresh one, and it re-runs the SAME script
-# BEGIN ran so read and proof cannot disagree. Guest PowerShell is a first-class file under files/,
-# never inline; unlike the reference this repository tracks the .ps1 rather than a .stub, because
-# the local rule forbids the materialization step. --check against a host that has never converged
+# BEGIN ran so read and proof cannot disagree. Guest PowerShell is a first-class script under the
+# repository's scripts/, never inline, reaching files/ as the copy composition materializes from
+# its <Name>.ps1.stub. --check against a host that has never converged
 # does not complete -- win_file predicts directories rather than creating them and the ACL actor
 # reads a descriptor from a path that does not exist yet, which is the ordinary limit of check mode
 # on tasks depending on an earlier side effect. Against a converged host it reads normally.

@@ -208,17 +208,21 @@ web-shaped wanted it.
 
 ## First-class PowerShell
 
-Guest-side logic a task cannot express cleanly is a first-class PowerShell script under `files/`,
-written against the org `NWarila/powershell-template` and shipped with a Linux-runnable Pester
-sibling: `Get-SqlDatabasePlacement.ps1`, `Invoke-SusdbAdoption.ps1`,
+Guest-side logic a task cannot express cleanly is a first-class PowerShell script under the
+repository's `scripts/`, written against the org `NWarila/powershell-template` and shipped with a
+Linux-runnable Pester sibling: `Get-SqlDatabasePlacement.ps1`, `Invoke-SusdbAdoption.ps1`,
 `Invoke-WsusSynchronisation.ps1`, `Set-AclGrant.ps1`, `Set-WsusContentLocation.ps1`,
 `Set-WsusHttpsListener.ps1`, `Set-WsusUpdateLanguage.ps1` and `Set-WsusUpstream.ps1`, each beside
 its `.pester.ps1`.
 
-Unlike `pdq-deploy-inventory`, the scripts are tracked directly rather than materialised from
-stubs: there is one consumer, so a second copy under `scripts/` would be a second thing to keep in
-step. `.github/workflows/powershell.yml` runs the pinned `pester-matrix` harness, which discovers
-every `<Name>.ps1` + `<Name>.pester.ps1` pair and runs it with the org's analyzer settings.
+The role itself carries only `files/<Name>.ps1.stub` markers, each naming its source; composition
+joins the sources to the framework's `scripts/` and runs the framework's materializer, which
+copies each one to `files/<Name>.ps1`, a build artifact the `.gitignore` never allowlists — the
+org's three-file layout. Unlike `pdq-deploy-inventory`, whose workflow calls its own copy of the
+materializer, this repository's workflows run no script of their own.
+`.github/workflows/powershell.yml` runs the pinned `pester-matrix` harness over `scripts/`, which
+discovers every `<Name>.ps1` + `<Name>.pester.ps1` pair and runs it with the org's analyzer
+settings.
 
 ## Verification
 
@@ -227,7 +231,7 @@ export PATH="$PATH:/root/.local/bin"
 yamllint -c .yamllint.yml ansible
 scripts/compose-and-run.sh              # composes the pinned framework and runs wsus-aws.yml
 (cd .compose/ansible-framework && ansible-lint applications/wsus)
-# Pester runs in CI (the pinned powershell-template pester-matrix), one leg per files/ pair.
+# Pester runs in CI (the pinned powershell-template pester-matrix), one leg per scripts/ pair.
 ```
 
 Idempotence is the acceptance criterion: a second converge against the same host must report

@@ -58,11 +58,12 @@ only `refs/heads/main`.
 | Path | Purpose |
 |---|---|
 | `ansible/playbooks/wsus-aws.yml` | Composed plays: inventory contract, parallel host preparation, WSUS, then client proof |
-| `ansible/applications/wsus/` | The WSUS role. The only thing here that transfers to production |
+| `ansible/applications/wsus/` | The WSUS role; with its PowerShell under `scripts/`, the only thing here that transfers to production |
 | `ansible/applications/wsus_client/` | Proof-of-concept role called by the play for all three clients |
 | `ansible/inventory/aws_ec2.yml` | Dynamic EC2 inventory filtered to one run |
 | `terraform/aws.tfvars` | Data-only input for the pinned Terraform framework |
 | `scripts/compose-and-run.sh` | Local composition and execution |
+| `scripts/<Name>.ps1` | The wsus role's PowerShell, each beside its Pester spec; the role carries stubs |
 | `docs/reference/aws-iam/` | The IAM the lifecycle assumes, and how to apply it |
 | `docs/reference/ansible-style-guide.md` | Ansible design and authoring rules |
 | `docs/explanation/wsus-role-migration-contract.md` | Contracts the rebuilt WSUS role must satisfy |
@@ -91,7 +92,7 @@ workflow then converges the whole playbook a second time and fails if any host r
 The inventory contract refuses any topology other than exactly one server and three clients.
 
 Two things are deliberately not here. STIG hardening of the SQL database and of IIS is out of
-scope for now. And only `ansible/applications/wsus/` transfers to production — `wsus_client` is a
-proof-of-concept, and the play, the tfvars, the `remote_client` role and the certificates are all
-artifacts of this disposable environment, which is more configuration-divergent than production by
-nature.
+scope for now. And only `ansible/applications/wsus/`, with its PowerShell under `scripts/`,
+transfers to production — `wsus_client` is a proof-of-concept, and the play, the tfvars, the
+`remote_client` role and the certificates are all artifacts of this disposable environment, which
+is more configuration-divergent than production by nature.

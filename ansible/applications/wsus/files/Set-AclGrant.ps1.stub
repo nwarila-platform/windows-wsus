@@ -1,0 +1,7 @@
+# Build marker, not the script. The framework's scripts/materialize-role-scripts.sh copies the
+# source named below to files/Set-AclGrant.ps1 once this role is composed onto the framework; that
+# copy is a build artifact the .gitignore deliberately never allowlists.
+#
+# The script is developed, reviewed and pair-tested once under scripts/, beside its
+# Set-AclGrant.pester.ps1 spec.
+scripts/Set-AclGrant.ps1
