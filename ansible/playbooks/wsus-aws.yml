@@ -142,6 +142,8 @@
             drive_letter: 'E'
           content:
             drive_letter: 'F'
+          iis:
+            drive_letter: 'G'
     #endregion --- [ Roles: WSUS ] ------------------------------------------------------------ #
   #endregion --- [ Roles ] -------------------------------------------------------------------- #
 

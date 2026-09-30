@@ -48,3 +48,17 @@ wsus_defaults:
   content:
     subdir: 'WSUS'
   #endregion --- [ Content placement ] ------------------------------------------------------- #
+
+  #region ------ [ IIS log placement ] ------------------------------------------------------- #
+  # WHERE IIS WRITES REQUEST LOGS. Off the system volume because active logging on C: is what
+  # fills it, and because the IIS Site STIG wants the logs on a volume an operator can size and
+  # permission on its own. The role writes the resolved path into siteDefaults AND into every
+  # site that already exists, since a site created earlier carries its own override.
+  #
+  # Same split as the database and the content store: the letter is the deployment's to publish,
+  # the layout within the volume is this role's own shape. The resolved value must be literal --
+  # a %VAR% token is refused rather than expanded, because IIS stores the token and a STIG check
+  # reading the configured value cannot tell which volume it names.
+  iis:
+    log_subdir: 'inetpub\logs\LogFiles'
+  #endregion --- [ IIS log placement ] ------------------------------------------------------- #

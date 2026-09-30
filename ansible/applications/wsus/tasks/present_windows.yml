@@ -17,7 +17,13 @@
 # directories rather than creating them, and win_acl needs a path that exists even to predict
 # against. That is the ordinary limit of check mode on tasks that depend on an earlier task's
 # side effect, not something this role can repair without carrying conditionals for a path the
-# lifecycle never runs. --check against a converged host reads and proves normally.
+# lifecycle never runs. --check against a converged host reads and proves normally, with one
+# limit: the Default Web Site removal runs through a module that declares no check-mode support,
+# so --check cannot predict it. A host that has drifted back to serving that site surfaces as the
+# PROCESS refusal failing when the site holds child vdirs, or as the END proof failing when it
+# does not -- either way as a failure rather than as a reported change. Both appcmd reads carry
+# check_mode: false, because win_command declares no check-mode support and would otherwise return
+# a skipped result with no stdout for the asserts to read.
 #
 # ============================================================================================= #
 ---
@@ -185,6 +191,7 @@
     __desired_data__: "{{ wsus_running.db.drive_letter }}:\\{{ wsus_running.db.data_subdir }}"
     __desired_log__: "{{ wsus_running.db.drive_letter }}:\\{{ wsus_running.db.log_subdir }}"
     __content_dir__: "{{ wsus_running.content.drive_letter }}:\\{{ wsus_running.content.subdir }}"
+    __iis_log_dir__: "{{ wsus_running.iis.drive_letter }}:\\{{ wsus_running.iis.log_subdir }}"
     __wsus_machine_name__: "{{ __wsus_computer_name__.value }}"
     # The four completion flags post-installation writes, each reaching 2 only when its component
     # finishes. Measured on this image: after the features install and before post-installation,
@@ -455,6 +462,103 @@
 
     #endregion --- [ Process: Ensure The WSUS Services Are Running ] -------------------------- #
 
+    #region ------ [ Process: Remove The Default Web Site ] ----------------------------------- #
+    # IIS installs this site with the Web-Server role and, on the Server 2025 image measured
+    # here, this deployment's WSUS does not use it: post-installation recorded its own
+    # IISTargetWebSiteIndex and put every WSUS application and vdir on the site it created. Left
+    # in place it serves the IIS welcome page on 80 -- content that is not WSUS, which is the one
+    # thing V-218762's WSUS exemption forbids this host to serve.
+    #
+    # Removed rather than stopped: a stopped site still appears in the list the END proof compares,
+    # and this module sets bindings only when it creates a site, so the binding cannot be withdrawn
+    # without win_iis_webbinding -- a second deprecated module for one concern.
+    #
+    # Ungated, because a replaced operating system reinstalls the Web-Server feature and brings the
+    # site back with it.
+
+    # These two read and decide, which is BEGIN work, but the state they guard does not exist that
+    # early. Web-Server arrives as a dependency of the features PROCESS installs -- never requested
+    # by name -- and it is Web-Server that creates the site and ships appcmd.exe. Nor can they sit
+    # merely after that install: on 2022 it is post-installation that would place SelfUpdate on the
+    # site, so a refusal reading before it would find the site empty and pass. They belong here,
+    # after post-installation and before the mutation they guard.
+    - name: 'PROCESS | Read The Virtual Directories IIS Serves'
+      changed_when: false
+      check_mode: false
+      register: '__wsus_iis_vdirs__'
+
+      ansible.windows.win_command:
+        argv:
+          - 'C:\Windows\System32\inetsrv\appcmd.exe'
+          - 'list'
+          - 'vdirs'
+
+    # ----------------------------------------------------------------------------------------- #
+
+    # The state this refuses arrives when the lifecycle moves to its Server 2022 production target
+    # (TD-012). That is not a one-line ami repin today -- 2022 also needs the framework's OpenSSH
+    # capability staged before the guest is reachable at all -- but it is a planned deploy-layer
+    # change that touches nothing in this role, and no gate here would see it. KB
+    # 920659 documents SelfUpdate and ClientWebService on the port-80 site for a custom-port
+    # install, and 2022 has never been measured here, so the role reads rather than assumes --
+    # a version branch would assert what the image ships, this asks it.
+    #
+    # appcmd renders a site's own root as VDIR "<site>/" and a child as VDIR "<site>/<name>", so a
+    # name after the slash is the whole test. Matched case-insensitively because the removal module
+    # resolves the site through PowerShell -eq, which is case-insensitive; a case-only difference
+    # must not pass here
+    # and delete there. Read from vdirs rather than apps because a vdir can exist without an
+    # application of its own -- WSUS's own Content is one -- and it is the vdir that carries the
+    # physical path.
+    - name: 'PROCESS | Refuse A Default Web Site That Holds Child Virtual Directories'
+      vars:
+        __default_site_children__: >-
+          {{ __wsus_iis_vdirs__.stdout_lines | map('trim')
+             | select('match', '(?i)VDIR "Default Web Site/.+"') | list }}
+
+      ansible.builtin.assert:
+        fail_msg: >-
+          The Default Web Site holds child virtual directories: {{ __default_site_children__ }}.
+          Removing the site takes them with it, so nothing is removed here. On Server 2022 this is
+          where KB 920659 places SelfUpdate and ClientWebService, and that KB also requires
+          SelfUpdate to answer on port 80 -- so relocating them onto the WSUS Administration site,
+          which binds 8530 and 8531, would break what it appears to preserve. Decide whether this
+          host still owes those endpoints, record it in the migration contract's Conflicts section,
+          and amend this region; nothing here should proceed on a guess.
+        quiet: true
+        that:
+          - __default_site_children__ | length == 0
+
+    # ----------------------------------------------------------------------------------------- #
+
+    - name: 'PROCESS | Remove The Default Web Site'
+      community.windows.win_iis_website:
+        name: 'Default Web Site'
+        state: 'absent'
+
+    #endregion --- [ Process: Remove The Default Web Site ] ----------------------------------- #
+
+    #region ------ [ Process: Relocate The IIS Request Logs ] --------------------------------- #
+    # Off the system volume, onto the letter the play publishes. Two levels, because either alone
+    # leaves logs on C:: siteDefaults is what a site created LATER inherits, while a site created
+    # EARLIER carries its own override -- and post-installation creates the WSUS site before this
+    # runs, so siteDefaults alone would move nothing that already exists.
+    #
+    # After the Default Web Site is gone, so the only site left to rewrite is the one WSUS owns.
+    # Running it earlier would repoint a site this play is about to delete.
+
+    - name: 'PROCESS | Relocate The IIS Request Logs'
+      register: '__wsus_iis_logs__'
+
+      ansible.windows.win_powershell:
+        depth: 3
+        error_action: 'stop'
+        parameters:
+          LogDirectory: "{{ __iis_log_dir__ }}"
+        script: "{{ lookup('ansible.builtin.file', 'Set-IisLogDirectory.ps1') }}"
+
+    #endregion --- [ Process: Relocate The IIS Request Logs ] --------------------------------- #
+
 #endregion --- [ Process: Configure WSUS on Windows ] ----------------------------------------- #
 
 
@@ -465,6 +569,7 @@
     __desired_data__: "{{ wsus_running.db.drive_letter }}:\\{{ wsus_running.db.data_subdir }}"
     __desired_log__: "{{ wsus_running.db.drive_letter }}:\\{{ wsus_running.db.log_subdir }}"
     __content_dir__: "{{ wsus_running.content.drive_letter }}:\\{{ wsus_running.content.subdir }}"
+    __iis_log_dir__: "{{ wsus_running.iis.drive_letter }}:\\{{ wsus_running.iis.log_subdir }}"
     __wsus_machine_name__: "{{ __wsus_computer_name__.value }}"
 
   # Begin The 'End' Block
@@ -806,5 +911,54 @@
           - __wsus_system_volume_susdb__.files | length == 0
 
     #endregion --- [ End: Prove No SUSDB File Sits On The System Volume ] --------------------- #
+
+    #region ------ [ End: Prove IIS Holds No Site But WSUS ] ---------------------------------- #
+    # Evidence, not a guard: it gates nothing. V-218762's exemption is conditional on this host
+    # serving no other content, and a site list carries one half of that -- that no other site
+    # exists. This records that half; an absence check on one name would not. What sits BENEATH the
+    # WSUS site -- its applications, vdirs and their paths -- the migration contract records as
+    # owed and currently unowned; no verifier carries it yet.
+    #
+    # The one thing that can change that set on a real converge is a repinned AMI. Nothing creates
+    # a site after
+    # post-installation, which creates the WSUS one: the role calls a single IIS module and only to
+    # remove, the framework calls none, and the host is rebuilt every run. This is where an image
+    # that ships a site nobody here asked for would surface.
+    #
+    # appcmd rather than the module that did the removing, because the claim is about every site
+    # IIS holds and the module speaks only for the one it was given. /text:name returns bare names,
+    # one per line. They are trimmed and blank-dropped so a CR or a trailing blank is not read as
+    # a site.
+
+    - name: 'END | Read The Sites IIS Serves'
+      changed_when: false
+      check_mode: false
+      register: '__wsus_iis_sites__'
+
+      ansible.windows.win_command:
+        argv:
+          - 'C:\Windows\System32\inetsrv\appcmd.exe'
+          - 'list'
+          - 'sites'
+          - '/text:name'
+
+    # ----------------------------------------------------------------------------------------- #
+
+    - name: 'END | Prove IIS Holds No Site But WSUS'
+      vars:
+        __site_names__: >-
+          {{ __wsus_iis_sites__.stdout_lines | map('trim') | select('ne', '') | list }}
+
+      ansible.builtin.assert:
+        fail_msg: >-
+          IIS holds sites {{ __site_names__ }}, and the only one it may hold is
+          ['WSUS Administration']. V-218762's WSUS exemption is conditional on this host serving
+          no other content, so anything else here voids it. Identify what created the extra site --
+          an image shipping one is the expected source -- then remove it or amend this proof.
+        quiet: true
+        that:
+          - __site_names__ == ['WSUS Administration']
+
+    #endregion --- [ End: Prove IIS Holds No Site But WSUS ] ---------------------------------- #
 
 #endregion --- [ End: Configure WSUS on Windows ] --------------------------------------------- #

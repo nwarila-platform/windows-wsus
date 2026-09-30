@@ -100,17 +100,17 @@ recursive walk yields, so this table diffs directly against the file.
 | 40 | `MAIN \| Grant Users Browse Access On The Content Root` | reproduce | Collides with the STIG surface — see *Conflicts*. |
 | 41 | `MAIN \| Grant WSUS Service Rights On The Content Cache` | reproduce | `NT AUTHORITY\NETWORK SERVICE` FullControl, inheritable. |
 | 42 | `MAIN \| Assert WsusPool Exists Before Tuning` | reproduce | Refuses to let the pool module create a bogus generic pool when post-install did not run. |
-| 43 | `MAIN \| Tune WsusPool Application Pool` | reproduce against SQL | Same six attributes and values; the module changes under TD-004. Extend with rapid-fail protection, required by IIS Site STIG V-218777/V-218778 and not WSUS-exempt. |
+| 43 | `MAIN \| Tune WsusPool Application Pool` | reproduce against SQL | Same six attributes and values; the module changes under TD-004. Extend with rapid-fail protection, required by IIS Site STIG V-218777/V-218778 and not WSUS-exempt. The idle and recycle collision this task sits inside is decided for Server 2025 only, and the exemption it rests on is half-proven — the beneath-site clause is still owed. Both proofs must stand before this task may take `00:00:00`. See *Conflicts*. |
 | 44 | `MAIN \| Restrict WSUS Update Languages` | reproduce | `AllUpdateLanguagesEnabled = false` plus an order-insensitive compare and post-`Save()` re-read. |
 | 45 | `MAIN \| Configure Upstream WSUS Source` | reproduce | Five-field diff, stop any in-flight sync before `Save()`, verify the persisted five. |
 | 46 | `MAIN \| Wait For The Configured Upstream WSUS Endpoint` | reproduce | Conditional on `sync.bootstrap_enabled`. |
 | 47 | `INFO \| Synchronization Proof Is Deliberately Disabled` | reproduce | The honesty marker: with the bootstrap off the run is a configuration smoke and claims nothing about reachability. |
 | 48 | `MAIN \| Bootstrap WSUS Category Sync To Terminal Success` | reproduce | Full invocation-ownership contract under `BootstrapInvocationContractTest`. |
 | 49 | `MAIN \| Relocate IIS Logs To G:` | reproduce | `siteDefaults` and every site's `logFile.directory`/`enabled`, literal drive-qualified path, `%VAR%` treated as drift. |
-| 50 | `MAIN \| Validate + Normalize IIS wwwroot Target` | reproduce | Validate before any native module can expand a bad override. |
-| 51 | `MAIN \| Copy IIS wwwroot Content To G:` | reproduce | Content before repoint, so the relocated root is populated. |
-| 52 | `MAIN \| Repoint InetStp PathWWWRoot To G:` | reproduce | Both registry views, including `Wow6432Node`. |
-| 53 | `MAIN \| Repoint Default Web Site Root To G:` | reproduce | Default Web Site only; the WSUS Administration site is untouched. |
+| 50 | `MAIN \| Validate + Normalize IIS wwwroot Target` | drop | Drops with 51 and 52 as one group: the wwwroot relocation existed to serve the Default Web Site's root, and task 53 removes that site. Nothing then reads, serves, or creates the relocated root. The path predicates this validated are not lost with it — row 2 of the `validate.yml` table owes them for every application path, and no surviving obligation writes a wwwroot value for them to guard. |
+| 51 | `MAIN \| Copy IIS wwwroot Content To G:` | drop | Drops with 50 and 52. The copy populated a root for the Default Web Site to serve; with that site removed the content has no consumer, and copying it would prove nothing. The `iis.wwwroot` defaults key drops with the three tasks; only `iis.log_subdir` survives on the IIS letter. |
+| 52 | `MAIN \| Repoint InetStp PathWWWRoot To G:` | drop | Drops with 50 and 51. `PathWWWRoot` is the physical path a newly created site inherits, and nothing here creates a site that would inherit it: post-installation builds the WSUS site with its own path, and this role removes the only other one. Kept alone it would repoint a registry value with no reader, taking its input from task 50's normalizing register, which is dropped. |
+| 53 | `MAIN \| Repoint Default Web Site Root To G:` | invert | The site this repointed is removed rather than relocated, and the rebuild proves the absence. Unlike task 38 and the `UpdateServices-WidDB` authority, which assert absence *instead of* acting, this one removes and then proves: installing Web-Server recreates the site on every rebuilt host, so the state is reachable every run rather than unreachable by construction. The proof is a set comparison over every site IIS holds, not a check for this name: the exemption at stake is conditional on the host serving nothing else. The WSUS Administration site is untouched. See *Conflicts*. |
 | 54 | `MAIN \| Set IIS Log Directory ACLs (SYSTEM/Admins FullControl, Users R&X)` | reproduce | Three ACEs, additive. Collides with the STIG surface — see *Conflicts*. |
 | 55 | `MAIN \| Resolve The TLS Enablement Flag` | reproduce | Pinned as a host fact because the block conditional is re-evaluated inside the included delivery role, where a lazy `config` binding resolves against that role's name. |
 | 56 | `MAIN \| Deliver, Validate, Import, And Bind The TLS Certificate` | reproduce | Block wrapper; its `always` children are the cleanup contract. |
@@ -159,7 +159,7 @@ Every task is gated on `state == 'present'`; the TLS pair is additionally gated 
 | # | Task | Disposition | Note |
 |---:|---|---|---|
 | 1 | `BEGIN \| Assert Data Disk Drive Letters Are Distinct` | reproduce | Three distinct `^[D-Z]$` letters. The disk-manager role validates its own declaration and cannot see this role's independently overrideable targets. |
-| 2 | `BEGIN \| Assert Application Paths Match Their Declared Disks` | reproduce against SQL | Same predicates — relative, non-traversing, no `:`/`%`/`..`, IIS paths literal on the IIS letter — with `db_subdir` no longer defaulting to a WID-shaped name. |
+| 2 | `BEGIN \| Assert Application Paths Match Their Declared Disks` | reproduce against SQL | Same predicates — relative, non-traversing, no `:`/`%`/`..`, IIS paths literal on the IIS letter — with `db_subdir` no longer defaulting to a WID-shaped name. The IIS half narrows to `iis.log_subdir`: `iis.wwwroot` drops with tasks 50-52, so no wwwroot predicate is owed. |
 | 3 | `BEGIN \| Assert Upstream WSUS Server Provided` | reproduce | Required input, no default. |
 | 4 | `BEGIN \| Assert Synchronization Contract` | reproduce | Port 1–65535; unique `^[a-z]{2}(-[a-z0-9]+)?$` languages; accept timeout `>= 30`, completion `>= 300`, poll `2..60`; and `wsus-upstream.corp.local` is refused whenever `bootstrap_enabled` is true, so the repository placeholder can never be mistaken for proof. |
 | 5 | `BEGIN \| Assert TLS Delivery Inputs` | reproduce | Bucket name pattern, non-traversing non-absolute `pfx_key`, port 1–65535, `minimum_validity_days >= 1`, and a multi-label FQDN `dns_name`. |
@@ -765,8 +765,12 @@ method names most of its clauses. The full list, so the rebuilt verifier can be 
 - `MSSQL$MICROSOFT##WID` Automatic and Running — **invert**; the SQL instance service takes its
   place.
 - `W3SVC` and `WsusService` both Running.
-- All four declared directories exist as containers: content root, DB data directory, IIS log
-  directory, IIS wwwroot.
+- All four declared directories exist as containers: content root, DB data directory, DB log
+  directory, IIS log directory. The membership changes on both sides. The IIS wwwroot member —
+  **drop**; task 51 was its only producer and nothing creates or serves it once the Default Web
+  Site is removed. In its place the rebuild owes a clause the WID role never had: the DB log
+  directory, which the SQL rebuild's `db.log_subdir` declares and the placement region creates,
+  where the WID role carried a single `db_subdir`.
 - `WsusContent` exists under the content root; registry `ContentDir`, API `LocalContentCachePath`,
   and the IIS `Content` vdir `physicalPath` agree with the desired root and cache.
 - Inheritable allow ACEs by SID: `S-1-5-32-545` `ReadAndExecute` on the content root, `S-1-5-20`
@@ -774,7 +778,14 @@ method names most of its clauses. The full list, so the rebuilt verifier can be 
 - Upstream contract: `SyncFromMicrosoftUpdate` false and the four upstream fields match.
 - `WsusPool` state `Started` and all six tuning values match, with `TimeSpan` comparison for the two
   interval values.
-- Default Web Site `physicalPath` equals the declared wwwroot.
+- Default Web Site `physicalPath` equals the declared wwwroot — **invert**; the site is removed, so
+  the rebuild proves instead that the set of sites IIS holds is exactly `WSUS Administration`. That
+  proof lives in the role's END stage, not in this verifier — do not rebuild it here as well.
+- **Owed, and currently unowned:** V-218762's exemption is conditional on the host serving no other
+  content, and the END stage proves only the site-name set. Nothing yet proves what sits *beneath*
+  the WSUS Administration site — that its applications, vdirs and physical paths are exactly WSUS's
+  own. Until a clause here carries that, the exemption is half-proven and must not be described as
+  established.
 - `siteDefaults` logging enabled and at the declared directory, and the same for **every** site.
 - TLS: exactly one HTTPS binding at `*:<port>:` with `sslFlags=0`; the SSL provider mapping carries
   the pinned thumbprint; the pinned leaf explicitly permits Server Authentication EKU; registry
@@ -785,8 +796,9 @@ method names most of its clauses. The full list, so the rebuilt verifier can be 
 
 ## Conflicts the rebuild inherits
 
-Four collisions are recorded here rather than resolved, because each needs a decision the rebuild
-cannot make on its own.
+Four collisions were recorded here rather than resolved, because each needed a decision the rebuild
+could not make on its own. One has since been decided for Server 2025 and remains open for Server
+2022; the other three stand open on both.
 
 - **`BUILTIN\Users` browse access.** Tasks 9, 40, and 54 grant `BUILTIN\Users` `ReadAndExecute` as a
   ratified organisational convention (Director, 2026-07-18): every interactive user on these servers
@@ -794,15 +806,36 @@ cannot make on its own.
   administrator's personal ACE onto the ACL and leaves a stale SID when they depart. IIS Site STIG
   V-283673 permits only SYSTEM, Administrators, and an approved Web Administrators group on the
   content path, and V-218790 constrains the log directory the same way. One must yield.
-- **WsusPool idle and recycle intervals.** Task 43 sets `processModel.idleTimeout` and
-  `recycling.periodicRestart.time` to `00:00:00` on Microsoft's instruction, to prevent the
-  scan-storm/HTTP-503 cascade a recycle triggers when it drops the metadata cache. IIS Site STIG
-  V-218762 forbids an idle timeout of `0`, and its WSUS exemption is conditional on the host serving
-  no other content — which the relocated Default Web Site may void.
-- **The pool module (TD-004).** The tuning contract is written against
-  `community.windows.win_iis_webapppool`, deprecated for removal in `community.windows` 4.0.0. The
-  pinned collection set carries no `microsoft.iis`, so the successor cannot simply be adopted, and
-  the attribute mapping must be re-validated when it is.
+- **WsusPool idle and recycle intervals.** Decided 2026-09-01 on measured evidence. Task 43 sets
+  `processModel.idleTimeout` and `recycling.periodicRestart.time` to `00:00:00` on Microsoft's
+  instruction, to prevent the scan-storm/HTTP-503 cascade a recycle triggers when it drops the
+  metadata cache. IIS Site STIG V-218762 forbids an idle timeout of `0`, and its WSUS exemption is
+  conditional on the host serving no other content — which the relocated Default Web Site voided.
+  Decided in favour of the exemption: the Default Web Site is removed rather than relocated, so the
+  host serves no other site and task 43 may take `00:00:00` when it is written. Measured rather than
+  argued from documentation, because the documentation conflicts: post-installation records
+  `IISTargetWebSiteIndex` as its own site and not site 1; all eight WSUS applications and every
+  WSUS vdir sit on the WSUS Administration site; and no `SelfUpdate` tree exists on disk or in
+  IIS, so the port-80 endpoint KB 920659's custom-site configuration keeps a site for is not
+  shipped on Server 2025. The Default Web Site was serving only the IIS welcome page. Removing it
+  left all seven WSUS endpoints answering unchanged across an `iisreset`, with all eight
+  applications and all nine vdirs still declared. Server 2022 was NOT measured — KB 920659's
+  port-80 requirement may still hold there, and 2022 is a target generation rather than a
+  hypothetical (TD-012) — so the role does not assert the platform. It reads the site before
+  removing it and refuses a Default Web Site that holds any virtual directory beneath its root,
+  which is where a 2022 image carrying SelfUpdate stops the run instead of losing it.
+
+  The decision holds as measured on Server 2025 only. It is **not** decided for Server 2022, and
+  the refusal is not 2022 support: on the topology KB 920659 describes, every 2022 run would stop
+  at the refusal and the exemption would never be established there at all. What the refusal buys
+  is that the role fails loudly instead of deleting endpoints it cannot prove are unwanted.
+  Whether to keep a WSUS-only port-80 site on 2022, migrate those endpoints onto the WSUS
+  Administration site, or retire SelfUpdate outright is an open decision, and it blocks 2022.
+- **The IIS modules (TD-004).** `community.windows.win_iis_website` removes the Default Web Site on
+  the live converge path today, and the tuning contract is written against
+  `community.windows.win_iis_webapppool`; both are deprecated for removal in `community.windows`
+  4.0.0. The pinned collection set carries no `microsoft.iis`, so neither successor can simply be
+  adopted, and the attribute mapping must be re-validated when it is.
 - **The synchronization half is unproven.** The AWS play sets `sync.bootstrap_enabled: false`
   because its placeholder upstream is deliberately unreachable, so tasks 46 and 48 and the marker
   and fingerprint contracts above have never executed against a real source. They are transcribed

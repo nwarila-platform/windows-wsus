@@ -89,13 +89,15 @@ all_systems = [
       tags                  = {}
       throughput            = null
       volume_type           = "gp3"
-      # The AMI's native size, which its SQL Server installation sets — SUSDB, content, and the
-      # IIS root live on their own volumes, so padding the ephemeral root is pure cost.
+      # The AMI's native size, which its SQL Server installation sets — SUSDB and content live on
+      # their own volumes and G: is reserved for the IIS logs (task 49, not yet built), so padding
+      # the ephemeral root is pure cost.
       volume_size = "75"
     }
 
     # Three RAW data disks, one per concern, so each can be sized, backed up and permissioned
-    # on its own: SUSDB on SQL Server, the WSUS content store, and the IIS root. The deploy
+    # on its own: SUSDB on SQL Server, the WSUS content store, and the volume reserved for the
+    # IIS logs. The deploy
     # layer owns the hardware; the composed play's windows_disk_manager
     # formats each and assigns its drive letter. The Function tag is the identity the disk role
     # resolves a volume by (resolve_aws.yml), because a volume id only exists after apply, so

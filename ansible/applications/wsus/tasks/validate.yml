@@ -84,3 +84,32 @@
       # handed; this one holds the role's own merged configuration to a shape nothing upstream
       # can see, so it is not that class and does not travel with them.
       - (wsus_running.content.drive_letter | upper) != (wsus_running.db.drive_letter | upper)
+
+# ----------------------------------------------------------------------------------------- #
+
+# The third placement, held to the same shape as the other two: one letter this role does not
+# choose, one relative subdirectory that is this role's own. The IIS volume must differ from both
+# the database and the content volumes -- request logs grow without bound until something rotates
+# them, and a log volume that fills is survivable where a SUSDB or content volume that fills is
+# not.
+- name: 'VALIDATE | Require A Usable IIS Log Placement'
+  when: (state | default('present') | string | lower | trim) == 'present'
+  vars:
+    __subdir__: '^[A-Za-z0-9_]([A-Za-z0-9_.-]*[A-Za-z0-9_-])?(\\[A-Za-z0-9_]([A-Za-z0-9_.-]*[A-Za-z0-9_-])?)*$'
+    __reserved__: '(?i)(^|\\)(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\.|\\|$)'
+    __iis_log__: "{{ wsus_running.iis.log_subdir | default('', true) }}"
+  ansible.builtin.assert:
+    fail_msg: >-
+      Refusing to configure: the IIS log placement is malformed. wsus.iis.drive_letter must be one
+      capital letter in D-Z and must name a different volume from both the database and the
+      content store. The subdirectory follows the same grammar as the other two, and must carry no
+      %VAR% token: IIS stores the token rather than the path it expands to, so a configured value
+      naming a variable cannot be audited against the volume it is supposed to be on.
+    quiet: true
+    that:
+      - wsus_running.iis.drive_letter | default('', true) is match('^[D-Z]$')
+      - __iis_log__ is match(__subdir__)
+      - not (__iis_log__ is search(__reserved__))
+      - not (__iis_log__ is search('%'))
+      - (wsus_running.iis.drive_letter | upper) != (wsus_running.db.drive_letter | upper)
+      - (wsus_running.iis.drive_letter | upper) != (wsus_running.content.drive_letter | upper)

@@ -22,7 +22,7 @@ SQL Server arrives licensed by AWS rather than installed and licensed here. The 
 |---|---|---|
 | E: | `WSUSDB` | SUSDB on SQL Server |
 | F: | `WSUSDATA` | WSUS content store |
-| G: | `WSUSIIS` | IIS root |
+| G: | `WSUSIIS` | IIS logs |
 
 ## Lifecycle
 
