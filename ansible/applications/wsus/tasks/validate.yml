@@ -50,6 +50,50 @@
       # can see, so it is not that class and does not travel with them.
       - (wsus_running.content.drive_letter | upper) != (wsus_running.db.drive_letter | upper)
 
+# check: cross-field
+- name: 'VALIDATE | Require A Usable IIS Log Placement'
+  vars:
+    __segment__: '[A-Za-z0-9_]([A-Za-z0-9_.-]*[A-Za-z0-9_-])?'
+    __subdir__: '^{{ __segment__ }}(\\{{ __segment__ }})*$'
+    __reserved__: '(?i)(^|\\)(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\.|\\|$)'
+    __iis_log__: "{{ wsus_running.iis.log_subdir | default('', true) }}"
+  when: (state | default('present') | string | lower | trim) == 'present'
+  ansible.builtin.assert:
+    fail_msg: >-
+      Refusing to configure: wsus.iis.drive_letter is
+      '{{ wsus_running.iis.drive_letter | default('', true) }}' and wsus.iis.log_subdir is
+      '{{ __iis_log__ }}'. The letter must be one capital in D-Z naming a volume other than
+      the database's ('{{ wsus_running.db.drive_letter }}') and the content store's
+      ('{{ wsus_running.content.drive_letter }}'); the subdirectory must be relative, each
+      segment letters, digits, '_', '.' or '-', not empty, not ending in '.', and not a device
+      name such as CON. See meta/main.yml.
+    quiet: true
+    that:
+      - wsus_running.iis.drive_letter | default('', true) is match('^[D-Z]$')
+      - (wsus_running.iis.drive_letter | upper) != (wsus_running.db.drive_letter | upper)
+      - (wsus_running.iis.drive_letter | upper) != (wsus_running.content.drive_letter | upper)
+      - __iis_log__ is match(__subdir__)
+      - not (__iis_log__ is search(__reserved__))
+
+# check: safety-critical
+- name: 'VALIDATE | Require A Usable WSUS Site Name'
+  vars:
+    __site__: "{{ wsus_running.tls.site_name | default('', true) }}"
+    __site_chars__: '^[^\\/?;:@&=+$,|"<>*]+$'
+  when: (state | default('present') | string | lower | trim) == 'present'
+  ansible.builtin.assert:
+    fail_msg: >-
+      Refusing to configure: wsus.tls.site_name is '{{ __site__ }}'. It must name the IIS site
+      WSUS installed -- 'WSUS Administration' on every image measured here -- as a non-empty
+      string without surrounding spaces or a character IIS refuses in a site name, because
+      the HTTPS listener and the IIS guard both act on the site it names. See meta/main.yml.
+    quiet: true
+    that:
+      - (wsus_running.tls.site_name | default(none)) is string
+      - __site__ | length > 0
+      - __site__ == (__site__ | trim)
+      - __site__ is match(__site_chars__)
+
 - name: 'VALIDATE | Require Usable Update Languages'
   vars:
     __languages__: >-

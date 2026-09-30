@@ -7,8 +7,10 @@ carries one, completes post-installation against the instance, brings up the ser
 for it, delivers and installs the certificate the listener presents, requires SSL on the five
 vendor-named virtual directories, scopes the host firewall to the ports and program and removes
 the wide-open rules WSUS opened for itself, reconciles where update content is kept and who may
-read it, restricts the languages the server will accept, points the server at its upstream, and
-synchronises the catalogue and the files behind it.
+read it, restricts the languages the server will accept, points the server at its upstream,
+synchronises the catalogue and the files behind it, and then tunes the WSUS application pool,
+removes the Default Web Site and the pools nothing else uses, and writes IIS request logs to a
+volume of their own.
 
 Everything that arrives from S3 moves through the controller: one PKCS#12 is fetched and
 digest-checked there, its password is read there through the framework's `secret` lookup, and the
@@ -29,10 +31,11 @@ time; it is not run directly from this repository. The shipped `ansible/playbook
 composes the framework's `credential_resolver`, `host_readiness`, `os_bootstrap`, `remote_client`,
 `domain_member` and `windows_disk_manager` onto the host, and `wsus` last.
 
-The target must be Windows Server with SQL Server already installed and two volumes this role
-can be given — one for the database, one for the update store — and with the `ansible.windows`
-and `community.windows` modules the role uses. The controller's Ansible environment needs the
-`amazon.aws` collection with supported `boto3`/`botocore` for the S3 fetch.
+The target must be Windows Server with SQL Server already installed and three volumes this role
+can be given — one for the database, one for the update store, one for IIS request logs — and
+with the `ansible.windows`, `community.windows` and `microsoft.iis` modules the role uses. The
+controller's Ansible environment needs the `amazon.aws` collection with supported
+`boto3`/`botocore` for the S3 fetch.
 
 The volumes themselves are Terraform's -- `terraform/aws.tfvars` declares them as EBS devices --
 and `windows_disk_manager` is what formats the attached disks and assigns the drive letters this
@@ -45,19 +48,19 @@ else.
 
 Deployment-specific inputs carry an account id, a certificate identity or a network topology, and
 they change with every site, so the playbook states them where a reader can see them rather than
-defaulting them in the role. `meta/main.yml` names all sixteen, and gives the reason where the
-answer is not obvious from the key. `tasks/validate.yml` enforces them on the controller before
-the role's first mutation — the loader gathers facts from the guest first, so this is the gate in
-front of every change, not in front of every contact. The six certificate leaves are required
-when `wsus.tls.enabled` is true, which is the shipped default; the other ten are required
-always.
+defaulting them in the role. `meta/main.yml` names all seventeen, and gives the reason where
+the answer is not obvious from the key. `tasks/validate.yml` enforces them on the controller
+before the role's first mutation — the loader gathers facts from the guest first, so this is the
+gate in front of every change, not in front of every contact. The six certificate leaves are
+required when `wsus.tls.enabled` is true, which is the shipped default; the other eleven are
+required always.
 
-Two drive letters (database and content, refused if equal); seven keys describing the upstream —
-the server as a DNS name or an IPv4 literal, its port, whether the link is encrypted, whether this
-server inherits its approvals, the synchronisation mode, and the two timeouts; the update
-languages the estate accepts; and six keys describing the certificate — bucket, DNS name, the
-object key of the PKCS#12, its digest, the password that unlocks it, and the thumbprint the
-listener is pinned to.
+Three drive letters (database, content and IIS logs, none equal to another); seven keys
+describing the upstream — the server as a DNS name or an IPv4 literal, its port, whether the link
+is encrypted, whether this server inherits its approvals, the synchronisation mode, and the two
+timeouts; the update languages the estate accepts; and six keys describing the certificate —
+bucket, DNS name, the object key of the PKCS#12, its digest, the password that unlocks it, and
+the thumbprint the listener is pinned to.
 
 The upstream's endpoint is declared in three parts because that is how a deployer thinks about it,
 and the role composes them into a single URL before handing it to the actor. That is not
@@ -89,8 +92,10 @@ ever lives in the role.
 What does **not** live in defaults at all is constants wearing a default's clothes. The features
 WSUS is made of, the flags its post-installation writes, the services that answer for it and the
 default SQL instance are fixed by the product, not by a site, and are written where they are used.
-`tasks/validate.yml` guards only values the caller supplies; anything the role declares itself is
-proved by two converges at `changed=0`, not by asserting about it.
+`tasks/validate.yml` guards what the caller supplies and the two defaults later steps build an
+IIS path or target from, `iis.log_subdir` and `tls.site_name`; nothing asserts the product
+constants the role writes where it uses them. Two converges at `changed=0` show that state is
+steady, not that it is correct.
 
 ## Why the order is what it is
 
@@ -179,6 +184,31 @@ group, and a description ending `[TCP <port>]` — but saying WSUS things rather
 an administrator reading the rule list learns why the port is open and not merely that something
 web-shaped wanted it.
 
+## IIS
+
+The role expects IIS to serve WSUS alone, and checks that right after post-installation, before
+the HTTPS listener and every later IIS change. It reads every site, application pool, application
+and virtual directory, and refuses the run unless IIS holds WsusPool and exactly one WSUS site
+whose root and applications all run on it; unless no path that site serves from holds `..`, and
+every one but the site's own Content directory, which the content placement pins, lies in WSUS's
+own tree, `Program Files\Update Services` on the drive of the site's root; and unless any other
+site is the Default Web Site with IIS's stock root: DefaultAppPool at
+`%SystemDrive%\inetpub\wwwroot`, one `http *:80` binding, nothing beneath it.
+Only then does it set WsusPool to Microsoft's WSUS values — queue length 2000, no idle timeout,
+no scheduled or memory recycling, pinging off — with the rapid-fail protection IIS STIG
+V-218777/V-218778 requires, remove the Default Web Site and the three pools nothing on a WSUS host
+uses, and write request logs to a volume of their own.
+
+The zero idle and recycle limits are why that check exists: IIS Site STIG V-218762 exempts a WSUS
+host from its idle timeout only when the host serves no other content, and V-218775 does not
+apply to a WSUS host at all. The check goes by location, so content someone places inside WSUS's
+own tree passes it. Removing the Default Web Site deletes its configuration, not its files.
+
+The log directory grants SYSTEM and Administrators full control and Users read-and-execute, and
+inherits nothing from its volume, whose root would let Users create files and folders there. An
+entry for any other identity, which the role never adds, is outside what it manages. The Users
+entry is the ratified convention, and a recorded deviation from V-283673.
+
 ## State
 
 - `present` (default) — install and configure to the declared state.
@@ -197,9 +227,10 @@ web-shaped wanted it.
   database, and `END` proves it by reading the system volume for stray database files.
 - **The guest holds no cloud credential.** Every S3 object is fetched and verified on the
   controller.
-- **Nothing asserts what it already controls.** Two clean runs are the proof; re-reading a value
-  this role just wrote proves only that it can read itself. `END` reads the *engine* and the
-  *filesystem*, which are the things that could disagree with it.
+- **Nothing asserts what it already controls.** Two clean runs show the role steady, not correct;
+  re-reading a value this role just wrote proves only that it can read itself. `END` reads the
+  *engine* and the *filesystem*, which are the things that could disagree with it. An independent
+  readback of the IIS settings is owed until GATE-01 runs here, as the migration contract records.
 - **One HTTPS port.** `wsus.tls.port` is the only declaration of it; the firewall reads that value
   rather than carrying a second copy to disagree with.
 - **Update languages are declared, not inherited.** A server installs accepting every language
@@ -211,15 +242,15 @@ web-shaped wanted it.
 Guest-side logic a task cannot express cleanly is a first-class PowerShell script under the
 repository's `scripts/`, written against the org `NWarila/powershell-template` and shipped with a
 Linux-runnable Pester sibling: `Get-SqlDatabasePlacement.ps1`, `Invoke-SusdbAdoption.ps1`,
-`Invoke-WsusSynchronisation.ps1`, `Set-AclGrant.ps1`, `Set-WsusContentLocation.ps1`,
-`Set-WsusHttpsListener.ps1`, `Set-WsusUpdateLanguage.ps1` and `Set-WsusUpstream.ps1`, each beside
-its `.pester.ps1`.
+`Invoke-WsusSynchronisation.ps1`, `Set-AclGrant.ps1`, `Set-IisLogDirectory.ps1`,
+`Set-WsusContentLocation.ps1`, `Set-WsusHttpsListener.ps1`, `Set-WsusUpdateLanguage.ps1` and
+`Set-WsusUpstream.ps1`, each beside its `.pester.ps1`.
 
 The role itself carries only `files/<Name>.ps1.stub` markers, each naming its source; composition
 joins the sources to the framework's `scripts/` and runs the framework's materializer, which
 copies each one to `files/<Name>.ps1`, a build artifact the `.gitignore` never allowlists — the
 org's three-file layout. Unlike `pdq-deploy-inventory`, whose workflow calls its own copy of the
-materializer, this repository's workflows run no script of their own.
+materializer, this repository's workflows run no helper script of their own.
 `.github/workflows/powershell.yml` runs the pinned `pester-matrix` harness over `scripts/`, which
 discovers every `<Name>.ps1` + `<Name>.pester.ps1` pair and runs it with the org's analyzer
 settings.

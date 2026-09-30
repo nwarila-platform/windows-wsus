@@ -30,16 +30,14 @@ workarounds are not accidentally restored.
   loader contract carries forward to every role the rebuild introduces; see [the migration
   contract](wsus-role-migration-contract.md).
 
-## TD-004 — deprecated IIS application-pool module
+## TD-004 — CLOSED: deprecated IIS application-pool module
 
-- **What:** a constraint on the WSUS role being rebuilt, not on code that exists today.
-  WsusPool tuning was written against `community.windows.win_iis_webapppool`, deprecated for
-  removal in `community.windows` 4.0.0 in favour of `microsoft.iis.web_app_pool`.
-- **Why it remains open:** the pinned collection set is `community.windows` 3.3.0 and carries
-  no `microsoft.iis`, so the rebuilt role cannot simply adopt the successor.
-- **Exit criteria:** the rebuilt role tunes WsusPool through an exactly pinned `microsoft.iis`,
-  with the attribute mapping validated and two live converges reporting `changed=0` on the
-  second.
+- **What:** WsusPool tuning was written against `community.windows.win_iis_webapppool`,
+  deprecated for removal in `community.windows` 4.0.0 in favour of `microsoft.iis.web_app_pool`.
+- **Resolved:** 2026-09-30. The role tunes WsusPool through `microsoft.iis.web_app_pool`, with
+  `microsoft.iis` pinned exactly at 1.3.0 in `requirements-quality.yml`. The attribute mapping
+  was measured on the lab WSUS: applied exactly, then `changed=0` on a second run and under
+  `--check`.
 
 ## TD-005 — PARTIALLY CLOSED: SUSDB relocation was outside Microsoft support guidance
 

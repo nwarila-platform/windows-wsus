@@ -39,6 +39,14 @@ wsus_defaults:
 
   #endregion --- [ Content placement ] ------------------------------------------------------- #
 
+  #region ------ [ IIS log placement ] ------------------------------------------------------- #
+
+  # WHERE REQUEST LOGS LAND. The volume is the play's to publish; the layout within it is ours.
+  iis:
+    log_subdir: 'inetpub\logs\LogFiles'
+
+  #endregion --- [ IIS log placement ] ------------------------------------------------------- #
+
   #region ------ [ Update languages ] -------------------------------------------------------- #
 
   # WHICH LANGUAGES THIS SERVER WILL ACCEPT. A WSUS installs accepting every language Microsoft

@@ -5,15 +5,17 @@
 # tasks/validate.yml enforces the merged-config guards.
 #
 # REQUIRED INPUTS, all supplied by the playbook and never defaulted here. validate.yml refuses a
-# present run that omits any of the first ten; the six certificate leaves are refused the same way
-# when wsus.tls.enabled is true, which is the shipped default. The playbook resolves the S3 object
-# and the password on the CONTROLLER -- the guest holds no cloud credential and, here, no route to
-# S3 at all.
+# present run that omits any of the first eleven; the six certificate leaves are refused the
+# same way when wsus.tls.enabled is true, which is the shipped default. The playbook resolves
+# the S3 object and the password on the CONTROLLER -- the guest holds no cloud credential and,
+# here, no route to S3 at all.
 #
 #   wsus.db.drive_letter                 Volume SUSDB is created on. Refused if it equals the
 #                                        content letter: both grow independently and sharing a
 #                                        disk lets either one stop the other.
 #   wsus.content.drive_letter            Volume the update store is created on.
+#   wsus.iis.drive_letter                Volume IIS request logs are written to. Refused if it
+#                                        equals the database or the content letter.
 #   wsus.sync.upstream_server            The upstream this server mirrors, as a DNS name or IPv4
 #                                        literal. Never defaulted -- a defaulted upstream points
 #                                        at whatever the last deployment's was.

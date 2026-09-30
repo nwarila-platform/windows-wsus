@@ -39,7 +39,7 @@ The server carries three volumes:
 |---|---|---|
 | E: | `WSUSDB` | SUSDB on SQL Server |
 | F: | `WSUSDATA` | WSUS content store |
-| G: | `WSUSIIS` | Formatted and labelled; consumed by nothing yet, reserved for the deferred IIS work |
+| G: | `WSUSIIS` | IIS request logs |
 
 ## Lifecycle
 
@@ -74,16 +74,17 @@ Built, and exercised end to end on the disposable lifecycle. The WID-backed role
 2026-08-23 because WSUS on SQL Server differs at the postinstall boundary; it was rebuilt one
 action at a time against the migration contract above.
 
-That rebuild covers everything below. It does NOT yet close the records that track it: the
-migration contract still lists the IIS actors as to-be-reproduced, and TD-005 still asks for
-durable live evidence. Both are waiting on a scope decision being written down, not on code.
+That rebuild covers everything below. It does NOT yet close the records that track it: the IIS
+rows of the migration contract still owe their runtime-verifier re-checks, which wait on GATE-01,
+and TD-005 still asks for durable live evidence.
 
 One converge now places SUSDB on its own volume before anything can create it, installs the WSUS
 features, completes post-installation against the SQL instance, serves clients over TLS with a
 certificate delivered through the controller, scopes the host firewall by port and program and
 removes the wide-open rules WSUS opens for itself, reconciles the content store and its
-permissions, restricts the update languages, points the server at its upstream, and synchronises
-the catalogue and the files behind it.
+permissions, restricts the update languages, points the server at its upstream, synchronises the
+catalogue and the files behind it, and then tunes the WSUS application pool, removes the Default
+Web Site and the pools nothing else uses, and writes IIS request logs to their own volume.
 
 Every run proves one WSUS server plus the three clients running `wsus_client`. The client role
 refuses a host whose Group Policy does not name this deployment's server or whose expected trust
@@ -91,8 +92,9 @@ anchor is absent, requests updates, installs what WSUS offers, and fails on any 
 workflow then converges the whole playbook a second time and fails if any host reports a change.
 The inventory contract refuses any topology other than exactly one server and three clients.
 
-Two things are deliberately not here. STIG hardening of the SQL database and of IIS is out of
-scope for now. And only `ansible/applications/wsus/`, with its PowerShell under `scripts/`,
-transfers to production — `wsus_client` is a proof-of-concept, and the play, the tfvars, the
-`remote_client` role and the certificates are all artifacts of this disposable environment, which
-is more configuration-divergent than production by nature.
+Two things are deliberately not here. STIG hardening of the SQL database, and of IIS beyond the
+pool, site and logging work above, is out of scope for now. And only `ansible/applications/wsus/`,
+with its PowerShell under `scripts/`, transfers to production — `wsus_client` is a
+proof-of-concept, and the play, the tfvars, the `remote_client` role and the certificates are all
+artifacts of this disposable environment, which is more configuration-divergent than production by
+nature.

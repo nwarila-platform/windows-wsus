@@ -76,6 +76,7 @@
 !/ansible/applications/wsus/files/Invoke-SusdbAdoption.ps1.stub
 !/ansible/applications/wsus/files/Invoke-WsusSynchronisation.ps1.stub
 !/ansible/applications/wsus/files/Set-AclGrant.ps1.stub
+!/ansible/applications/wsus/files/Set-IisLogDirectory.ps1.stub
 !/ansible/applications/wsus/files/Set-WsusContentLocation.ps1.stub
 !/ansible/applications/wsus/files/Set-WsusHttpsListener.ps1.stub
 !/ansible/applications/wsus/files/Set-WsusUpdateLanguage.ps1.stub
@@ -134,6 +135,8 @@
 !/scripts/Invoke-WsusSynchronisation.ps1
 !/scripts/Set-AclGrant.pester.ps1
 !/scripts/Set-AclGrant.ps1
+!/scripts/Set-IisLogDirectory.pester.ps1
+!/scripts/Set-IisLogDirectory.ps1
 !/scripts/Set-WsusContentLocation.pester.ps1
 !/scripts/Set-WsusContentLocation.ps1
 !/scripts/Set-WsusHttpsListener.pester.ps1
