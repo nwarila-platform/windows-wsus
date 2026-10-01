@@ -1112,6 +1112,25 @@
 
     #endregion --- [ Process: Keep IIS Request Logs Off The System Volume ] ------------------- #
 
+    #region ------ [ Process: Apply The Server-Level IIS STIG Settings ] ---------------------- #
+
+    # This task owns only the five IIS and ASP.NET settings; registry-held IIS STIG rules
+    # belong to the STIG GPOs.
+    - name: 'PROCESS | Apply The Server-Level IIS STIG Settings'
+
+      ansible.windows.win_powershell:
+        depth: 3
+        error_action: 'stop'
+        parameters:
+          AllowHighBitCharacters: false
+          MachineKeyValidation: 'HMACSHA256'
+          MaxAllowedContentLength: 30000000
+          RemoveResponseHeader: 'X-Powered-By'
+          SessionTimeout: '00:15:00'
+        script: "{{ lookup('ansible.builtin.file', 'Set-IisServerHardening.ps1') }}"
+
+    #endregion --- [ Process: Apply The Server-Level IIS STIG Settings ] ---------------------- #
+
 #endregion --- [ Process: Configure WSUS on Windows ] ----------------------------------------- #
 
 

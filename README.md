@@ -84,7 +84,8 @@ certificate delivered through the controller, scopes the host firewall by port a
 removes the wide-open rules WSUS opens for itself, reconciles the content store and its
 permissions, restricts the update languages, points the server at its upstream, synchronises the
 catalogue and the files behind it, and then tunes the WSUS application pool, removes the Default
-Web Site and the pools nothing else uses, and writes IIS request logs to their own volume.
+Web Site and the pools nothing else uses, writes IIS request logs to their own volume, and applies
+the server-level IIS STIG settings.
 
 Every run proves one WSUS server plus the three clients running `wsus_client`. The client role
 refuses a host whose Group Policy does not name this deployment's server or whose expected trust
@@ -92,9 +93,9 @@ anchor is absent, requests updates, installs what WSUS offers, and fails on any 
 workflow then converges the whole playbook a second time and fails if any host reports a change.
 The inventory contract refuses any topology other than exactly one server and three clients.
 
-Two things are deliberately not here. STIG hardening of the SQL database, and of IIS beyond the
-pool, site and logging work above, is out of scope for now. And only `ansible/applications/wsus/`,
-with its PowerShell under `scripts/`, transfers to production — `wsus_client` is a
-proof-of-concept, and the play, the tfvars, the `remote_client` role and the certificates are all
-artifacts of this disposable environment, which is more configuration-divergent than production by
-nature.
+Two things are deliberately not here. STIG hardening of the SQL database is out of scope for now,
+and the IIS STIG rules held in the registry are left to the STIG GPOs. And only
+`ansible/applications/wsus/`, with its PowerShell under `scripts/`, transfers to production —
+`wsus_client` is a proof-of-concept, and the play, the tfvars, the `remote_client` role and the
+certificates are all artifacts of this disposable environment, which is more
+configuration-divergent than production by nature.

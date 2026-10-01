@@ -9,8 +9,8 @@ vendor-named virtual directories, scopes the host firewall to the ports and prog
 the wide-open rules WSUS opened for itself, reconciles where update content is kept and who may
 read it, restricts the languages the server will accept, points the server at its upstream,
 synchronises the catalogue and the files behind it, and then tunes the WSUS application pool,
-removes the Default Web Site and the pools nothing else uses, and writes IIS request logs to a
-volume of their own.
+removes the Default Web Site and the pools nothing else uses, writes IIS request logs to a volume
+of their own, and applies the server-level IIS STIG settings.
 
 Everything that arrives from S3 moves through the controller: one PKCS#12 is fetched and
 digest-checked there, its password is read there through the framework's `secret` lookup, and the
@@ -209,6 +209,13 @@ inherits nothing from its volume, whose root would let Users create files and fo
 entry for any other identity, which the role never adds, is outside what it manages. The Users
 entry is the ratified convention, and a recorded deviation from V-283673.
 
+Last, the role sets the IIS STIG settings that live in IIS and ASP.NET configuration, which no
+Group Policy reaches: machine-key validation HMACSHA256 (V-218807), a 15-minute session timeout
+(V-218763, V-218805), no `X-Powered-By` header (V-241789), no high-bit characters in request URLs
+(V-218756), and the request-size limit IIS already applies, 30000000 bytes, written explicitly
+(V-218754). The IIS STIG rules held in the registry, SCHANNEL protocols and HTTP.sys settings, are
+left to the STIG GPOs, and the rules that need documentation to the ISSO.
+
 ## State
 
 - `present` (default) — install and configure to the declared state.
@@ -243,8 +250,8 @@ Guest-side logic a task cannot express cleanly is a first-class PowerShell scrip
 repository's `scripts/`, written against the org `NWarila/powershell-template` and shipped with a
 Linux-runnable Pester sibling: `Get-SqlDatabasePlacement.ps1`, `Invoke-SusdbAdoption.ps1`,
 `Invoke-WsusSynchronisation.ps1`, `Set-AclGrant.ps1`, `Set-IisLogDirectory.ps1`,
-`Set-WsusContentLocation.ps1`, `Set-WsusHttpsListener.ps1`, `Set-WsusUpdateLanguage.ps1` and
-`Set-WsusUpstream.ps1`, each beside its `.pester.ps1`.
+`Set-IisServerHardening.ps1`, `Set-WsusContentLocation.ps1`, `Set-WsusHttpsListener.ps1`,
+`Set-WsusUpdateLanguage.ps1` and `Set-WsusUpstream.ps1`, each beside its `.pester.ps1`.
 
 The role itself carries only `files/<Name>.ps1.stub` markers, each naming its source; composition
 joins the sources to the framework's `scripts/` and runs the framework's materializer, which
