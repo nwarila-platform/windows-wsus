@@ -246,6 +246,53 @@
 
     #endregion --- [ Process: Ensure The Instance Is Automatic And Running ] ------------------ #
 
+    #region ------ [ Process: Uninstall The SQL Server Components WSUS Does Not Use ] --------- #
+
+    # The image installs these beside the engine, and WSUS uses only the engine. Each item names
+    # what leaves with its component, so a removed one is never handed to setup again: setup
+    # fails when asked to remove a component that is already gone (measured 2026-10-01).
+    - name: 'PROCESS | Uninstall The SQL Server Components WSUS Does Not Use'
+      loop:
+        - feature: 'AS'
+          service: 'MSSQLServerOLAPService'
+        - feature: 'IS'
+          service: 'MsDtsServer160'
+        - feature: 'AdvancedAnalytics'
+          service: 'MSSQLLaunchpad'
+        - feature: 'FullText'
+          service: 'MSSQLFDLauncher'
+        - feature: 'Replication'
+          path: 'C:\Program Files\Microsoft SQL Server\160\COM\replmerg.exe'
+        - feature: 'DQ'
+          product_id: '{3A981D80-905C-483A-9D99-DB81116E3894}'
+        - feature: 'DQC'
+          product_id: '{C401DA83-21AA-4904-9BEB-8183206C90FE}'
+      loop_control: { label: "{{ item.feature }}" }
+
+      ansible.windows.win_package:
+        arguments: "/Q /ACTION=Uninstall /FEATURES={{ item.feature }} /INSTANCENAME=MSSQLSERVER"
+        checksum_algorithm: 'sha1'
+        creates_path: "{{ item.path | default(omit) }}"
+        creates_service: "{{ item.service | default(omit) }}"
+        expected_return_code: [ 0, 3010 ]
+        follow_redirects: 'safe'
+        force_basic_auth: false
+        http_agent: 'ansible-httpget'
+        maximum_redirection: 50
+        path: 'C:\Program Files\Microsoft SQL Server\160\Setup Bootstrap\SQL2022\setup.exe'
+        product_id: "{{ item.product_id | default(omit) }}"
+        provider: 'auto'
+        proxy_use_default_credential: false
+        state: 'absent'
+        url_timeout: 30
+        use_default_credential: false
+        use_proxy: true
+        validate_certs: true
+        verify_signature: false
+        wait_for_children: false
+
+    #endregion --- [ Process: Uninstall The SQL Server Components WSUS Does Not Use ] --------- #
+
     #region ------ [ Process: Create The Database Directories On The Data Volume ] ------------ #
     # First of the four regions that place the database, and they run in the only order that
     # works: the directories must exist before an ACL can name them, the ACL must grant the engine
@@ -320,16 +367,9 @@
     #endregion --- [ Process: Pin The Instance Default Data And Log Directories ] ------------- #
 
     #region ------ [ Process: Restart The Instance So It Adopts The Pinned Directories ] ------ #
-    # A restart is an outage, so it fires on evidence rather than ignorance. Exactly two cases earn
-    # one: the registry just changed (measured on a live instance, writing it moved neither
-    # SERVERPROPERTY nor where a database landed until the service came back), or BEGIN reached the
-    # engine and it named the wrong directory. An instance that was DOWN when BEGIN looked earns
-    # nothing by itself -- it has since started and read the registry on the way up, so either it is
-    # already correct or the pin above changed and the first case fires. END proves the outcome
-    # either way. force_dependent_services because the instance carries dependents -- on this image
-    # MSSQLLaunchpad runs and SQLSERVERAGENT is installed -- and Windows refuses to stop a service
-    # that has them; measured, the running Launchpad came back and a stopped agent stayed stopped.
 
+    # A restart is an outage: only a changed pin, or an engine using the wrong directory, earns
+    # one. force_dependent_services because SQLSERVERAGENT depends on the instance [INV-06].
     - name: 'PROCESS | Restart The Instance So It Adopts The Pinned Directories'
       when: >-
         (__wsus_placement_pinned__ is changed)

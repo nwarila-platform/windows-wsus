@@ -1,16 +1,17 @@
 # `wsus` role
 
 Brings up Windows Server Update Services on a co-located SQL Server instance, serving its clients
-over TLS. In one converge it pins the instance's default database directories and restarts it so
-they take effect, installs the WSUS features, adopts a preserved `SUSDB` when the volume already
-carries one, completes post-installation against the instance, brings up the services that answer
-for it, delivers and installs the certificate the listener presents, requires SSL on the five
-vendor-named virtual directories, scopes the host firewall to the ports and program and removes
-the wide-open rules WSUS opened for itself, reconciles where update content is kept and who may
-read it, restricts the languages the server will accept, points the server at its upstream,
-synchronises the catalogue and the files behind it, and then tunes the WSUS application pool,
-removes the Default Web Site and the pools nothing else uses, writes IIS request logs to a volume
-of their own, and applies the server-level IIS STIG settings.
+over TLS. In one converge it uninstalls the SQL Server components WSUS does not use, pins the
+instance's default database directories and restarts it so they take effect, installs the WSUS
+features, adopts a preserved `SUSDB` when the volume already carries one, completes
+post-installation against the instance, brings up the services that answer for it, delivers and
+installs the certificate the listener presents, requires SSL on the five vendor-named virtual
+directories, scopes the host firewall to the ports and program and removes the wide-open rules
+WSUS opened for itself, reconciles where update content is kept and who may read it, restricts
+the languages the server will accept, points the server at its upstream, synchronises the
+catalogue and the files behind it, and then tunes the WSUS application pool, removes the Default
+Web Site and the pools nothing else uses, writes IIS request logs to a volume of their own, and
+applies the server-level IIS STIG settings.
 
 Everything that arrives from S3 moves through the controller: one PKCS#12 is fetched and
 digest-checked there, its password is read there through the framework's `secret` lookup, and the
@@ -90,12 +91,12 @@ it presents — is declared empty there and published by the play, so nothing en
 ever lives in the role.
 
 What does **not** live in defaults at all is constants wearing a default's clothes. The features
-WSUS is made of, the flags its post-installation writes, the services that answer for it and the
-default SQL instance are fixed by the product, not by a site, and are written where they are used.
-`tasks/validate.yml` guards what the caller supplies and the two defaults later steps build an
-IIS path or target from, `iis.log_subdir` and `tls.site_name`; nothing asserts the product
-constants the role writes where it uses them. Two converges at `changed=0` show that state is
-steady, not that it is correct.
+WSUS is made of, the SQL Server components it does not use, the flags its post-installation
+writes, the services that answer for it and the default SQL instance are fixed by the product,
+not by a site, and are written where they are used. `tasks/validate.yml` guards what the caller
+supplies and the two defaults later steps build an IIS path or target from, `iis.log_subdir` and
+`tls.site_name`; nothing asserts the product constants the role writes where it uses them. Two
+converges at `changed=0` show that state is steady, not that it is correct.
 
 ## Why the order is what it is
 
@@ -230,19 +231,32 @@ left to the STIG GPOs, and the rules that need documentation to the ISSO.
 
 ## Design invariants
 
-- **`SUSDB` never lands on the system volume.** Placement is pinned before anything can create the
-  database, and `END` proves it by reading the system volume for stray database files.
-- **The guest holds no cloud credential.** Every S3 object is fetched and verified on the
-  controller.
-- **Nothing asserts what it already controls.** Two clean runs show the role steady, not correct;
-  re-reading a value this role just wrote proves only that it can read itself. `END` reads the
-  *engine* and the *filesystem*, which are the things that could disagree with it. An independent
-  readback of the IIS settings is owed until GATE-01 runs here, as the migration contract records.
-- **One HTTPS port.** `wsus.tls.port` is the only declaration of it; the firewall reads that value
-  rather than carrying a second copy to disagree with.
-- **Update languages are declared, not inherited.** A server installs accepting every language
-  Microsoft publishes, which is a permanent cost in disk and sync time for content nobody will
-  approve.
+1. `[INV-01]` **`SUSDB` never lands on the system volume.** Placement is pinned before anything
+   can create the database, and `END` proves it by reading the system volume for stray database
+   files.
+2. `[INV-02]` **The guest holds no cloud credential.** Every S3 object is fetched and verified on
+   the controller.
+3. `[INV-03]` **Nothing asserts what it already controls.** Two clean runs show the role steady,
+   not correct; re-reading a value this role just wrote proves only that it can read itself.
+   `END` reads the *engine* and the *filesystem*, which are the things that could disagree with
+   it. An independent readback of the IIS settings is owed until GATE-01 runs here, as the
+   migration contract records.
+4. `[INV-04]` **One HTTPS port.** `wsus.tls.port` is the only declaration of it; the firewall
+   reads that value rather than carrying a second copy to disagree with.
+5. `[INV-05]` **Update languages are declared, not inherited.** A server installs accepting every
+   language Microsoft publishes, which is a permanent cost in disk and sync time for content
+   nobody will approve.
+6. `[INV-06]` **The instance restarts only on evidence.** A restart is an outage, so exactly two
+   cases earn one: the pin just changed — measured on a live instance (4000ee0), writing it moved
+   neither `SERVERPROPERTY` nor where a database landed until the service came back — or `BEGIN`
+   reached the engine and it named the wrong directory. An instance that was down when `BEGIN`
+   looked earns nothing by itself: it has since started and read the registry on the way up, so
+   either it is already correct or the pin changed and the first case fires. `END` proves the
+   outcome either way. The restart forces the instance's dependents, because Windows refuses to
+   stop a service that has them. At 4000ee0, while the image's MSSQLLaunchpad still ran, the
+   forced restart brought the running Launchpad back with the engine and left a stopped agent
+   stopped. Once the components WSUS does not use are gone, the only dependent is SQL Server
+   Agent (measured 2026-10-01).
 
 ## First-class PowerShell
 

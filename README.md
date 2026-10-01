@@ -78,14 +78,15 @@ That rebuild covers everything below. It does NOT yet close the records that tra
 rows of the migration contract still owe their runtime-verifier re-checks, which wait on GATE-01,
 and TD-005 still asks for durable live evidence.
 
-One converge now places SUSDB on its own volume before anything can create it, installs the WSUS
-features, completes post-installation against the SQL instance, serves clients over TLS with a
-certificate delivered through the controller, scopes the host firewall by port and program and
-removes the wide-open rules WSUS opens for itself, reconciles the content store and its
-permissions, restricts the update languages, points the server at its upstream, synchronises the
-catalogue and the files behind it, and then tunes the WSUS application pool, removes the Default
-Web Site and the pools nothing else uses, writes IIS request logs to their own volume, and applies
-the server-level IIS STIG settings.
+One converge now removes the SQL Server components WSUS does not use, places SUSDB on its own
+volume before anything can create it, installs the WSUS features, completes post-installation
+against the SQL instance, serves clients over TLS with a certificate delivered through the
+controller, scopes the host firewall by port and program and removes the wide-open rules WSUS
+opens for itself, reconciles the content store and its permissions, restricts the update
+languages, points the server at its upstream, synchronises the catalogue and the files behind it,
+and then tunes the WSUS application pool, removes the Default Web Site and the pools nothing else
+uses, writes IIS request logs to their own volume, and applies the server-level IIS STIG
+settings.
 
 Every run proves one WSUS server plus the three clients running `wsus_client`. The client role
 refuses a host whose Group Policy does not name this deployment's server or whose expected trust
