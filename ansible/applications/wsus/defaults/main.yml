@@ -147,3 +147,13 @@ wsus_defaults:
       - 'SimpleAuthWebService'
 
   #endregion --- [ Client-facing TLS ] ------------------------------------------------------- #
+
+  #region ------ [ Management consoles ] ------------------------------------------------------ #
+
+  # WHETHER THE SERVER CARRIES THE WSUS CONSOLE AND IIS MANAGER. The role uses neither; false
+  # uninstalls one a host has, which needed no restart and left WSUS serving (2026-10-01).
+  consoles:
+    iis: true
+    wsus: true
+
+  #endregion --- [ Management consoles ] ------------------------------------------------------ #

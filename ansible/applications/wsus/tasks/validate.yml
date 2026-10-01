@@ -174,3 +174,18 @@
       - __cert__.sha256 | default('', true) is match('^[0-9a-f]{64}$')
       - __cert__.thumbprint | default('', true) is match('^[0-9A-Fa-f]{40}$')
       - __cert__.dns_name | default('', true) | trim is match(__host__)
+
+# check: safety-critical
+- name: 'VALIDATE | Require Real Booleans For The Consoles'
+  when: (state | default('present') | string | lower | trim) == 'present'
+
+  ansible.builtin.assert:
+    fail_msg: >-
+      Refusing to configure: wsus.consoles is {{ wsus_running.consoles | to_json }}. It must map
+      wsus and iis each to true or false, unquoted, because false uninstalls that console. See
+      defaults/main.yml.
+    quiet: true
+    that:
+      - wsus_running.consoles is mapping
+      - wsus_running.consoles.wsus is boolean
+      - wsus_running.consoles.iis is boolean

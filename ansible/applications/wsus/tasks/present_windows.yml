@@ -196,14 +196,13 @@
           to, and report installation status to Windows Server Update Services (WSUS) over TLS.
           [TCP {{ wsus_running.tls.port }}]
     __wsus_machine_name__: "{{ __wsus_computer_name__.value }}"
-    # The four completion flags post-installation writes, each reaching 2 only when its component
-    # finishes. Measured on this image: after the features install and before post-installation,
-    # API and UI already read 2 while Database and Services read 1.
+    # Post-installation is complete when these read 2. The feature install writes API (e3d4c95),
+    # and the console's UpdateServices-UI too, so it is left out: counting it re-ran
+    # post-installation whenever the console came back, which fails here (2026-10-01).
     __postinstall_flags__:
       - 'UpdateServices-API'
       - 'UpdateServices-Database'
       - 'UpdateServices-Services'
-      - 'UpdateServices-UI'
     # Any flag short of 2 means a component did not finish, including a run interrupted midway.
     __wsus_postinstall_incomplete__: >-
       {{ __postinstall_flags__
@@ -386,10 +385,6 @@
     #endregion --- [ Process: Restart The Instance So It Adopts The Pinned Directories ] ------ #
 
     #region ------ [ Process: Install The WSUS Features And HTTP Logging ] -------------------- #
-    # After placement, because the features are what bring postinstall within reach and postinstall
-    # creates the database wherever the engine now points. Before anything reads WSUS, because the
-    # console and the UpdateServices module arrive with them.
-
     # Named one by one, and neither the bare parent nor include_sub_features. Both select the
     # Windows Internal Database backend, and Windows refuses that alongside the SQL one -- so the
     # obvious install line is the one that cannot work here.
@@ -398,12 +393,32 @@
       register: '__wsus_feature_install__'
 
       ansible.windows.win_feature:
-        include_management_tools: true
+        include_management_tools: false
         include_sub_features: false
-        name: ['UpdateServices-Services', 'UpdateServices-DB', 'Web-Http-Logging']
+        name: >-
+          {{ ['UpdateServices-Services', 'UpdateServices-DB', 'Web-Http-Logging']
+             + (['UpdateServices-UI'] if wsus_running.consoles.wsus else [])
+             + (['Web-Mgmt-Console'] if wsus_running.consoles.iis else []) }}
         state: 'present'
 
     #endregion --- [ Process: Install The WSUS Features And HTTP Logging ] -------------------- #
+
+    #region ------ [ Process: Remove The Consoles This Deployment Declines ] ------------------ #
+
+    - name: 'PROCESS | Remove The Consoles This Deployment Declines'
+      vars:
+        __declined__: >-
+          {{ ([] if wsus_running.consoles.wsus else ['UpdateServices-UI'])
+             + ([] if wsus_running.consoles.iis else ['Web-Mgmt-Console']) }}
+      when: __declined__ | length > 0
+
+      ansible.windows.win_feature:
+        include_management_tools: false
+        include_sub_features: false
+        name: "{{ __declined__ }}"
+        state: 'absent'
+
+    #endregion --- [ Process: Remove The Consoles This Deployment Declines ] ------------------ #
 
     #region ------ [ Process: Reboot When The Feature Installation Requires It ] -------------- #
     # Taken here, between the feature install and post-installation, so the reboot the feature

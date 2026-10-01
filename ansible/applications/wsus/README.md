@@ -3,15 +3,16 @@
 Brings up Windows Server Update Services on a co-located SQL Server instance, serving its clients
 over TLS. In one converge it uninstalls the SQL Server components WSUS does not use, pins the
 instance's default database directories and restarts it so they take effect, installs the WSUS
-features, adopts a preserved `SUSDB` when the volume already carries one, completes
-post-installation against the instance, brings up the services that answer for it, delivers and
-installs the certificate the listener presents, requires SSL on the five vendor-named virtual
-directories, scopes the host firewall to the ports and program and removes the wide-open rules
-WSUS opened for itself, reconciles where update content is kept and who may read it, restricts
-the languages the server will accept, points the server at its upstream, synchronises the
-catalogue and the files behind it, and then tunes the WSUS application pool, removes the Default
-Web Site and the pools nothing else uses, writes IIS request logs to a volume of their own, and
-applies the server-level IIS STIG settings.
+features and the management consoles the deployment keeps, removes any it declines, adopts a
+preserved `SUSDB` when the volume already carries one, completes post-installation against the
+instance, brings up the services that answer for it, delivers and installs the certificate the
+listener presents, requires SSL on the five vendor-named virtual directories, scopes the host
+firewall to the ports and program and removes the wide-open rules WSUS opened for itself,
+reconciles where update content is kept and who may read it, restricts the languages the server
+will accept, points the server at its upstream, synchronises the catalogue and the files behind
+it, and then tunes the WSUS application pool, removes the Default Web Site and the pools nothing
+else uses, writes IIS request logs to a volume of their own, and applies the server-level IIS
+STIG settings.
 
 Everything that arrives from S3 moves through the controller: one PKCS#12 is fetched and
 digest-checked there, its password is read there through the framework's `secret` lookup, and the
@@ -88,7 +89,10 @@ find.
 is given, the HTTP port, and the TLS port, site name and secured paths. Everything an estate
 decides — the upstream and how to synchronise from it, the languages it accepts, the certificate
 it presents — is declared empty there and published by the play, so nothing environment-specific
-ever lives in the role.
+ever lives in the role. The two management consoles are the exception: whether the server carries
+the WSUS console and IIS Manager is the estate's to decide, but keeping them is a safe answer, so
+`consoles.wsus` and `consoles.iis` default to true, and false uninstalls a console a host already
+has.
 
 What does **not** live in defaults at all is constants wearing a default's clothes. The features
 WSUS is made of, the SQL Server components it does not use, the flags its post-installation
@@ -106,7 +110,8 @@ Two placements in `tasks/present_windows.yml` are load-bearing rather than tidy.
 postinstall` creates `SUSDB` wherever the instance's default directories point, and moving it
 afterwards is the unsupported detach/copy/attach path. Placement has to be right before anything
 can create it, so the role pins the directories, grants the instance rights on them and restarts
-the instance so it adopts them — and only then installs WSUS.
+the instance so it adopts them — and only then installs WSUS. The features come before anything
+that reads WSUS, because the UpdateServices module arrives with them.
 
 **TLS runs before every task that talks to the WSUS API.** Once `wsusutil configuressl` records
 `UsingSSL=1`, every later bare `Get-WsusServer` dials this machine over HTTPS and validates what
