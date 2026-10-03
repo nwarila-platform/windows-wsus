@@ -29,8 +29,8 @@
 
         The certificate is named by thumbprint rather than found by subject. A subject search picks
         whichever certificate happens to match, including one an operator left behind; the
-        thumbprint pins the exact bytes the caller delivered, and the script refuses to bind
-        anything else.
+        thumbprint names the one certificate in LocalMachine\My to bind, and the script refuses
+        to bind anything else.
 
     .PARAMETER DebugLevel
         Three digits: ErrorActionPreference, Set-PSDebug, Set-StrictMode.
@@ -61,8 +61,8 @@
         its own site rather than living under Default Web Site.
 
     .PARAMETER Thumbprint
-        The certificate to bind, as its forty hexadecimal characters. Pinned by the caller so the
-        binding follows the exact certificate that was delivered.
+        The certificate to bind, as its forty hexadecimal characters. Pinned by the caller so a
+        subject search cannot select another.
 
     .PARAMETER WsusUtilPath
         Full path to wsusutil.exe, which is the only supported way to tell WSUS its own URL.
