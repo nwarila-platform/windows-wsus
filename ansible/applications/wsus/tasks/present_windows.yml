@@ -700,13 +700,8 @@
             state: 'directory'
 
         # ------------------------------------------------------------------------------------- #
-        # check_mode is off for the reason the framework's own S3 fetch records: s3_object supports
-        # check mode by RETURNING EARLY, so under --check the register exists and the field the
-        # next task reads does not, and the digest check dies on a template error instead of its
-        # own message. Running the fetch for real under --check costs a read this task already
-        # declares changeless, and buys the most useful thing --check can say here -- that the
-        # object exists and still matches the digest the deployment pinned.
-
+        # check_mode is off because the copy to the target also runs for real under --check, so
+        # this read must produce its source file; changed_when keeps the read changeless.
         - name: 'PROCESS | Fetch The TLS Certificate To The Controller'
           become: false
           changed_when: false
@@ -738,36 +733,6 @@
             sig_v4: true
             validate_bucket_name: true
             validate_certs: true
-
-        # ------------------------------------------------------------------------------------- #
-
-        - name: 'PROCESS | Read The Delivered Certificate Digest'
-          become: false
-          changed_when: false
-          check_mode: false
-          delegate_to: 'localhost'
-          register: '__wsus_tls_delivered__'
-
-          ansible.builtin.stat:
-            checksum_algorithm: 'sha256'
-            path: "{{ __wsus_tls_controller__.path }}/certificate.pfx"
-
-        # One object, so one digest, held to the pin because an unverified private key is not one
-        # this server should present. The password is not checked here and could not be: it arrives
-        # already resolved through the framework's secret lookup, which takes the digest itself and
-        # refuses the read when the stored bytes have moved. The guard moved to the only place that
-        # still sees the object.
-
-        - name: 'PROCESS | Verify The TLS Delivery Against Its Pinned Digest'
-
-          ansible.builtin.assert:
-            fail_msg: >-
-              The TLS delivery does not match the digest the deployment pinned. Refusing to import
-              a certificate that is not the artifact this role was told to install.
-            quiet: true
-            that:
-              - __wsus_tls_delivered__.stat.exists
-              - __wsus_tls_delivered__.stat.checksum == __tls_cert__.sha256
 
         # ------------------------------------------------------------------------------------- #
         # Unique per run, so a failed or concurrent run cannot leave PFX bytes for the next one to

@@ -102,22 +102,8 @@ wsus_defaults:
 
   #region ------ [ Client-facing TLS ] ------------------------------------------------------- #
 
-  # WHETHER CLIENTS TALK TO THIS SERVER OVER HTTPS, and with which certificate. Every value under
-  # 'certificate' is declared empty: the keys are written out so a reader sees the whole shape, but
-  # which certificate a server presents belongs to the DEPLOYMENT, and an identity baked into a
-  # role that travels would have to be edited in the travelling file. validate.yml refuses a
-  # present run with tls.enabled true that omits any of them; a run with it false skips the
-  # assertion and the delivery alike. ONE object arrives, the PKCS#12, and presenting it is the
-  # whole of what this role does: the container goes into the machine store and the listener is
-  # pinned to it. TRUSTING it belongs to the directory, which delivers its root to every domain
-  # member as a production CA would -- measured on a live Server 2025 host, a PKCS#12 imported into
-  # LocalMachine\My alone lands in no other store and chains to UntrustedRoot, so holding a
-  # certificate is not trusting it. In THIS estate that delivery is a temporary policy pending a
-  # real CA; it reached the POC client on 2026-09-11 via the EnterpriseCertificates hive, and a
-  # server it has not reached cannot read its own
-  # WSUS API once TLS is on. The password is not an object either: it arrives resolved through the
-  # framework's secret lookup. The digest is checked on the CONTROLLER, because the target holds no
-  # S3 credential and no route to S3 at all.
+  # Which certificate a server presents is the deployment's, so every certificate key is declared
+  # empty and validate.yml refuses a present run with tls.enabled true that leaves one empty.
   tls:
     enabled: true
     port: 8531
@@ -128,7 +114,6 @@ wsus_defaults:
       dns_name: ''
       object: ''
       password: ''
-      sha256: ''
       thumbprint: ''
 
     # WHICH DIRECTORIES REFUSE PLAIN HTTP. Vendor-fixed, not a preference: these five are the
