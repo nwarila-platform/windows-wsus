@@ -231,7 +231,6 @@
                     's3://' ~ aws_account_id ~ '-ansible/applications/windows-wsus/tls'
                     ~ '/tcnaw-wsus.pfx.password',
                     'fc77c7baa66d3ca12f359de51f821c5f454184a98187811d918e682514745b41') }}
-              sha256: 'b0d8973b9eddc964c98092b2724d5a3c4daf407d946cda6f36a2dd88ff22b3fc'
               thumbprint: '38108AEDBD378EFA498607D2829FC75B58E32A40'
 
     #endregion --- [ Roles: WSUS ] ------------------------------------------------------------ #

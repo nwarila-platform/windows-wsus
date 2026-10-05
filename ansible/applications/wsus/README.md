@@ -5,19 +5,19 @@ over TLS. In one converge it uninstalls the SQL Server components WSUS does not 
 instance's default database directories and restarts it so they take effect, installs the WSUS
 features and the management consoles the deployment keeps, removes any it declines, adopts a
 preserved `SUSDB` when the volume already carries one, completes post-installation against the
-instance, brings up the services that answer for it, delivers and installs the certificate the
-listener presents, requires SSL on the five vendor-named virtual directories, scopes the host
-firewall to the ports and program and removes the wide-open rules WSUS opened for itself,
-reconciles where update content is kept and who may read it, restricts the languages the server
-will accept, points the server at its upstream, synchronises the catalogue and the files behind
-it, and then tunes the WSUS application pool, removes the Default Web Site and the pools nothing
-else uses, writes IIS request logs to a volume of their own, and applies the server-level IIS
-STIG settings.
+instance, brings up the services that answer for it, imports the PKCS#12 it is given and binds
+the listener to the certificate the thumbprint names, requires SSL on the five vendor-named
+virtual directories, scopes the host firewall to the ports and program and removes the wide-open
+rules WSUS opened for itself, reconciles where update content is kept and who may read it,
+restricts the languages the server will accept, points the server at its upstream, synchronises
+the catalogue and the files behind it, and then tunes the WSUS application pool, removes the
+Default Web Site and the pools nothing else uses, writes IIS request logs to a volume of their
+own, and applies the server-level IIS STIG settings.
 
-Everything that arrives from S3 moves through the controller: one PKCS#12 is fetched and
-digest-checked there, its password is read there through the framework's `secret` lookup, and the
-container is handed over the existing connection, so the guest never receives cloud credentials.
-In this deployment it has no route to S3 at all.
+Everything that arrives from S3 moves through the controller: one PKCS#12 is fetched there, its
+password is read there through the framework's `secret` lookup, and the container is handed over
+the existing connection, so the guest never receives cloud credentials. In this deployment it has
+no route to S3 at all.
 
 > **Scope: one server, one co-located default SQL instance.** The AWS images install the default
 > `MSSQLSERVER` instance; the role writes that name where it needs a service and the machine name
@@ -50,19 +50,41 @@ else.
 
 Deployment-specific inputs carry an account id, a certificate identity or a network topology, and
 they change with every site, so the playbook states them where a reader can see them rather than
-defaulting them in the role. `meta/main.yml` names all seventeen, and gives the reason where
-the answer is not obvious from the key. `tasks/validate.yml` enforces them on the controller
-before the role's first mutation — the loader gathers facts from the guest first, so this is the
-gate in front of every change, not in front of every contact. The six certificate leaves are
-required when `wsus.tls.enabled` is true, which is the shipped default; the other eleven are
-required always.
+defaulting them in the role. The list below names all sixteen, with the reason where the answer
+is not obvious from the key. `tasks/validate.yml` enforces them on the controller before the
+role's first mutation — the loader gathers facts from the guest first, so this is the gate in
+front of every change, not in front of every contact. The five certificate leaves are required
+when `wsus.tls.enabled` is true, which is the shipped default; the other eleven are required
+always.
 
-Three drive letters (database, content and IIS logs, none equal to another); seven keys
-describing the upstream — the server as a DNS name or an IPv4 literal, its port, whether the link
-is encrypted, whether this server inherits its approvals, the synchronisation mode, and the two
-timeouts; the update languages the estate accepts; and six keys describing the certificate —
-bucket, DNS name, the object key of the PKCS#12, its digest, the password that unlocks it, and
-the thumbprint the listener is pinned to.
+- `wsus.db.drive_letter` — the volume SUSDB is created on. Refused if it equals the content
+  letter: both grow independently, and sharing a disk lets either one stop the other.
+- `wsus.content.drive_letter` — the volume the update store is created on.
+- `wsus.iis.drive_letter` — the volume IIS request logs are written to. Refused if it equals the
+  database or the content letter.
+- `wsus.sync.upstream_server` — the upstream this server mirrors, as a DNS name or an IPv4
+  literal. Never defaulted: a defaulted upstream points at whatever the last deployment's was.
+- `wsus.sync.upstream_port` — the port that upstream serves on: 8530 plain, 8531 TLS.
+- `wsus.sync.upstream_use_ssl` — whether the link is encrypted. A property of the upstream, which
+  must be serving SSL for this to be true.
+- `wsus.sync.replica` — whether this server inherits the upstream's approvals.
+- `wsus.sync.mode` — `wait` fetches the catalogue and reports what arrived, `start` begins one
+  and returns, `disabled` fetches nothing. A first sync against a full mirror takes weeks, which
+  is why the last two exist; under either, the server answers clients from whatever catalogue it
+  already has.
+- `wsus.sync.timeout_seconds` — how long to wait for the catalogue.
+- `wsus.sync.content_timeout_seconds` — how long to wait for the files behind it. It runs after
+  the catalogue wait in the same step, so the caller owns the sum against its own budget.
+- `wsus.updates.languages` — the update languages this server accepts, as the short codes WSUS
+  uses (`['en']`, `['en', 'fr']`). Every other language is refused at synchronisation.
+- `wsus.tls.certificate.bucket` — the S3 bucket holding the PKCS#12.
+- `wsus.tls.certificate.dns_name` — the name clients reach this server by, and the name the
+  certificate must be valid for.
+- `wsus.tls.certificate.object` — the object key of the PKCS#12, the only object this role
+  fetches.
+- `wsus.tls.certificate.password` — the password that unlocks it, already resolved.
+- `wsus.tls.certificate.thumbprint` — the certificate the listener may present, pinned so a
+  subject search cannot select another.
 
 The upstream's endpoint is declared in three parts because that is how a deployer thinks about it,
 and the role composes them into a single URL before handing it to the actor. That is not
@@ -77,11 +99,9 @@ password and never a bucket key. That lookup takes the digest of the stored byte
 term, so the pin the role used to check itself did not go away — it moved to the only thing that
 still sees the object.
 
-The digest is checked on the **controller**, because that is where the object lands and where
-the credential to fetch it exists. The thumbprint is separate from the digest on purpose: a
-digest proves an object is the one that was declared, and a thumbprint proves the listener
-presents the certificate that was meant rather than whichever one a subject search happened to
-find.
+The listener is bound to the certificate the **thumbprint** names, so a subject search cannot
+select another. The PKCS#12's bytes are not checked: a wrong one that its password opens is still
+imported into `LocalMachine\My`.
 
 ## Configuration
 
@@ -139,11 +159,11 @@ which of the others a given image happens to ship — `SelfUpdate` tracks the WS
 the OS version, and is present on one image here and absent on the other.
 
 **The role does not make anything trust this certificate.** It imports the PKCS#12 into
-`LocalMachine\My` and pins the listener to it. That is presenting, not trusting: a certificate in
-`My` is one this machine holds, and holding it confers no root trust. A directory delivers its
-trusted root to every domain member, which is exactly what a production CA's root would do, and a
-role that also wrote the root store would be a second owner of a decision the directory already
-makes.
+`LocalMachine\My` and binds the listener to the certificate the thumbprint names. That is
+presenting, not trusting: a certificate in `My` is one this machine holds, and holding it confers
+no root trust. A directory delivers its trusted root to every domain member, which is exactly
+what a production CA's root would do, and a role that also wrote the root store would be a second
+owner of a decision the directory already makes.
 
 In this development estate that delivery is a **separate temporary policy** standing in for a
 certificate authority that does not exist yet. Measured reaching the POC client on 2026-09-11
@@ -239,8 +259,8 @@ left to the STIG GPOs, and the rules that need documentation to the ISSO.
 1. `[INV-01]` **`SUSDB` never lands on the system volume.** Placement is pinned before anything
    can create the database, and `END` proves it by reading the system volume for stray database
    files.
-2. `[INV-02]` **The guest holds no cloud credential.** Every S3 object is fetched and verified on
-   the controller.
+2. `[INV-02]` **The guest holds no cloud credential.** Every S3 object is fetched on the
+   controller.
 3. `[INV-03]` **Nothing asserts what it already controls.** Two clean runs show the role steady,
    not correct; re-reading a value this role just wrote proves only that it can read itself.
    `END` reads the *engine* and the *filesystem*, which are the things that could disagree with

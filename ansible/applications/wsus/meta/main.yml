@@ -4,55 +4,14 @@
 # Role metadata for wsus. Description-only (style guide 8): NOT an enforcing argument spec --
 # tasks/validate.yml enforces the merged-config guards.
 #
-# REQUIRED INPUTS, all supplied by the playbook and never defaulted here. validate.yml refuses a
-# present run that omits any of the first eleven; the six certificate leaves are refused the
-# same way when wsus.tls.enabled is true, which is the shipped default. The playbook resolves
-# the S3 object and the password on the CONTROLLER -- the guest holds no cloud credential and,
-# here, no route to S3 at all.
-#
-#   wsus.db.drive_letter                 Volume SUSDB is created on. Refused if it equals the
-#                                        content letter: both grow independently and sharing a
-#                                        disk lets either one stop the other.
-#   wsus.content.drive_letter            Volume the update store is created on.
-#   wsus.iis.drive_letter                Volume IIS request logs are written to. Refused if it
-#                                        equals the database or the content letter.
-#   wsus.sync.upstream_server            The upstream this server mirrors, as a DNS name or IPv4
-#                                        literal. Never defaulted -- a defaulted upstream points
-#                                        at whatever the last deployment's was.
-#   wsus.sync.upstream_port              The port that upstream serves on. 8530 plain, 8531 TLS.
-#   wsus.sync.upstream_use_ssl           Whether the link is encrypted. A property of the UPSTREAM,
-#                                        which must be serving SSL for this to be true. The role
-#                                        composes these three into one URL for the actor.
-#   wsus.sync.replica                    Whether this server inherits the upstream's approvals.
-#   wsus.sync.mode                       'wait' fetches the catalogue and reports what arrived,
-#                                        'start' begins one and returns, 'disabled' fetches
-#                                        nothing. A first sync against a full mirror takes WEEKS,
-#                                        which is why the last two exist; under either the server
-#                                        answers clients from whatever catalogue it already has.
-#   wsus.sync.timeout_seconds            How long to wait for the catalogue.
-#   wsus.sync.content_timeout_seconds    How long to wait for the files behind it. Runs after the
-#                                        catalogue wait in the same step, so the caller owns the
-#                                        sum against its own budget.
-#   wsus.updates.languages               The update languages this server accepts, as the short
-#                                        codes WSUS uses -- ['en'], ['en', 'fr']. Every other
-#                                        language is refused at synchronisation.
-#   wsus.tls.certificate.bucket          S3 bucket holding the PKCS#12.
-#   wsus.tls.certificate.dns_name        Name clients reach this server by, and the name the
-#                                        certificate must be valid for.
-#   wsus.tls.certificate.object          Object key of the PKCS#12, the only object this role
-#                                        fetches. Trusting it belongs to the directory, so a host
-#                                        whose policy has not delivered that root cannot read its
-#                                        own WSUS API once TLS is on.
-#   wsus.tls.certificate.password        The password that unlocks it, already resolved. A value,
-#                                        not a location: reading a credential out of S3 is the
-#                                        framework secret lookup's job and the playbook calls it.
-#   wsus.tls.certificate.sha256          Digest the PKCS#12 must match.
-#   wsus.tls.certificate.thumbprint      The certificate the listener may present, pinned so a
-#                                        subject search cannot select another.
+# REQUIRED INPUTS are supplied by the playbook and never defaulted here; README.md, "What the
+# caller supplies", lists all sixteen with their reasons. validate.yml refuses a present run that
+# omits any of the first eleven, and the five certificate leaves the same way when
+# wsus.tls.enabled is true, which is the shipped default.
 #
 # The SQL instance is NOT an input: the AWS images install the default instance, and this role
 # writes MSSQLSERVER where it needs a service and the machine name where it needs a connection
-# target. Naming one would offer a choice the rest of the role does not honour.
+# target.
 #
 # =========================================================================================== #
 ---
