@@ -43,7 +43,7 @@ The server carries three volumes:
 
 ## Lifecycle
 
-`AWS Deploy` runs on protected `main` — on push, on a weekly schedule, and on manual dispatch.
+`AWS Deploy` runs on protected `main` — on push and on manual dispatch.
 It applies the pinned Terraform framework against `terraform/aws.tfvars`, converges the play,
 proves the second converge is a no-op, and attempts destroy after any successful init,
 including on a handled failure. A job that exhausts its budget or is cancelled can still strand
